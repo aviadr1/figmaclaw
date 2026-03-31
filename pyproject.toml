@@ -30,8 +30,8 @@ dev = [
     "pre-commit>=3.7",
 ]
 
-[tool.uv]
-dev-dependencies = [
+[dependency-groups]
+dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
     "pytest-httpx>=0.30",
