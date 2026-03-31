@@ -1,0 +1,195 @@
+"""Tests for figma_paths.py, figma_hash.py, and figma_sync_state.py."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from figmaclaw.figma_paths import page_path, slugify
+from figmaclaw.figma_hash import compute_page_hash
+from figmaclaw.figma_sync_state import FigmaSyncState, Manifest
+
+
+# --- figma_paths ---
+
+def test_page_path_format():
+    """INVARIANT: page_path returns figma/{file_key}/pages/{slug}.md"""
+    result = page_path("abc123", "onboarding")
+    assert result == "figma/abc123/pages/onboarding.md"
+
+
+def test_slugify_lowercases():
+    assert slugify("Onboarding") == "onboarding"
+
+
+def test_slugify_replaces_spaces_with_hyphens():
+    assert slugify("schedule event") == "schedule-event"
+
+
+def test_slugify_strips_special_chars():
+    assert slugify("reach - auto content sharing") == "reach-auto-content-sharing"
+
+
+def test_slugify_collapses_multiple_hyphens():
+    assert slugify("home--feed") == "home-feed"
+
+
+def test_slugify_strips_leading_trailing_hyphens():
+    assert slugify("  --home--  ") == "home"
+
+
+def test_slugify_handles_unicode():
+    result = slugify("🎨 Designs")
+    assert result  # non-empty
+    assert "-" not in result[:1]  # no leading hyphen
+
+
+# --- figma_hash ---
+
+def _page_node(sections: list[dict]) -> dict:
+    return {"id": "0:1", "name": "Page", "type": "CANVAS", "children": sections}
+
+
+def _section(sid: str, name: str, frames: list[dict]) -> dict:
+    return {"id": sid, "name": name, "type": "SECTION", "children": frames}
+
+
+def _frame(fid: str, name: str) -> dict:
+    return {"id": fid, "name": name, "type": "FRAME", "children": []}
+
+
+def test_hash_is_stable_for_identical_input():
+    """INVARIANT: Same structure always produces same hash."""
+    page = _page_node([_section("10:1", "auth", [_frame("11:1", "login")])])
+    h1 = compute_page_hash(page)
+    h2 = compute_page_hash(page)
+    assert h1 == h2
+
+
+def test_hash_changes_when_frame_name_changes():
+    """INVARIANT: Renaming a frame changes the hash."""
+    page1 = _page_node([_section("10:1", "auth", [_frame("11:1", "login")])])
+    page2 = _page_node([_section("10:1", "auth", [_frame("11:1", "sign in")])])
+    assert compute_page_hash(page1) != compute_page_hash(page2)
+
+
+def test_hash_changes_when_frame_added():
+    """INVARIANT: Adding a frame changes the hash."""
+    page1 = _page_node([_section("10:1", "auth", [_frame("11:1", "login")])])
+    page2 = _page_node([_section("10:1", "auth", [_frame("11:1", "login"), _frame("11:2", "register")])])
+    assert compute_page_hash(page1) != compute_page_hash(page2)
+
+
+def test_hash_is_order_independent():
+    """INVARIANT: Hash is stable regardless of JSON child ordering (canonical sort)."""
+    page1 = _page_node([
+        _section("10:1", "auth", [_frame("11:1", "login"), _frame("11:2", "register")])
+    ])
+    # Same content, but build the internal list in reverse order
+    node = {
+        "id": "0:1", "name": "Page", "type": "CANVAS",
+        "children": [
+            {"id": "10:1", "name": "auth", "type": "SECTION", "children": [
+                _frame("11:2", "register"),
+                _frame("11:1", "login"),
+            ]}
+        ]
+    }
+    # Both pages have same IDs/names — hash must match
+    assert compute_page_hash(page1) == compute_page_hash(node)
+
+
+def test_hash_not_affected_by_extra_visual_fields():
+    """INVARIANT: Visual-only fields (position, fills) don't affect the hash."""
+    base_frame = {"id": "11:1", "name": "login", "type": "FRAME", "children": []}
+    styled_frame = {**base_frame, "absoluteBoundingBox": {"x": 100, "y": 200, "width": 375, "height": 812},
+                    "fills": [{"type": "SOLID", "color": {"r": 1, "g": 1, "b": 1}}]}
+    page1 = _page_node([_section("10:1", "auth", [base_frame])])
+    page2 = _page_node([_section("10:1", "auth", [styled_frame])])
+    assert compute_page_hash(page1) == compute_page_hash(page2)
+
+
+def test_hash_returns_16_char_string():
+    """INVARIANT: Hash is a fixed-length hex string."""
+    page = _page_node([])
+    h = compute_page_hash(page)
+    assert len(h) == 16
+    assert all(c in "0123456789abcdef" for c in h)
+
+
+# --- figma_sync_state ---
+
+def test_manifest_is_pydantic_model():
+    """INVARIANT: Manifest is a Pydantic BaseModel."""
+    import pydantic
+    assert issubclass(Manifest, pydantic.BaseModel)
+
+
+def test_sync_state_load_noop_when_missing(tmp_path: Path):
+    """INVARIANT: load() is a no-op when manifest file doesn't exist."""
+    state = FigmaSyncState(tmp_path)
+    state.load()  # must not raise
+    assert state.manifest.tracked_files == []
+    assert state.manifest.files == {}
+
+
+def test_sync_state_save_then_load_round_trips(tmp_path: Path):
+    """INVARIANT: save() followed by load() restores exact state."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.manifest.tracked_files.append("abc123")
+    from figmaclaw.figma_sync_state import FileEntry, PageEntry
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"] = FileEntry(
+        file_name="Web App",
+        version="999",
+        last_modified="2026-03-31T00:00:00Z",
+        last_checked_at="2026-03-31T01:00:00Z",
+        pages={
+            "0:1": PageEntry(
+                page_name="Onboarding",
+                page_slug="onboarding",
+                md_path="figma/abc123/pages/onboarding.md",
+                page_hash="deadbeef12345678",
+                last_refreshed_at="2026-03-31T01:00:00Z",
+            )
+        },
+    )
+    state.save()
+
+    state2 = FigmaSyncState(tmp_path)
+    state2.load()
+    assert "abc123" in state2.manifest.tracked_files
+    assert state2.manifest.files["abc123"].file_name == "Web App"
+    assert state2.manifest.files["abc123"].pages["0:1"].page_hash == "deadbeef12345678"
+
+
+def test_sync_state_get_page_hash_returns_none_for_unknown(tmp_path: Path):
+    """INVARIANT: get_page_hash returns None for a page not yet in manifest."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    assert state.get_page_hash("abc123", "0:1") is None
+
+
+def test_sync_state_add_tracked_file_prevents_duplicates(tmp_path: Path):
+    """INVARIANT: Adding the same file twice does not create duplicate entries."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.add_tracked_file("abc123", "Web App")
+    assert state.manifest.tracked_files.count("abc123") == 1
+
+
+def test_sync_state_manifest_written_as_json(tmp_path: Path):
+    """INVARIANT: Manifest is persisted as valid JSON."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.save()
+
+    manifest_file = tmp_path / ".figma-sync" / "manifest.json"
+    assert manifest_file.exists()
+    data = json.loads(manifest_file.read_text())
+    assert data["tracked_files"] == ["abc123"]
