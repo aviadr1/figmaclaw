@@ -132,6 +132,9 @@ async def pull_file(
     doc = meta.get("document", {})
     page_nodes = [c for c in doc.get("children", []) if c.get("type") == "CANVAS"]
 
+    # Track slugs used in this run to detect collisions within the same file
+    used_slugs: set[str] = set()
+
     for page_stub in page_nodes:
         page_node_id: str = page_stub["id"]
         page_name: str = page_stub.get("name", "")
@@ -149,7 +152,10 @@ async def pull_file(
             continue
 
         # Build FigmaPage from the node
-        page_slug = slugify(page_name)
+        base_slug = slugify(page_name)
+        node_suffix = page_node_id.replace(":", "-")
+        page_slug = base_slug if base_slug not in used_slugs else f"{base_slug}-{node_suffix}"
+        used_slugs.add(page_slug)
         file_slug = slugify(file_name, fallback=file_key)
         page = from_page_node(page_node, file_key=file_key, file_name=file_name)
         page = page.model_copy(update={"page_slug": page_slug, "version": api_version, "last_modified": api_last_modified})
