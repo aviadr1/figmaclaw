@@ -75,7 +75,7 @@ jobs:
             if [ -n "$FORCE_FLAG" ]; then
               figmaclaw pull $FORCE_FLAG | tee /tmp/figmaclaw-out.txt || true
             else
-              figmaclaw pull --max-pages 5 | tee /tmp/figmaclaw-out.txt || true
+              figmaclaw pull --max-pages 20 | tee /tmp/figmaclaw-out.txt || true
             fi
 
             # Commit and push whatever was written in this batch
