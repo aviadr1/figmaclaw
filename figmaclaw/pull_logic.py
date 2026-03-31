@@ -63,7 +63,7 @@ async def pull_file(
     repo_root: Path,
     *,
     force: bool = False,
-    anthropic_client: "object | None" = None,
+    anthropic_client: object | None = None,
 ) -> PullResult:
     """Pull all pages for a tracked Figma file, writing changed pages to disk.
 
