@@ -25,7 +25,7 @@ class FigmaClient:
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
                 headers={"X-Figma-Token": self._api_key},
-                timeout=30.0,
+                timeout=120.0,
             )
         return self._client
 
