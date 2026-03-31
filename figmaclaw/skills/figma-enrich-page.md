@@ -35,60 +35,44 @@ Options:
 
 ## Fallback — manual steps (if figmaclaw is not installed)
 
-### 1 — Read the existing .md to get file_key and page_node_id
+### 1 — Read the existing .md to get file_key and the frame inventory
 
-The frontmatter always contains:
-```yaml
-file_key: <KEY>
-page_node_id: <ID>
-```
+The frontmatter contains `file_key` and `page_node_id`. The table body already lists every frame with its node ID — figmaclaw wrote this skeleton on the last sync. **Do not call `get_metadata` or fetch page structure from Figma.** The inventory is already here.
 
-### 2 — Fetch page structure from Figma MCP
+Parse the table for all rows where Description is `(no description yet)` to get the pending node IDs.
 
-Use `get_metadata` with the page node ID (the CANVAS node).
+### 2 — Enrich in batches of 8 using subagents
 
-```
-get_metadata(fileKey=<file_key>, nodeId=<page_node_id>)
-```
+Process frames in batches of 8. For each batch, spawn a subagent:
 
-If the output is too large (saved to a temp file), parse it with:
-```bash
-python3 -c "
-import json
-with open('<tool-result-path>') as f:
-    data = json.load(f)
-text = data[0]['text']
-lines = [l for l in text.split('\n') if '<section' in l or ('<frame' in l and l.count('  ') <= 4)]
-for l in lines:
-    print(l[:120])
-"
-```
+> "Here are 8 Figma frames from file `<file_key>`. Call `get_screenshot` for all 8 node IDs **in parallel** (single tool-use response):
+> `<node_id_1>`, `<node_id_2>`, ... `<node_id_8>`
+>
+> For each frame, write a description of 1–3 sentences covering:
+> - What the screen shows and its current state
+> - Key UI elements visible (inputs, modals, CTAs, overlays, toggles, etc.)
+> - What makes it visually distinct from its siblings
+>
+> Return only a JSON object: `{ "<node_id>": "<description>", ... }`"
 
-### 3 — Generate descriptions
+After the subagent returns, **immediately write those descriptions into the `.md`** (Edit the table rows), then proceed to the next batch. Do not accumulate batches before writing.
 
-For each frame, write ≤20 words describing:
-- **What it shows** — the screen state (e.g. "captions bar visible", "modal open")
-- **What makes it distinct** — the key difference from sibling frames
+This keeps screenshots out of the main context — each subagent's images are discarded after it returns text.
 
-Signals from the XML tree:
-- Frame name (e.g. `captions / widget highlighted` vs `captions / widget default`) → state variant
-- Child element names (e.g. `mic-selection`, `hover`, `Modal`, `Input field`) → what UI is overlaid
-- Frame size: 1440×900 = full screen; <200px = component/icon detail
-
-### 4 — Infer screen flows
+### 3 — Infer screen flows
 
 Look for sequences implied by frame names and nesting:
 - `default` → `highlighted` (user interaction)
 - `enabled` → `options` (user opens settings)
 - Full-screen frames with overlay children (modal, hover, popup) are destinations from the base screen
 
-### 5 — Write the enriched .md
+### 4 — Write the enriched .md
 
-Overwrite the file with:
+Update the file with:
 - Frontmatter: `frames` dict (node_id → description) and `flows` list
 - Body: page summary paragraph, section tables with descriptions filled in, Mermaid flowchart if flows exist
 
-### 6 — Commit and push
+### 5 — Commit and push
 
 ```bash
 git add figma/web-app/pages/<page-slug>.md
