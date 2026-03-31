@@ -392,3 +392,187 @@ async def test_pull_file_preserves_existing_descriptions(tmp_path: Path):
     # The existing descriptions should be preserved in the output
     assert "Welcome screen." in content
     assert "Camera access prompt." in content
+
+
+# --- max_pages / has_more ---
+
+def _fake_file_meta_multi(n_pages: int) -> dict:
+    """File meta with n_pages CANVAS children."""
+    return {
+        "version": "v2",
+        "lastModified": "2026-03-31T12:00:00Z",
+        "name": "Web App",
+        "document": {
+            "children": [
+                {"id": f"100:{i}", "name": f"Page {i}", "type": "CANVAS"}
+                for i in range(1, n_pages + 1)
+            ]
+        },
+    }
+
+
+def _fake_page_node_for_id(page_id: str, page_name: str) -> dict:
+    return {
+        "id": page_id,
+        "name": page_name,
+        "type": "CANVAS",
+        "children": [
+            {
+                "id": f"s:{page_id}",
+                "name": "section",
+                "type": "SECTION",
+                "children": [
+                    {"id": f"f:{page_id}", "name": "frame", "type": "FRAME", "children": []},
+                ],
+            }
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_pull_file_respects_max_pages(tmp_path: Path):
+    """INVARIANT: pull_file writes at most max_pages pages when max_pages is set."""
+    from figmaclaw.figma_client import FigmaClient
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    n_pages = 6
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta_multi(n_pages))
+    mock_client.get_page = AsyncMock(
+        side_effect=lambda fk, pid: _fake_page_node_for_id(pid, f"Page {pid}")
+    )
+
+    result = await pull_file(mock_client, "abc123", state, tmp_path, force=False, max_pages=3)
+
+    assert result.pages_written == 3
+    assert result.has_more is True
+
+
+@pytest.mark.asyncio
+async def test_pull_file_has_more_false_when_all_pages_written(tmp_path: Path):
+    """INVARIANT: has_more is False when all pages fit within max_pages."""
+    from figmaclaw.figma_client import FigmaClient
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta_multi(2))
+    mock_client.get_page = AsyncMock(
+        side_effect=lambda fk, pid: _fake_page_node_for_id(pid, f"Page {pid}")
+    )
+
+    result = await pull_file(mock_client, "abc123", state, tmp_path, force=False, max_pages=5)
+
+    assert result.pages_written == 2
+    assert result.has_more is False
+
+
+@pytest.mark.asyncio
+async def test_pull_file_has_more_false_when_no_limit(tmp_path: Path):
+    """INVARIANT: has_more is False when max_pages is not set."""
+    from figmaclaw.figma_client import FigmaClient
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta_multi(4))
+    mock_client.get_page = AsyncMock(
+        side_effect=lambda fk, pid: _fake_page_node_for_id(pid, f"Page {pid}")
+    )
+
+    result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    assert result.has_more is False
+
+
+# --- pages_errored ---
+
+@pytest.mark.asyncio
+async def test_pull_file_increments_pages_errored_on_fetch_failure(tmp_path: Path):
+    """INVARIANT: pull_file increments pages_errored when a page fetch fails."""
+    from figmaclaw.figma_client import FigmaClient
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta_multi(2))
+    # First page raises, second succeeds
+    mock_client.get_page = AsyncMock(
+        side_effect=[
+            Exception("network error"),
+            _fake_page_node_for_id("100:2", "Page 2"),
+        ]
+    )
+
+    result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    assert result.pages_errored == 1
+    assert result.pages_written == 1  # second page still written
+
+
+@pytest.mark.asyncio
+async def test_pull_file_continues_after_page_fetch_error(tmp_path: Path):
+    """INVARIANT: a single page fetch error does not abort processing of remaining pages."""
+    from figmaclaw.figma_client import FigmaClient
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    n_pages = 3
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta_multi(n_pages))
+    mock_client.get_page = AsyncMock(
+        side_effect=[
+            Exception("quota exceeded"),
+            _fake_page_node_for_id("100:2", "Page 2"),
+            _fake_page_node_for_id("100:3", "Page 3"),
+        ]
+    )
+
+    result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    assert result.pages_errored == 1
+    assert result.pages_written == 2
+
+
+# --- progress callback ---
+
+@pytest.mark.asyncio
+async def test_pull_file_calls_progress_for_each_page(tmp_path: Path):
+    """INVARIANT: pull_file calls the progress callback for each page processed."""
+    from figmaclaw.figma_client import FigmaClient
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta_multi(2))
+    mock_client.get_page = AsyncMock(
+        side_effect=lambda fk, pid: _fake_page_node_for_id(pid, f"Page {pid}")
+    )
+
+    progress_messages: list[str] = []
+    result = await pull_file(mock_client, "abc123", state, tmp_path, force=False, progress=progress_messages.append)
+
+    assert result.pages_written == 2
+    # Should have received progress messages for the two pages
+    assert len(progress_messages) >= 2
+    assert any("[1/2]" in m for m in progress_messages)
+    assert any("[2/2]" in m for m in progress_messages)

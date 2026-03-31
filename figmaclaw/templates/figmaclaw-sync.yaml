@@ -22,14 +22,17 @@ jobs:
           fetch-depth: 1
 
       - name: Install figmaclaw
-        run: pip install git+https://github.com/aviadr1/figmaclaw
+        run: pip install git+https://github.com/gigaverse-app/figmaclaw
 
       - name: Pull latest changes
         run: git pull --no-rebase
 
-      - name: Pull Figma files
-        id: pull
-        continue-on-error: true  # timeout/quota errors still save partial progress below
+      - name: Configure git
+        run: |
+          git config user.name "figmaclaw[bot]"
+          git config user.email "figmaclaw[bot]@users.noreply.github.com"
+
+      - name: Pull Figma files (checkpointed loop)
         env:
           FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -38,23 +41,32 @@ jobs:
           if [ "${{ github.event.inputs.force }}" = "true" ]; then
             FORCE_FLAG="--force"
           fi
-          figmaclaw pull ${FORCE_FLAG} | tee /tmp/figmaclaw-out.txt
-          COMMIT_MSG=$(grep '^COMMIT_MSG:' /tmp/figmaclaw-out.txt | head -1 | sed 's/^COMMIT_MSG://')
-          echo "commit_msg=${COMMIT_MSG}" >> "$GITHUB_OUTPUT"
 
-      - name: Commit and push progress
-        if: always()  # run even after timeout/quota error — commits partial manifest progress
-        run: |
-          git config user.name "figmaclaw[bot]"
-          git config user.email "figmaclaw[bot]@users.noreply.github.com"
-          git add figma/ .figma-sync/
-          if git diff --cached --quiet; then
-            echo "Nothing to commit."
-          else
-            COMMIT_MSG="${{ steps.pull.outputs.commit_msg }}"
-            if [ -z "$COMMIT_MSG" ]; then
-              COMMIT_MSG="sync: figmaclaw — checkpoint (partial run)"
+          BATCH=0
+          while true; do
+            BATCH=$((BATCH + 1))
+            echo "--- batch $BATCH ---"
+
+            # On force runs, pull everything in one shot (no page limit)
+            if [ -n "$FORCE_FLAG" ]; then
+              figmaclaw pull $FORCE_FLAG | tee /tmp/figmaclaw-out.txt || true
+            else
+              figmaclaw pull --max-pages 5 | tee /tmp/figmaclaw-out.txt || true
             fi
-            git commit -m "$COMMIT_MSG"
-            git push
-          fi
+
+            # Commit and push whatever was written in this batch
+            git add figma/ .figma-sync/
+            if ! git diff --cached --quiet; then
+              COMMIT_MSG=$(grep '^COMMIT_MSG:' /tmp/figmaclaw-out.txt | head -1 | sed 's/^COMMIT_MSG://')
+              if [ -z "$COMMIT_MSG" ]; then
+                COMMIT_MSG="sync: figmaclaw — checkpoint batch $BATCH"
+              fi
+              git commit -m "$COMMIT_MSG"
+              git push
+              git pull --no-rebase
+            fi
+
+            # Stop if no more pages remain, or this was a force run
+            grep -q '^HAS_MORE:true' /tmp/figmaclaw-out.txt || break
+            [ -n "$FORCE_FLAG" ] && break
+          done

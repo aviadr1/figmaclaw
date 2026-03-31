@@ -18,18 +18,19 @@ from figmaclaw.pull_logic import PullResult, pull_file
 @click.option("--file-key", "file_key", default=None, help="Pull only this file key.")
 @click.option("--force", is_flag=True, help="Regenerate all pages even if hash is unchanged.")
 @click.option("--no-llm", is_flag=True, help="Skip LLM description generation.")
+@click.option("--max-pages", "max_pages", default=None, type=int, help="Stop after writing this many pages (for checkpointed CI loops).")
 @click.pass_context
-def pull_cmd(ctx: click.Context, file_key: str | None, force: bool, no_llm: bool) -> None:
+def pull_cmd(ctx: click.Context, file_key: str | None, force: bool, no_llm: bool, max_pages: int | None) -> None:
     """Pull all tracked Figma files and write changed pages to disk."""
     repo_dir = Path(ctx.obj["repo_dir"])
     api_key = os.environ.get("FIGMA_API_KEY", "")
     if not api_key:
         raise click.UsageError("FIGMA_API_KEY environment variable is not set.")
 
-    asyncio.run(_run(api_key, repo_dir, file_key, force, no_llm))
+    asyncio.run(_run(api_key, repo_dir, file_key, force, no_llm, max_pages))
 
 
-async def _run(api_key: str, repo_dir: Path, file_key: str | None, force: bool, no_llm: bool) -> None:
+async def _run(api_key: str, repo_dir: Path, file_key: str | None, force: bool, no_llm: bool, max_pages: int | None) -> None:
     state = FigmaSyncState(repo_dir)
     state.load()
 
@@ -49,12 +50,13 @@ async def _run(api_key: str, repo_dir: Path, file_key: str | None, force: bool, 
             if key not in state.manifest.tracked_files:
                 click.echo(f"File key {key!r} is not tracked. Run 'figmaclaw track {key}' first.")
                 continue
-            result = await pull_file(client, key, state, repo_dir, force=force, anthropic_client=anthropic_client)
+            result = await pull_file(client, key, state, repo_dir, force=force, anthropic_client=anthropic_client, max_pages=max_pages)
             all_results.append(result)
             if result.skipped_file:
                 click.echo(f"{key}: unchanged (skipped)")
             else:
-                click.echo(f"{key}: wrote {result.pages_written} page(s), {result.component_sections_written} component(s), skipped {result.pages_skipped}")
+                errored = f", {result.pages_errored} error(s)" if result.pages_errored else ""
+                click.echo(f"{key}: wrote {result.pages_written} page(s), {result.component_sections_written} component(s), skipped {result.pages_skipped}{errored}")
                 for path in result.md_paths:
                     click.echo(f"  → {path}")
                 for path in result.component_paths:
@@ -72,5 +74,9 @@ async def _run(api_key: str, repo_dir: Path, file_key: str | None, force: bool, 
         if all_comp_paths:
             parts.append(f"{len(all_comp_paths)} component(s)")
         click.echo(f"COMMIT_MSG:sync: figmaclaw pull — {', '.join(parts)} updated")
+
+    # Signal to CI loop whether more pages remain (HAS_MORE:true → loop continues)
+    if any(r.has_more for r in all_results):
+        click.echo("HAS_MORE:true")
 
 
