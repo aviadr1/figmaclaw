@@ -3,31 +3,86 @@
 Two render targets:
 
 render_page() — for screen pages (figma/*/pages/*.md)
-  - YAML frontmatter with machine-readable metadata (FigmaPageFrontmatter schema)
-  - H1 header, Figma deep link, optional page summary
-  - Per-section tables (Screen | Node ID | Description) for screen sections only
+  - YAML frontmatter: flat file_key/page_node_id + compact flow-style frames/flows
+  - H1 header, Figma deep link, optional page summary paragraph
+  - Per-section: optional intro sentence + table (Screen | Node ID | Description)
   - Mermaid flowchart from prototype reactions + LLM-inferred flows
   - Quick Reference table
-  - Component library sections are omitted — they get their own files via render_component_section()
+  - Component library sections are omitted — they get their own files
 
 render_component_section() — for component library sections (figma/*/components/*.md)
-  - YAML frontmatter with section_node_id for direct Figma navigation
+  - YAML frontmatter: flat file_key/page_node_id/section_node_id + compact frames
   - H1 header: {file} / {page} / {section}
   - Variants table: Variant | Node ID | Description
 
 Policy: all structured data needed by machines lives in the YAML frontmatter.
         The table rows and prose are for human/AI reading only — never parse them.
+
+Frontmatter format: top-level block YAML for scalar fields; flow style (single-line)
+for frames dict and flows list, using FlowDict/FlowList wrappers + _FrontmatterDumper.
 """
 
 from __future__ import annotations
 
 import yaml
 
-from figmaclaw.figma_frontmatter import FigmaclawMeta, FigmaPageFrontmatter
 from figmaclaw.figma_models import FigmaPage, FigmaSection
 from figmaclaw.figma_sync_state import PageEntry
 
 _PLACEHOLDER = "(no description yet)"
+
+
+# --- Flow-style YAML helpers ---
+
+class _FlowDict(dict):
+    """dict subclass rendered as a single-line YAML flow mapping."""
+
+
+class _FlowList(list):
+    """list subclass rendered as a single-line YAML flow sequence."""
+
+
+class _FrontmatterDumper(yaml.Dumper):
+    """YAML dumper that forces FlowDict/FlowList to single-line flow style."""
+
+
+_FrontmatterDumper.add_representer(
+    _FlowDict,
+    lambda dumper, data: dumper.represent_mapping(
+        "tag:yaml.org,2002:map", data, flow_style=True
+    ),
+)
+_FrontmatterDumper.add_representer(
+    _FlowList,
+    lambda dumper, data: dumper.represent_sequence(
+        "tag:yaml.org,2002:seq", data, flow_style=True
+    ),
+)
+
+
+def _build_frontmatter(
+    file_key: str,
+    page_node_id: str,
+    section_node_id: str | None,
+    frame_descs: dict[str, str],
+    flows: list[tuple[str, str]],
+) -> str:
+    """Render compact YAML frontmatter block (between --- markers)."""
+    fm: dict = {"file_key": file_key, "page_node_id": page_node_id}
+    if section_node_id:
+        fm["section_node_id"] = section_node_id
+    if frame_descs:
+        fm["frames"] = _FlowDict(frame_descs)
+    if flows:
+        fm["flows"] = _FlowList([[src, dst] for src, dst in flows])
+
+    body = yaml.dump(
+        fm,
+        Dumper=_FrontmatterDumper,
+        default_flow_style=False,
+        allow_unicode=True,
+    ).rstrip()
+    return f"---\n{body}\n---"
 
 
 def render_page(page: FigmaPage, entry: PageEntry) -> str:
@@ -37,10 +92,8 @@ def render_page(page: FigmaPage, entry: PageEntry) -> str:
     """
     parts: list[str] = []
 
-    # Only render non-component sections
     screen_sections = [s for s in page.sections if not s.is_component_library]
 
-    # Collect frame descriptions for frontmatter (screen sections only)
     frame_descs: dict[str, str] = {
         frame.node_id: frame.description
         for section in screen_sections
@@ -48,24 +101,13 @@ def render_page(page: FigmaPage, entry: PageEntry) -> str:
         if frame.description
     }
 
-    frontmatter = FigmaPageFrontmatter(
-        figmaclaw=FigmaclawMeta(
-            file_key=page.file_key,
-            page_node_id=page.page_node_id,
-            page_hash=entry.page_hash,
-        ),
-        frames=frame_descs,
-        flows=[[src, dst] for src, dst in page.flows],
-    )
-
-    fm_dict = frontmatter.model_dump(exclude_none=True)
-    if not fm_dict.get("frames"):
-        fm_dict.pop("frames", None)
-    if not fm_dict.get("flows"):
-        fm_dict.pop("flows", None)
-    parts.append("---")
-    parts.append(yaml.dump(fm_dict, default_flow_style=False, allow_unicode=True).rstrip())
-    parts.append("---")
+    parts.append(_build_frontmatter(
+        file_key=page.file_key,
+        page_node_id=page.page_node_id,
+        section_node_id=None,
+        frame_descs=frame_descs,
+        flows=page.flows,
+    ))
     parts.append("")
 
     # H1 header
@@ -81,10 +123,13 @@ def render_page(page: FigmaPage, entry: PageEntry) -> str:
         parts.append(page.page_summary)
         parts.append("")
 
-    # Per-section tables (screen sections only)
+    # Per-section: optional intro + table
     for section in screen_sections:
         parts.append(f"## {section.name} (`{section.node_id}`)")
         parts.append("")
+        if section.intro:
+            parts.append(section.intro)
+            parts.append("")
         parts.append("| Screen | Node ID | Description |")
         parts.append("|--------|---------|-------------|")
         for frame in section.frames:
@@ -92,7 +137,7 @@ def render_page(page: FigmaPage, entry: PageEntry) -> str:
             parts.append(f"| {frame.name} | `{frame.node_id}` | {desc} |")
         parts.append("")
 
-    # Mermaid flowchart — from prototype reactions + LLM-inferred flows
+    # Mermaid flowchart
     if page.flows:
         node_labels: dict[str, str] = {
             frame.node_id: frame.name
@@ -112,7 +157,7 @@ def render_page(page: FigmaPage, entry: PageEntry) -> str:
         parts.append("```")
         parts.append("")
 
-    # Quick Reference table (screen sections only)
+    # Quick Reference
     parts.append("## Quick Reference")
     parts.append("")
     parts.append("| Screen | Node ID | Section | Description |")
@@ -135,41 +180,30 @@ def render_component_section(
 
     Output: figma/{file-slug}/components/{section-slug}.md
     Format: YAML frontmatter + title + variants table (no flows, no Mermaid).
+    page_hash is accepted for API compatibility but not written to the .md.
     """
     parts: list[str] = []
 
-    # Collect component descriptions for frontmatter
     frame_descs: dict[str, str] = {
         f.node_id: f.description
         for f in section.frames
         if f.description
     }
 
-    frontmatter = FigmaPageFrontmatter(
-        figmaclaw=FigmaclawMeta(
-            file_key=page.file_key,
-            page_node_id=page.page_node_id,
-            section_node_id=section.node_id,
-            page_hash=page_hash,
-        ),
-        frames=frame_descs,
-    )
-
-    fm_dict = frontmatter.model_dump(exclude_none=True)
-    if not fm_dict.get("frames"):
-        fm_dict.pop("frames", None)
-    if not fm_dict.get("flows"):
-        fm_dict.pop("flows", None)
-    parts.append("---")
-    parts.append(yaml.dump(fm_dict, default_flow_style=False, allow_unicode=True).rstrip())
-    parts.append("---")
+    parts.append(_build_frontmatter(
+        file_key=page.file_key,
+        page_node_id=page.page_node_id,
+        section_node_id=section.node_id,
+        frame_descs=frame_descs,
+        flows=[],
+    ))
     parts.append("")
 
-    # H1: file / page / section — unambiguous for cross-page lookups
+    # H1: file / page / section
     parts.append(f"# {page.file_name} / {page.page_name} / {section.name}")
     parts.append("")
 
-    # Deep link to the section node in Figma
+    # Deep link to the section node
     section_url = (
         f"https://www.figma.com/design/{page.file_key}"
         f"?node-id={section.node_id.replace(':', '-')}"

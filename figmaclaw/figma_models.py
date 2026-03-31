@@ -21,6 +21,7 @@ class FigmaSection(BaseModel):
     name: str
     frames: list[FigmaFrame] = Field(default_factory=list)
     is_component_library: bool = False
+    intro: str = ""  # LLM-generated one-sentence section intro
 
 
 class FigmaPage(BaseModel):

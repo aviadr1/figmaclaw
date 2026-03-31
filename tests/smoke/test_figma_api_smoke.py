@@ -127,9 +127,8 @@ async def test_render_and_parse_round_trip_against_real_page(api_key: str) -> No
     fm = parse_frontmatter(md)
     assert fm is not None, "parse_frontmatter returned None — frontmatter is invalid"
     assert isinstance(fm, FigmaPageFrontmatter)
-    assert fm.figmaclaw.file_key == TEST_FILE_KEY
-    assert fm.figmaclaw.page_node_id == TEST_PAGE_NODE_ID
-    assert fm.figmaclaw.page_hash == "smoketest00000000"
+    assert fm.file_key == TEST_FILE_KEY
+    assert fm.page_node_id == TEST_PAGE_NODE_ID
 
     # Body must have the H1 header and section tables
     assert "# " in md

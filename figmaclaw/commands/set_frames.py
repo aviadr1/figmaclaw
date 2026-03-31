@@ -26,9 +26,9 @@ import sys
 from pathlib import Path
 
 import click
-import yaml
 
 from figmaclaw.figma_parse import parse_frontmatter
+from figmaclaw.figma_render import _FlowDict, _FlowList, _FrontmatterDumper
 
 _PLACEHOLDER = "(no description yet)"
 _FRONTMATTER_RE = re.compile(r"^(---\n)(.+?\n)(---)", re.DOTALL)
@@ -73,6 +73,8 @@ def _apply_descriptions(md: str, descriptions: dict[str, str]) -> str:
 
 def _apply_frontmatter(md: str, descriptions: dict[str, str], flows: list[list[str]] | None) -> str:
     """Merge descriptions (and optionally flows) into the YAML frontmatter block."""
+    import yaml
+
     fm = parse_frontmatter(md)
     if fm is None:
         return md  # nothing to update
@@ -80,18 +82,19 @@ def _apply_frontmatter(md: str, descriptions: dict[str, str], flows: list[list[s
     merged_frames = dict(fm.frames)
     merged_frames.update(descriptions)
 
-    fm_data: dict = {
-        "figmaclaw": fm.figmaclaw.model_dump(exclude_none=True),
-    }
+    fm_data: dict = {"file_key": fm.file_key, "page_node_id": fm.page_node_id}
+    if fm.section_node_id:
+        fm_data["section_node_id"] = fm.section_node_id
     if merged_frames:
-        fm_data["frames"] = merged_frames
-    if flows is not None:
-        if flows:
-            fm_data["flows"] = flows
-    elif fm.flows:
-        fm_data["flows"] = fm.flows
+        fm_data["frames"] = _FlowDict(merged_frames)
+    effective_flows = flows if flows is not None else fm.flows
+    if effective_flows:
+        fm_data["flows"] = _FlowList(effective_flows)
 
-    new_fm_block = "---\n" + yaml.dump(fm_data, default_flow_style=False, allow_unicode=True).rstrip() + "\n---"
+    new_fm_body = yaml.dump(
+        fm_data, Dumper=_FrontmatterDumper, default_flow_style=False, allow_unicode=True
+    ).rstrip()
+    new_fm_block = f"---\n{new_fm_body}\n---"
     return _FRONTMATTER_RE.sub(new_fm_block, md, count=1)
 
 

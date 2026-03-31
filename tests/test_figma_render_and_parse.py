@@ -2,7 +2,8 @@
 
 INVARIANTS:
 - render_page produces YAML frontmatter with FigmaPageFrontmatter schema
-- Frontmatter carries file_key, page_node_id, page_hash, and frame descriptions
+- Frontmatter carries file_key, page_node_id, and frame descriptions (flat schema)
+- page_hash is NOT in frontmatter (manifest only)
 - Body has H1 header, Figma URL, section tables, optional Mermaid, Quick Reference
 - Section tables list all frames with node IDs
 - Mermaid block absent when no flow edges
@@ -21,6 +22,7 @@ from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection
 from figmaclaw.figma_render import render_page
 from figmaclaw.figma_parse import parse_frame_descriptions, parse_frontmatter, parse_page_metadata
 from figmaclaw.figma_sync_state import PageEntry
+import yaml
 
 
 def _make_page(
@@ -71,14 +73,13 @@ def test_render_page_frontmatter_is_valid_figmapagefrontmatter():
 
 
 def test_render_page_frontmatter_carries_identity_fields():
-    """INVARIANT: Frontmatter contains file_key, page_node_id, page_hash."""
+    """INVARIANT: Frontmatter contains file_key and page_node_id (flat schema, no page_hash)."""
     page = _make_page()
     md = render_page(page, _make_entry("deadbeef12345678"))
     fm = parse_frontmatter(md)
     assert fm is not None
-    assert fm.figmaclaw.file_key == "hOV4QM"
-    assert fm.figmaclaw.page_node_id == "7741:45837"
-    assert fm.figmaclaw.page_hash == "deadbeef12345678"
+    assert fm.file_key == "hOV4QM"
+    assert fm.page_node_id == "7741:45837"
 
 
 def test_render_page_frontmatter_carries_frame_descriptions():
@@ -188,19 +189,18 @@ def test_render_page_has_quick_reference_table():
 # --- figma_parse ---
 
 def test_parse_frontmatter_from_rendered_output():
-    """INVARIANT: parse_frontmatter recovers full FigmaPageFrontmatter from render_page output."""
+    """INVARIANT: parse_frontmatter recovers FigmaPageFrontmatter (flat schema) from render_page output."""
     page = _make_page()
     entry = _make_entry("deadbeef12345678")
     md = render_page(page, entry)
     fm = parse_frontmatter(md)
     assert fm is not None
-    assert fm.figmaclaw.file_key == "hOV4QM"
-    assert fm.figmaclaw.page_node_id == "7741:45837"
-    assert fm.figmaclaw.page_hash == "deadbeef12345678"
+    assert fm.file_key == "hOV4QM"
+    assert fm.page_node_id == "7741:45837"
 
 
 def test_parse_page_metadata_from_rendered_output():
-    """INVARIANT: parse_page_metadata recovers FigmaclawMeta written by render_page."""
+    """INVARIANT: parse_page_metadata returns FigmaPageFrontmatter with file_key and page_node_id."""
     page = _make_page()
     entry = _make_entry("deadbeef12345678")
     md = render_page(page, entry)
@@ -208,13 +208,39 @@ def test_parse_page_metadata_from_rendered_output():
     assert meta is not None
     assert meta.file_key == "hOV4QM"
     assert meta.page_node_id == "7741:45837"
-    assert meta.page_hash == "deadbeef12345678"
 
 
 def test_parse_page_metadata_returns_none_for_missing_frontmatter():
     """INVARIANT: parse_page_metadata returns None when no figmaclaw frontmatter found."""
     md = "# Just a plain markdown file\n\nNo metadata here."
     assert parse_page_metadata(md) is None
+
+
+def test_render_page_frontmatter_is_compact_flow_style():
+    """INVARIANT: frames and flows are single-line flow style in frontmatter, not multi-line block."""
+    frames = [FigmaFrame(node_id="11:1", name="welcome", description="Welcome screen.")]
+    section = FigmaSection(node_id="10:1", name="onboarding", frames=frames)
+    page = _make_page(sections=[section], flows=[("11:1", "11:2")])
+    md = render_page(page, _make_entry())
+    fm_block = md.split("---\n")[1]  # content between first two ---
+    lines = fm_block.strip().splitlines()
+    frames_lines = [l for l in lines if l.startswith("frames:")]
+    flows_lines = [l for l in lines if l.startswith("flows:")]
+    assert len(frames_lines) == 1, "frames must be on a single line"
+    assert len(flows_lines) == 1, "flows must be on a single line"
+    # Verify the frontmatter round-trips via yaml.safe_load
+    data = yaml.safe_load(fm_block)
+    assert data["frames"]["11:1"] == "Welcome screen."
+    assert data["flows"] == [["11:1", "11:2"]]
+
+
+def test_render_page_frontmatter_no_page_hash():
+    """INVARIANT: page_hash is NOT stored in the .md frontmatter (manifest only)."""
+    page = _make_page()
+    md = render_page(page, _make_entry("deadbeef12345678"))
+    fm_block = md.split("---\n")[1]
+    assert "page_hash" not in fm_block
+    assert "deadbeef" not in fm_block
 
 
 def test_parse_frame_descriptions_recovers_descriptions():
@@ -323,19 +349,18 @@ def test_render_component_section_frontmatter_has_section_node_id():
     md = render_component_section(section, page, "deadbeef12345678")
     fm = parse_frontmatter(md)
     assert fm is not None
-    assert fm.figmaclaw.section_node_id == "20:1"
+    assert fm.section_node_id == "20:1"
 
 
 def test_render_component_section_frontmatter_carries_identity_fields():
-    """INVARIANT: Component frontmatter carries file_key, page_node_id, page_hash."""
+    """INVARIANT: Component frontmatter carries file_key and page_node_id (flat schema, no page_hash)."""
     from figmaclaw.figma_render import render_component_section
     section, page = _make_component_section()
     md = render_component_section(section, page, "deadbeef12345678")
     fm = parse_frontmatter(md)
     assert fm is not None
-    assert fm.figmaclaw.file_key == "AZswXf"
-    assert fm.figmaclaw.page_node_id == "5678:1234"
-    assert fm.figmaclaw.page_hash == "deadbeef12345678"
+    assert fm.file_key == "AZswXf"
+    assert fm.page_node_id == "5678:1234"
 
 
 def test_render_component_section_title_includes_page_and_section():

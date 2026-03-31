@@ -39,6 +39,7 @@ class PageEnrichment(BaseModel):
 
     frame_descriptions: dict[str, str] = Field(default_factory=dict)  # {node_id: description}
     page_summary: str = ""
+    section_intros: dict[str, str] = Field(default_factory=dict)  # {section_name: intro sentence}
     inferred_flows: list[tuple[str, str]] = Field(default_factory=list)
 
 
@@ -92,6 +93,10 @@ def _build_prompt(page: FigmaPage) -> str:
         f"Return JSON only, no other text:\n"
         f"{{\n"
         f'  "page_summary": "<1-2 sentences describing the whole page purpose and scope>",\n'
+        f'  "section_intros": {{\n'
+        f'    "<section_name>": "<1 sentence describing what this section covers>",\n'
+        f'    ...\n'
+        f'  }},\n'
         f'  "frames": {{\n'
         f'    "<node_id>": "<≤20 word description: what it shows and what makes it distinct>",\n'
         f'    ...\n'
@@ -148,6 +153,11 @@ async def generate_page_enrichment(
 
     page_summary: str = str(data.get("page_summary", ""))
 
+    section_intros: dict[str, str] = {}
+    raw_intros = data.get("section_intros", {})
+    if isinstance(raw_intros, dict):
+        section_intros = {k: str(v) for k, v in raw_intros.items()}
+
     inferred_flows: list[tuple[str, str]] = []
     raw_flows = data.get("flows", [])
     if isinstance(raw_flows, list):
@@ -158,6 +168,7 @@ async def generate_page_enrichment(
     return PageEnrichment(
         frame_descriptions=frame_descriptions,
         page_summary=page_summary,
+        section_intros=section_intros,
         inferred_flows=inferred_flows,
     )
 
@@ -198,7 +209,7 @@ async def enrich_page_with_descriptions(
 
     enrichment = await _generate_fn(client, page)
 
-    # Merge frame descriptions (preserve existing, fill missing)
+    # Merge frame descriptions (preserve existing, fill missing) and section intros
     new_sections = []
     for section in page.sections:
         new_frames = [
@@ -207,7 +218,8 @@ async def enrich_page_with_descriptions(
             })
             for frame in section.frames
         ]
-        new_sections.append(section.model_copy(update={"frames": new_frames}))
+        new_intro = section.intro or enrichment.section_intros.get(section.name, "")
+        new_sections.append(section.model_copy(update={"frames": new_frames, "intro": new_intro}))
 
     # Merge flows: prototype reactions first, then inferred (deduped)
     existing_flow_set = set(page.flows)
