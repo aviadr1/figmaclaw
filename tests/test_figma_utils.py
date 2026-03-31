@@ -5,19 +5,15 @@ INVARIANTS:
 - parse_team_id_from_url returns the input unchanged for bare IDs
 - parse_since converts duration strings into past UTC datetimes
 - parse_since raises ValueError for unrecognised formats
-- make_anthropic_client returns None when ANTHROPIC_API_KEY is absent
-- make_anthropic_client returns an AsyncAnthropic instance when key is set
 """
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
-from unittest.mock import patch
 
 import pytest
 
-from figmaclaw.figma_utils import make_anthropic_client, parse_since, parse_team_id_from_url
+from figmaclaw.figma_utils import parse_since, parse_team_id_from_url
 
 
 class TestParseTeamIdFromUrl:
@@ -79,19 +75,3 @@ class TestParseSince:
         """INVARIANT: A bare number without a unit suffix raises ValueError."""
         with pytest.raises(ValueError):
             parse_since("30")
-
-
-class TestMakeAnthropicClient:
-    def test_returns_none_when_key_not_set(self):
-        """INVARIANT: No ANTHROPIC_API_KEY → returns None (no client created)."""
-        with patch.dict(os.environ, {}, clear=True):
-            os.environ.pop("ANTHROPIC_API_KEY", None)
-            result = make_anthropic_client()
-        assert result is None
-
-    def test_returns_client_when_key_set(self):
-        """INVARIANT: ANTHROPIC_API_KEY set → returns an AsyncAnthropic instance."""
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-ant-test"}):
-            result = make_anthropic_client()
-        assert result is not None
-        assert type(result).__name__ == "AsyncAnthropic"

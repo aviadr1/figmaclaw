@@ -886,7 +886,7 @@ async def test_pull_cmd_skips_unchanged_files_via_listing(tmp_path: Path):
     mock_client.get_file_meta = AsyncMock()
 
     with patch.object(FigmaClient, "__new__", return_value=mock_client):
-        await _run("key", tmp_path, None, False, True, None, False, 10, "team123", "all")
+        await _run("key", tmp_path, None, False, None, False, 10, "team123", "all")
 
     mock_client.get_file_meta.assert_not_called()
 
@@ -912,7 +912,7 @@ async def test_pull_cmd_pulls_files_whose_listing_last_modified_changed(tmp_path
     })
 
     with patch.object(FigmaClient, "__new__", return_value=mock_client):
-        await _run("key", tmp_path, None, False, True, None, False, 10, "team123", "all")
+        await _run("key", tmp_path, None, False, None, False, 10, "team123", "all")
 
     mock_client.get_file_meta.assert_called_once_with("fileA")
 
@@ -934,7 +934,7 @@ async def test_pull_cmd_skips_figjam_files_not_in_listing(tmp_path: Path):
     mock_client.get_file_meta = AsyncMock()
 
     with patch.object(FigmaClient, "__new__", return_value=mock_client):
-        await _run("key", tmp_path, None, False, True, None, False, 10, "team123", "all")
+        await _run("key", tmp_path, None, False, None, False, 10, "team123", "all")
 
     mock_client.get_file_meta.assert_not_called()
 
@@ -964,7 +964,7 @@ async def test_pull_cmd_stamps_listing_last_modified_after_failed_get_file_meta(
 
     with patch.object(FigmaClient, "__new__", return_value=mock_client):
         with patch("figmaclaw.commands.pull.pull_file", mock_pull):
-            await _run("key", tmp_path, None, False, True, None, False, 10, "team123", "all")
+            await _run("key", tmp_path, None, False, None, False, 10, "team123", "all")
 
     # Manifest should now have the listing's last_modified stamped in
     reloaded = FigmaSyncState(tmp_path)

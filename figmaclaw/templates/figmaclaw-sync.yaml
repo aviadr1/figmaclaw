@@ -40,7 +40,6 @@ jobs:
         continue-on-error: true  # partial progress is committed; final push runs regardless
         env:
           FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           FIGMA_TEAM_ID: ${{ vars.FIGMA_TEAM_ID }}
         run: |
           FORCE_FLAG=""

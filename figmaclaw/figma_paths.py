@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 
 def slugify(text: str, fallback: str = "untitled") -> str:
@@ -24,6 +25,16 @@ def page_path(file_slug: str, page_slug: str) -> str:
     Example: figma/web-app/pages/onboarding-7741-45837.md
     """
     return f"figma/{file_slug}/pages/{page_slug}.md"
+
+
+def screenshot_cache_path(repo_dir: str | Path, file_key: str, node_id: str) -> Path:
+    """Return the local cache path for a frame screenshot.
+
+    Saves under .figma-cache/screenshots/{file_key}/{node_id}.png
+    Colons in node IDs are replaced with hyphens for filesystem safety.
+    """
+    safe_node_id = node_id.replace(":", "-")
+    return Path(repo_dir) / ".figma-cache" / "screenshots" / file_key / f"{safe_node_id}.png"
 
 
 def component_path(file_slug: str, section_slug: str) -> str:

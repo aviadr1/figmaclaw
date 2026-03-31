@@ -11,28 +11,27 @@ import click
 
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_sync_state import FigmaSyncState
-from figmaclaw.figma_utils import make_anthropic_client, parse_since
+from figmaclaw.figma_utils import parse_since
 from figmaclaw.pull_logic import PullResult, pull_file
 
 
 @click.command("pull")
 @click.option("--file-key", "file_key", default=None, help="Pull only this file key.")
 @click.option("--force", is_flag=True, help="Regenerate all pages even if hash is unchanged.")
-@click.option("--no-llm", is_flag=True, help="Skip LLM description generation.")
 @click.option("--max-pages", "max_pages", default=None, type=int, help="Global page budget per run (batch loop mode).")
 @click.option("--auto-commit", "auto_commit", is_flag=True, help="git commit after each page. CI should do a final git push.")
 @click.option("--push-every", "push_every", default=10, type=int, show_default=True, help="Push every N commits when --auto-commit is set.")
 @click.option("--team-id", "team_id", default=None, envvar="FIGMA_TEAM_ID", help="Figma team ID. Enables fast listing pre-filter and auto-discovery of new files.")
 @click.option("--since", "since", default="3m", show_default=True, help="When --team-id is set, only track files modified within this window (e.g. 3m, 7d, all).")
 @click.pass_context
-def pull_cmd(ctx: click.Context, file_key: str | None, force: bool, no_llm: bool, max_pages: int | None, auto_commit: bool, push_every: int, team_id: str | None, since: str) -> None:
+def pull_cmd(ctx: click.Context, file_key: str | None, force: bool, max_pages: int | None, auto_commit: bool, push_every: int, team_id: str | None, since: str) -> None:
     """Pull all tracked Figma files and write changed pages to disk."""
     repo_dir = Path(ctx.obj["repo_dir"])
     api_key = os.environ.get("FIGMA_API_KEY", "")
     if not api_key:
         raise click.UsageError("FIGMA_API_KEY environment variable is not set.")
 
-    asyncio.run(_run(api_key, repo_dir, file_key, force, no_llm, max_pages, auto_commit, push_every, team_id, since))
+    asyncio.run(_run(api_key, repo_dir, file_key, force, max_pages, auto_commit, push_every, team_id, since))
 
 
 def _git_commit_page(repo_dir: Path, page_label: str) -> bool:
@@ -127,7 +126,6 @@ async def _run(
     repo_dir: Path,
     file_key: str | None,
     force: bool,
-    no_llm: bool,
     max_pages: int | None,
     auto_commit: bool,
     push_every: int,
@@ -136,10 +134,6 @@ async def _run(
 ) -> None:
     state = FigmaSyncState(repo_dir)
     state.load()
-
-    anthropic_client = make_anthropic_client() if not no_llm else None
-    if anthropic_client is None and not no_llm:
-        click.echo("Note: ANTHROPIC_API_KEY not set — skipping LLM description generation.")
 
     commit_count = 0
 
@@ -206,7 +200,6 @@ async def _run(
                 result = await pull_file(
                     client, key, state, repo_dir,
                     force=force,
-                    anthropic_client=anthropic_client,
                     max_pages=pages_budget,
                     on_page_written=on_page_written,
                 )

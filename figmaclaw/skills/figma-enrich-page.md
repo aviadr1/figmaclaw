@@ -4,25 +4,22 @@ description: Enrich a figmaclaw Figma page .md file with frame descriptions, pag
 
 # figma-enrich-page
 
-Enrich a figmaclaw `.md` file with LLM-generated descriptions for every frame, a page summary, and inferred screen flow edges.
+Enrich a figmaclaw `.md` file with descriptions for every frame, a page summary, and inferred screen flow edges.
 
 ## When to use
 
 - A page under `figma/*/pages/` has `(no description yet)` placeholders
-- The ANTHROPIC_API_KEY quota was exhausted during the automated pull
-- You want to re-generate descriptions for a specific page without a full pull
+- You want to re-sync descriptions for a specific page without a full pull
 
 ## Preferred approach — use the CLI
 
-Run `figmaclaw enrich` directly. It handles everything: fetches the page from Figma REST API, merges existing descriptions, calls Claude, writes the file back, and updates the manifest.
+Run `figmaclaw enrich` directly. It handles everything: fetches the page from Figma REST API, merges existing descriptions, writes the file back, and updates the manifest.
 
 ```bash
 figmaclaw enrich figma/web-app/pages/<page-slug>.md
 ```
 
 Options:
-- `--force` — re-generate all descriptions, not just missing ones
-- `--no-llm` — re-fetch and re-render only (no Claude call)
 - `--auto-commit` — git commit the result
 
 ### What it reads from Figma
@@ -91,7 +88,7 @@ git push
 
 **On frame names:** Even when names are descriptive (e.g., `captions / widget highlighted`), screenshots are still needed for useful descriptions. Names tell you the state variant but not what UI elements are present, how the layout differs from siblings, or whether the name accurately reflects what's rendered.
 
-**On flowcharts:** Screenshots don't tell you flows. The Figma API node tree includes a `reactions` field on each frame — these are the prototype arrows (click/hover interactions) connecting frames. That's the authoritative source. `figmaclaw enrich` extracts these automatically. The LLM supplements with *inferred* flows from name patterns (e.g., `default` → `hover` → `active`). If a page has no prototype reactions, no Mermaid block is generated — that's correct behavior, not a gap.
+**On flowcharts:** Screenshots don't tell you flows. The Figma API node tree includes a `reactions` field on each frame — these are the prototype arrows (click/hover interactions) connecting frames. That's the authoritative source. `figmaclaw enrich` extracts these automatically. If a page has no prototype reactions, no Mermaid block is generated — that's correct behavior, not a gap.
 
 ## Notes
 

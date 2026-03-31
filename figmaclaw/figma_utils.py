@@ -2,18 +2,8 @@
 
 from __future__ import annotations
 
-import os
 import re
 from datetime import datetime, timedelta, timezone
-
-
-def make_anthropic_client() -> object | None:
-    """Create an AsyncAnthropic client if ANTHROPIC_API_KEY is set, else None."""
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        return None
-    from anthropic import AsyncAnthropic
-    return AsyncAnthropic(api_key=api_key)
 
 
 def parse_team_id_from_url(url_or_id: str) -> str:

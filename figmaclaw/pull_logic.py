@@ -3,7 +3,7 @@
 Three-level short-circuit:
 1. File-level: compare version + lastModified — skip entire file if unchanged
 2. Page-level: compare structural hash — skip page if unchanged
-3. Frame-level: preserve existing descriptions for unchanged frames (LLM idempotency)
+3. Frame-level: preserve existing descriptions for unchanged frames
 
 Output:
 - Screen sections → figma/{file-slug}/pages/{page-slug}.md
@@ -11,7 +11,7 @@ Output:
   (one .md per section, not per page, so components are individually addressable)
 
 Resumability: manifest is saved after every successfully written page so that
-a timeout, crash, or LLM quota error never causes full re-work on the next run.
+a timeout or crash never causes full re-work on the next run.
 
 Parallelism: page nodes for a single file are fetched concurrently (asyncio.gather)
 when no max_pages limit is set. With a limit, pages are fetched sequentially so we
@@ -33,7 +33,6 @@ from pydantic import BaseModel, Field
 
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_hash import compute_page_hash
-from figmaclaw.figma_llm import enrich_page_with_descriptions
 from figmaclaw.figma_models import FigmaPage, FigmaSection, from_page_node
 from figmaclaw.figma_parse import parse_flows, parse_frame_descriptions
 from figmaclaw.figma_paths import component_path, page_path, slugify
@@ -51,7 +50,6 @@ class PullResult(BaseModel):
     pages_written: int = 0
     pages_skipped: int = 0
     pages_errored: int = 0
-    llm_errors: int = 0
     md_paths: list[str] = Field(default_factory=list)
     component_sections_written: int = 0
     component_paths: list[str] = Field(default_factory=list)
@@ -108,17 +106,6 @@ def _merge_existing(page: FigmaPage, existing_descs: dict[str, str], existing_fl
     return page.model_copy(update={"sections": new_sections, "flows": merged_flows})
 
 
-async def _enrich_safe(anthropic_client: object, page: FigmaPage, result: PullResult) -> FigmaPage:
-    """Call LLM enrichment, catching quota/API errors gracefully."""
-    try:
-        enriched = await enrich_page_with_descriptions(anthropic_client, page)  # type: ignore[arg-type]
-        return enriched
-    except Exception as exc:
-        log.warning("LLM enrichment failed for page %r: %s — writing with placeholders", page.page_name, exc)
-        result.llm_errors += 1
-        return page
-
-
 async def pull_file(
     client: FigmaClient,
     file_key: str,
@@ -126,7 +113,6 @@ async def pull_file(
     repo_root: Path,
     *,
     force: bool = False,
-    anthropic_client: object | None = None,
     max_pages: int | None = None,
     progress: Callable[[str], None] | None = None,
     on_page_written: Callable[[str, list[str]], None] | None = None,
@@ -256,7 +242,7 @@ async def pull_file(
             page = from_page_node(page_node, file_key=file_key, file_name=file_name)
             page = page.model_copy(update={"page_slug": page_slug, "version": api_version, "last_modified": api_last_modified})
 
-            # Level 3: preserve existing descriptions from all existing .mds before LLM runs
+            # Level 3: preserve existing descriptions from all existing .mds
             all_existing_descs: dict[str, str] = {}
             existing_flows: list[tuple[str, str]] = []
 
@@ -276,9 +262,6 @@ async def pull_file(
                         all_existing_descs.update(parse_frame_descriptions(comp_md.read_text()))
 
             page = _merge_existing(page, all_existing_descs, existing_flows)
-
-            if anthropic_client is not None:
-                page = await _enrich_safe(anthropic_client, page, result)
 
             screen_sections = [s for s in page.sections if not s.is_component_library]
             component_sections = [s for s in page.sections if s.is_component_library]

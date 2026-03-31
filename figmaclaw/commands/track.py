@@ -9,7 +9,6 @@ from pathlib import Path
 import click
 
 from figmaclaw.figma_client import FigmaClient
-from figmaclaw.figma_utils import make_anthropic_client
 from figmaclaw.figma_sync_state import FigmaSyncState
 from figmaclaw.pull_logic import pull_file
 
@@ -43,8 +42,7 @@ async def _run(api_key: str, repo_dir: Path, file_key: str, no_pull: bool) -> No
 
         if not no_pull:
             click.echo("Running initial pull...")
-            anthropic_client = make_anthropic_client()
-            result = await pull_file(client, file_key, state, repo_dir, force=True, anthropic_client=anthropic_client)
+            result = await pull_file(client, file_key, state, repo_dir, force=True)
             click.echo(f"Wrote {result.pages_written} page(s)")
             for path in result.md_paths:
                 click.echo(f"  → {path}")

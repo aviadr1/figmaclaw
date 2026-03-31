@@ -98,7 +98,6 @@ def render_page(page: FigmaPage, entry: PageEntry) -> str:
         frame.node_id: frame.description
         for section in screen_sections
         for frame in section.frames
-        if frame.description
     }
 
     parts.append(_build_frontmatter(
@@ -187,7 +186,6 @@ def render_component_section(
     frame_descs: dict[str, str] = {
         f.node_id: f.description
         for f in section.frames
-        if f.description
     }
 
     parts.append(_build_frontmatter(

@@ -95,6 +95,34 @@ class FigmaClient:
         result: list[dict[str, Any]] = data.get("files", [])
         return result
 
+    async def get_image_urls(
+        self,
+        file_key: str,
+        node_ids: list[str],
+        *,
+        scale: float = 0.5,
+        format: str = "png",
+    ) -> dict[str, str | None]:
+        """GET /v1/images/{file_key}?ids=... — batch image export URLs.
+
+        Returns {node_id: url_or_none}. The URL is a temporary S3 link — download promptly.
+        Figma sometimes returns IDs with "-" instead of ":" — normalised back to ":" on return.
+        """
+        data = await self._get(
+            f"/v1/images/{file_key}",
+            params={"ids": ",".join(node_ids), "scale": str(scale), "format": format},
+        )
+        raw: dict[str, str | None] = data.get("images", {})
+        return {k.replace("-", ":"): v for k, v in raw.items()}
+
+    async def download_url(self, url: str) -> bytes:
+        """Download an arbitrary URL (e.g. Figma S3 image export). Not a Figma API endpoint."""
+        client = await self._ensure_client()
+        response = await client.get(url, follow_redirects=True)
+        response.raise_for_status()
+        content: bytes = response.content
+        return content
+
     async def list_webhooks(self, team_id: str) -> list[dict[str, Any]]:
         """GET /v2/teams/{team_id}/webhooks — list webhooks for a team."""
         data = await self._get(f"/v2/teams/{team_id}/webhooks")

@@ -15,13 +15,9 @@ detects this and promotes the nested fields to the flat top-level schema.
 
 from __future__ import annotations
 
-import re
-
-import yaml
+import frontmatter
 
 from figmaclaw.figma_frontmatter import FigmaPageFrontmatter
-
-_FRONTMATTER_RE = re.compile(r"^---\n(.+?)\n---", re.DOTALL)
 
 
 def parse_frontmatter(md: str) -> FigmaPageFrontmatter | None:
@@ -30,11 +26,13 @@ def parse_frontmatter(md: str) -> FigmaPageFrontmatter | None:
     Returns None if no frontmatter is found or it doesn't look like a figmaclaw file.
     Handles both the current flat schema and the legacy nested `figmaclaw:` schema.
     """
-    match = _FRONTMATTER_RE.match(md)
-    if not match:
+    try:
+        post = frontmatter.loads(md)
+    except Exception:
         return None
-    data = yaml.safe_load(match.group(1))
-    if not isinstance(data, dict):
+
+    data = post.metadata
+    if not isinstance(data, dict) or not data:
         return None
 
     # New flat schema: has top-level file_key

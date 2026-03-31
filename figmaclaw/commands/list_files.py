@@ -51,7 +51,6 @@ async def _run(
     track: bool,
     track_only: bool,
 ) -> None:
-    from figmaclaw.figma_utils import make_anthropic_client
     from figmaclaw.pull_logic import pull_file
 
     state = FigmaSyncState(repo_dir)
@@ -95,9 +94,8 @@ async def _run(
 
                     if track:  # --track does immediate pull; --track-only defers to pull loop
                         try:
-                            anthropic_client = make_anthropic_client()
                             result = await pull_file(
-                                client, file_key, state, repo_dir, force=True, anthropic_client=anthropic_client
+                                client, file_key, state, repo_dir, force=True
                             )
                             state.save()
                             click.echo(f"  → wrote {result.pages_written} page(s)")

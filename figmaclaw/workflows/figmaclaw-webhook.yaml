@@ -24,5 +24,4 @@ jobs:
       webhook_payload: ${{ toJson(github.event.client_payload) }}
     secrets:
       FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       FIGMA_WEBHOOK_SECRET: ${{ secrets.FIGMA_WEBHOOK_SECRET }}

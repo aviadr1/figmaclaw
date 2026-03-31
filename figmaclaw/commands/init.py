@@ -46,7 +46,7 @@ def init_cmd(ctx: click.Context, workflows_dir: str, overwrite: bool) -> None:
 
     if copied:
         click.echo(f"\nCopied {len(copied)} workflow(s). Next steps:")
-        click.echo("  1. Set GitHub secrets: FIGMA_API_KEY, ANTHROPIC_API_KEY, FIGMA_WEBHOOK_SECRET")
+        click.echo("  1. Set GitHub secrets: FIGMA_API_KEY, FIGMA_WEBHOOK_SECRET")
         click.echo("  2. Discover files:  figmaclaw list <team-id-or-url> --since 3m")
         click.echo("  3. Track a file:    figmaclaw track <file-key>")
         click.echo("  4. Commit and push .github/workflows/ and .figma-sync/")

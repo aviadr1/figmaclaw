@@ -35,4 +35,3 @@ jobs:
       figma_team_id: ${{ vars.FIGMA_TEAM_ID }}
     secrets:
       FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
