@@ -9,6 +9,10 @@ on:
         description: 'Force full regeneration of all pages'
         required: false
         default: 'false'
+      since:
+        description: 'Discover files modified within this window (e.g. 3m, 7d, 1y, all). Default: 3m'
+        required: false
+        default: '3m'
 
 jobs:
   sync:
@@ -31,6 +35,26 @@ jobs:
         run: |
           git config user.name "figmaclaw[bot]"
           git config user.email "figmaclaw[bot]@users.noreply.github.com"
+
+      - name: Discover and track new Figma files
+        env:
+          FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+          FIGMA_TEAM_ID: ${{ vars.FIGMA_TEAM_ID }}
+        run: |
+          SINCE="${{ github.event.inputs.since }}"
+          if [ -z "$SINCE" ]; then
+            SINCE="3m"
+          fi
+          figmaclaw list "$FIGMA_TEAM_ID" --since "$SINCE" --track-only | tee /tmp/figmaclaw-discover.txt || true
+
+          # Commit manifest if new files were tracked
+          git add .figma-sync/
+          if ! git diff --cached --quiet; then
+            NEWLY=$(grep '^NEWLY_TRACKED:' /tmp/figmaclaw-discover.txt | head -1 | sed 's/^NEWLY_TRACKED://')
+            git commit -m "sync: figmaclaw — tracking ${NEWLY:-?} new file(s)"
+            git push
+            git pull --no-rebase
+          fi
 
       - name: Pull Figma files (checkpointed loop)
         env:

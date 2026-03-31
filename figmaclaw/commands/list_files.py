@@ -20,11 +20,12 @@ from figmaclaw.figma_utils import parse_since, parse_team_id_from_url
     "--since",
     "since",
     default=None,
-    help="Only show files modified within this window (e.g. '3m', '7d', '1y').",
+    help="Only show files modified within this window (e.g. '3m', '7d', '1y', 'all').",
 )
-@click.option("--track", is_flag=True, help="Track all listed files (run initial pull).")
+@click.option("--track", is_flag=True, help="Track all listed files and run initial pull.")
+@click.option("--track-only", "track_only", is_flag=True, help="Track all listed files without pulling (pull loop handles it).")
 @click.pass_context
-def list_cmd(ctx: click.Context, team_id_or_url: str, since: str | None, track: bool) -> None:
+def list_cmd(ctx: click.Context, team_id_or_url: str, since: str | None, track: bool, track_only: bool) -> None:
     """List Figma files for a team, optionally filtered by last-modified date."""
     repo_dir = Path(ctx.obj["repo_dir"])
     api_key = os.environ.get("FIGMA_API_KEY", "")
@@ -39,7 +40,7 @@ def list_cmd(ctx: click.Context, team_id_or_url: str, since: str | None, track: 
         except ValueError as exc:
             raise click.UsageError(str(exc)) from exc
 
-    asyncio.run(_run(api_key, repo_dir, team_id, since_dt, track))
+    asyncio.run(_run(api_key, repo_dir, team_id, since_dt, track, track_only))
 
 
 async def _run(
@@ -48,6 +49,7 @@ async def _run(
     team_id: str,
     since_dt: datetime | None,
     track: bool,
+    track_only: bool,
 ) -> None:
     from figmaclaw.figma_utils import make_anthropic_client
     from figmaclaw.pull_logic import pull_file
@@ -59,6 +61,7 @@ async def _run(
     async with FigmaClient(api_key) as client:
         projects = await client.list_team_projects(team_id)
         shown = 0
+        newly_tracked = 0
 
         for project in projects:
             project_name: str = project.get("name", "")
@@ -83,19 +86,25 @@ async def _run(
                 click.echo(f"{file_key}  {file_name!r}  ({project_name})  {date_str}{status}")
                 shown += 1
 
-                if track and file_key not in tracked:
+                if (track or track_only) and file_key not in tracked:
                     meta = await client.get_file_meta(file_key)
                     file_name_full: str = meta.get("name", file_key)
                     state.add_tracked_file(file_key, file_name_full)
                     state.save()
                     click.echo(f"  → now tracking {file_name_full!r}")
-                    anthropic_client = make_anthropic_client()
-                    result = await pull_file(
-                        client, file_key, state, repo_dir, force=True, anthropic_client=anthropic_client
-                    )
-                    state.save()
-                    click.echo(f"  → wrote {result.pages_written} page(s)")
                     tracked.add(file_key)
+                    newly_tracked += 1
+
+                    if track:  # --track does immediate pull; --track-only defers to pull loop
+                        anthropic_client = make_anthropic_client()
+                        result = await pull_file(
+                            client, file_key, state, repo_dir, force=True, anthropic_client=anthropic_client
+                        )
+                        state.save()
+                        click.echo(f"  → wrote {result.pages_written} page(s)")
+
+        if newly_tracked:
+            click.echo(f"NEWLY_TRACKED:{newly_tracked}")
 
     if shown == 0:
         click.echo("No files found matching the criteria.")
