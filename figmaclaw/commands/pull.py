@@ -45,17 +45,33 @@ async def _run(api_key: str, repo_dir: Path, file_key: str | None, force: bool, 
     if anthropic_client is None and not no_llm:
         click.echo("Note: ANTHROPIC_API_KEY not set — skipping LLM description generation.")
 
+    # max_pages is a global budget across all files in this batch run
+    pages_budget = max_pages
+    has_more_global = False
+
     async with FigmaClient(api_key) as client:
         for key in keys:
             if key not in state.manifest.tracked_files:
                 click.echo(f"File key {key!r} is not tracked. Run 'figmaclaw track {key}' first.")
                 continue
+
+            # Stop if global budget exhausted
+            if max_pages is not None and pages_budget is not None and pages_budget <= 0:
+                has_more_global = True
+                break
+
             try:
-                result = await pull_file(client, key, state, repo_dir, force=force, anthropic_client=anthropic_client, max_pages=max_pages)
+                result = await pull_file(client, key, state, repo_dir, force=force, anthropic_client=anthropic_client, max_pages=pages_budget)
             except Exception as exc:
                 click.echo(f"{key}: error — {exc} (skipping)")
                 continue
             all_results.append(result)
+
+            if max_pages is not None and pages_budget is not None:
+                pages_budget -= result.pages_written
+            if result.has_more:
+                has_more_global = True
+
             if result.skipped_file:
                 click.echo(f"{key}: unchanged (skipped)")
             else:
@@ -80,7 +96,7 @@ async def _run(api_key: str, repo_dir: Path, file_key: str | None, force: bool, 
         click.echo(f"COMMIT_MSG:sync: figmaclaw pull — {', '.join(parts)} updated")
 
     # Signal to CI loop whether more pages remain (HAS_MORE:true → loop continues)
-    if any(r.has_more for r in all_results):
+    if has_more_global:
         click.echo("HAS_MORE:true")
 
 
