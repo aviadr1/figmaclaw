@@ -162,7 +162,9 @@ async def _run(
     async with FigmaClient(api_key) as client:
         # Fast listing pre-filter: one listing pass replaces N individual get_file_meta
         # calls for unchanged files. Also handles auto-discovery when team_id is set.
-        listing_last_modified: dict[str, str] = {}
+        # None means "no listing available" (team_id not set); {} means "listing ran but
+        # returned no files" — both are handled correctly by the is not None check below.
+        listing_last_modified: dict[str, str] | None = None
         if team_id and not file_key:
             listing_last_modified = await _listing_prefilter(client, team_id, state, since)
             state.save()  # persist any newly tracked files before pulling
@@ -182,12 +184,18 @@ async def _run(
                 has_more_global = True
                 break
 
-            # Listing pre-filter: skip get_file_meta entirely if last_modified unchanged
-            if not force and listing_last_modified:
+            # Listing pre-filter: skip get_file_meta entirely when the listing tells us
+            # the file hasn't changed (or isn't reachable at all).
+            #   - listing_lm is None  → file not in team listing (e.g. FigJam boards);
+            #     skip — if it's not reachable via the listing, it can't have changed
+            #   - listing_lm == stored → last_modified unchanged; skip
+            #   - listing_lm != stored → file changed; proceed to get_file_meta
+            if not force and listing_last_modified is not None:
                 listing_lm = listing_last_modified.get(key)
-                stored = state.manifest.files.get(key)
-                if listing_lm and stored and stored.last_modified == listing_lm:
-                    continue  # unchanged — no API call needed
+                stored_entry = state.manifest.files.get(key)
+                stored_lm = stored_entry.last_modified if stored_entry else ""
+                if listing_lm is None or stored_lm == listing_lm:
+                    continue
 
             try:
                 result = await pull_file(
