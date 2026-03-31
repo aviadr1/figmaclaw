@@ -87,21 +87,22 @@ async def _run(
                 shown += 1
 
                 if (track or track_only) and file_key not in tracked:
-                    meta = await client.get_file_meta(file_key)
-                    file_name_full: str = meta.get("name", file_key)
-                    state.add_tracked_file(file_key, file_name_full)
+                    state.add_tracked_file(file_key, file_name)
                     state.save()
-                    click.echo(f"  → now tracking {file_name_full!r}")
+                    click.echo(f"  → now tracking {file_name!r}")
                     tracked.add(file_key)
                     newly_tracked += 1
 
                     if track:  # --track does immediate pull; --track-only defers to pull loop
-                        anthropic_client = make_anthropic_client()
-                        result = await pull_file(
-                            client, file_key, state, repo_dir, force=True, anthropic_client=anthropic_client
-                        )
-                        state.save()
-                        click.echo(f"  → wrote {result.pages_written} page(s)")
+                        try:
+                            anthropic_client = make_anthropic_client()
+                            result = await pull_file(
+                                client, file_key, state, repo_dir, force=True, anthropic_client=anthropic_client
+                            )
+                            state.save()
+                            click.echo(f"  → wrote {result.pages_written} page(s)")
+                        except Exception as exc:
+                            click.echo(f"  → pull failed: {exc}")
 
         if newly_tracked:
             click.echo(f"NEWLY_TRACKED:{newly_tracked}")
