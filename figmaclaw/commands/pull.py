@@ -50,7 +50,11 @@ async def _run(api_key: str, repo_dir: Path, file_key: str | None, force: bool, 
             if key not in state.manifest.tracked_files:
                 click.echo(f"File key {key!r} is not tracked. Run 'figmaclaw track {key}' first.")
                 continue
-            result = await pull_file(client, key, state, repo_dir, force=force, anthropic_client=anthropic_client, max_pages=max_pages)
+            try:
+                result = await pull_file(client, key, state, repo_dir, force=force, anthropic_client=anthropic_client, max_pages=max_pages)
+            except Exception as exc:
+                click.echo(f"{key}: error — {exc} (skipping)")
+                continue
             all_results.append(result)
             if result.skipped_file:
                 click.echo(f"{key}: unchanged (skipped)")

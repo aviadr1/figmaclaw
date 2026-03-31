@@ -155,7 +155,12 @@ async def pull_file(
     result = PullResult(file_key=file_key)
 
     # Level 1: file-level version check
-    meta = await client.get_file_meta(file_key)
+    try:
+        meta = await client.get_file_meta(file_key)
+    except Exception as exc:
+        log.error("Failed to fetch file meta for %r: %s — skipping file", file_key, exc)
+        result.skipped_file = True
+        return result
     api_version = meta.get("version", "")
     api_last_modified = meta.get("lastModified", "")
     file_name = meta.get("name", file_key)
