@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection
+from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection  # noqa: F401 — used in tests
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
 from figmaclaw.pull_logic import PullResult, pull_file, write_page
 
@@ -91,6 +91,26 @@ def _fake_file_meta(version: str = "v2", last_modified: str = "2026-03-31T12:00:
                 {"id": "7741:45837", "name": "Onboarding", "type": "CANVAS"}
             ]
         },
+    }
+
+
+def _fake_component_page_node(page_id: str = "7741:45837") -> dict:
+    """A CANVAS page whose only section is a COMPONENT_SET-based component library."""
+    return {
+        "id": page_id,
+        "name": "Components",
+        "type": "CANVAS",
+        "children": [
+            {
+                "id": "20:1",
+                "name": "buttons",
+                "type": "SECTION",
+                "children": [
+                    {"id": "30:1", "name": "Button / Primary", "type": "COMPONENT_SET", "children": []},
+                    {"id": "30:2", "name": "Button / Secondary", "type": "COMPONENT_SET", "children": []},
+                ],
+            }
+        ],
     }
 
 
@@ -232,6 +252,109 @@ async def test_pull_file_updates_manifest_after_write(tmp_path: Path):
 
     assert state.manifest.files["abc123"].pages["7741:45837"].page_hash == new_hash
     assert state.manifest.files["abc123"].version == "v2"
+
+
+@pytest.mark.asyncio
+async def test_pull_file_writes_component_md_for_component_section(tmp_path: Path):
+    """INVARIANT: pull_file writes a components/*.md for each component library section."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    from figmaclaw.figma_client import FigmaClient
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
+    mock_client.get_page = AsyncMock(return_value=_fake_component_page_node())
+
+    result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    assert result.component_sections_written == 1
+    assert result.pages_written == 0  # no screen sections
+    out = tmp_path / "figma" / "web-app" / "components" / "buttons-20-1.md"
+    assert out.exists()
+    assert "## Variants" in out.read_text()
+
+
+@pytest.mark.asyncio
+async def test_pull_file_skips_screen_md_when_all_sections_are_components(tmp_path: Path):
+    """INVARIANT: No pages/*.md is written when a page has only component library sections."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    from figmaclaw.figma_client import FigmaClient
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
+    mock_client.get_page = AsyncMock(return_value=_fake_component_page_node())
+
+    result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    assert result.pages_written == 0
+    pages_dir = tmp_path / "figma" / "web-app" / "pages"
+    assert not pages_dir.exists() or not any(pages_dir.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_pull_file_manifest_records_component_paths(tmp_path: Path):
+    """INVARIANT: Manifest entry stores component_md_paths after writing component sections."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    from figmaclaw.figma_client import FigmaClient
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
+    mock_client.get_page = AsyncMock(return_value=_fake_component_page_node())
+
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    entry = state.manifest.files["abc123"].pages["7741:45837"]
+    assert entry.md_path is None  # no screen sections
+    assert "figma/web-app/components/buttons-20-1.md" in entry.component_md_paths
+
+
+@pytest.mark.asyncio
+async def test_pull_file_preserves_component_descriptions_from_existing_md(tmp_path: Path):
+    """INVARIANT: pull_file reads existing component .md descriptions before overwriting."""
+    from figmaclaw.figma_models import FigmaSection, FigmaFrame
+    from figmaclaw.figma_render import render_component_section
+
+    # Pre-write a component .md with existing descriptions
+    comp_section = FigmaSection(
+        node_id="20:1",
+        name="buttons",
+        frames=[
+            FigmaFrame(node_id="30:1", name="Button / Primary", description="Primary CTA."),
+        ],
+        is_component_library=True,
+    )
+    page_stub = FigmaPage(
+        file_key="abc123", file_name="Web App", page_node_id="7741:45837",
+        page_name="Components", page_slug="components-7741-45837",
+        figma_url="", sections=[comp_section], flows=[], version="v1", last_modified="",
+    )
+    comp_out = tmp_path / "figma" / "web-app" / "components" / "buttons-20-1.md"
+    comp_out.parent.mkdir(parents=True, exist_ok=True)
+    comp_out.write_text(render_component_section(comp_section, page_stub, "0000000000000000"))
+
+    # Now run pull — the existing description should be preserved
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    from figmaclaw.figma_client import FigmaClient
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
+    mock_client.get_page = AsyncMock(return_value=_fake_component_page_node())
+
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    content = comp_out.read_text()
+    assert "Primary CTA." in content
 
 
 @pytest.mark.asyncio

@@ -235,3 +235,159 @@ def test_parse_frame_descriptions_empty_for_plain_file():
     """INVARIANT: parse_frame_descriptions returns empty dict for non-figmaclaw markdown."""
     descriptions = parse_frame_descriptions("# Random markdown\n\nNo tables here.")
     assert descriptions == {}
+
+
+# --- render_page: component library sections skipped ---
+
+def test_render_page_skips_component_library_sections():
+    """INVARIANT: render_page omits component library sections — they get their own files."""
+    from figmaclaw.figma_models import FigmaSection, FigmaFrame
+    comp_section = FigmaSection(
+        node_id="20:1",
+        name="Buttons",
+        frames=[FigmaFrame(node_id="30:1", name="Button / Primary", description="Primary CTA.")],
+        is_component_library=True,
+    )
+    screen_section = FigmaSection(
+        node_id="10:1",
+        name="Onboarding",
+        frames=[FigmaFrame(node_id="11:1", name="welcome", description="Welcome screen.")],
+    )
+    page = _make_page(sections=[screen_section, comp_section])
+    md = render_page(page, _make_entry())
+
+    assert "Onboarding" in md          # screen section present
+    assert "welcome" in md
+    assert "Buttons" not in md         # component section absent
+    assert "Button / Primary" not in md
+
+
+def test_render_page_omits_component_frame_descriptions_from_frontmatter():
+    """INVARIANT: Component frame descriptions are not in the page frontmatter.frames."""
+    from figmaclaw.figma_models import FigmaSection, FigmaFrame
+    comp_section = FigmaSection(
+        node_id="20:1",
+        name="Buttons",
+        frames=[FigmaFrame(node_id="30:1", name="Button / Primary", description="Primary CTA.")],
+        is_component_library=True,
+    )
+    page = _make_page(sections=[comp_section])
+    md = render_page(page, _make_entry())
+    fm = parse_frontmatter(md)
+    assert fm is not None
+    # Component descriptions must not leak into the page frontmatter
+    assert "30:1" not in fm.frames
+
+
+# --- render_component_section ---
+
+def _make_component_section() -> tuple["FigmaSection", FigmaPage]:
+    from figmaclaw.figma_models import FigmaSection, FigmaFrame
+    section = FigmaSection(
+        node_id="20:1",
+        name="Buttons",
+        frames=[
+            FigmaFrame(node_id="30:1", name="Button / Primary", description="Primary CTA button."),
+            FigmaFrame(node_id="30:2", name="Button / Secondary", description=""),
+        ],
+        is_component_library=True,
+    )
+    page = FigmaPage(
+        file_key="AZswXf",
+        file_name="Design System",
+        page_node_id="5678:1234",
+        page_name="Core Components",
+        page_slug="core-components-5678-1234",
+        figma_url="https://www.figma.com/design/AZswXf?node-id=5678-1234",
+        sections=[section],
+        flows=[],
+        version="v1",
+        last_modified="2026-03-31T00:00:00Z",
+    )
+    return section, page
+
+
+def test_render_component_section_has_yaml_frontmatter():
+    """INVARIANT: Component .md starts with valid YAML frontmatter."""
+    from figmaclaw.figma_render import render_component_section
+    section, page = _make_component_section()
+    md = render_component_section(section, page, "deadbeef12345678")
+    assert md.startswith("---\n")
+    assert "\n---\n" in md
+
+
+def test_render_component_section_frontmatter_has_section_node_id():
+    """INVARIANT: Component frontmatter carries section_node_id for direct Figma navigation."""
+    from figmaclaw.figma_render import render_component_section
+    section, page = _make_component_section()
+    md = render_component_section(section, page, "deadbeef12345678")
+    fm = parse_frontmatter(md)
+    assert fm is not None
+    assert fm.figmaclaw.section_node_id == "20:1"
+
+
+def test_render_component_section_frontmatter_carries_identity_fields():
+    """INVARIANT: Component frontmatter carries file_key, page_node_id, page_hash."""
+    from figmaclaw.figma_render import render_component_section
+    section, page = _make_component_section()
+    md = render_component_section(section, page, "deadbeef12345678")
+    fm = parse_frontmatter(md)
+    assert fm is not None
+    assert fm.figmaclaw.file_key == "AZswXf"
+    assert fm.figmaclaw.page_node_id == "5678:1234"
+    assert fm.figmaclaw.page_hash == "deadbeef12345678"
+
+
+def test_render_component_section_title_includes_page_and_section():
+    """INVARIANT: Component .md title is '{file} / {page} / {section}' for unambiguous lookup."""
+    from figmaclaw.figma_render import render_component_section
+    section, page = _make_component_section()
+    md = render_component_section(section, page, "hash")
+    assert "# Design System / Core Components / Buttons" in md
+
+
+def test_render_component_section_has_variants_table():
+    """INVARIANT: Component .md has a Variants table listing all component nodes."""
+    from figmaclaw.figma_render import render_component_section
+    section, page = _make_component_section()
+    md = render_component_section(section, page, "hash")
+    assert "## Variants" in md
+    assert "| Variant | Node ID | Description |" in md
+    assert "Button / Primary" in md
+    assert "`30:1`" in md
+
+
+def test_render_component_section_uses_placeholder_for_empty_description():
+    """INVARIANT: Frames with no description show placeholder in the Variants table."""
+    from figmaclaw.figma_render import render_component_section
+    section, page = _make_component_section()
+    md = render_component_section(section, page, "hash")
+    assert "(no description yet)" in md
+
+
+def test_render_component_section_stores_descriptions_in_frontmatter():
+    """INVARIANT: Component descriptions appear in frontmatter.frames keyed by node_id."""
+    from figmaclaw.figma_render import render_component_section
+    section, page = _make_component_section()
+    md = render_component_section(section, page, "hash")
+    fm = parse_frontmatter(md)
+    assert fm is not None
+    assert fm.frames["30:1"] == "Primary CTA button."
+    assert "30:2" not in fm.frames  # empty description not stored
+
+
+def test_render_component_section_has_no_mermaid():
+    """INVARIANT: Component .md never contains a Mermaid flowchart (components don't have flows)."""
+    from figmaclaw.figma_render import render_component_section
+    section, page = _make_component_section()
+    md = render_component_section(section, page, "hash")
+    assert "```mermaid" not in md
+
+
+def test_render_component_section_figma_url_points_to_section():
+    """INVARIANT: Component .md Figma link targets the section node, not the page."""
+    from figmaclaw.figma_render import render_component_section
+    section, page = _make_component_section()
+    md = render_component_section(section, page, "hash")
+    # Section node ID "20:1" → "20-1" in URL
+    assert "node-id=20-1" in md

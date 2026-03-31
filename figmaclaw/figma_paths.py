@@ -21,6 +21,14 @@ def slugify(text: str, fallback: str = "untitled") -> str:
 def page_path(file_slug: str, page_slug: str) -> str:
     """Return the repo-relative path for a page markdown file.
 
-    Example: figma/web-app/pages/onboarding.md
+    Example: figma/web-app/pages/onboarding-7741-45837.md
     """
     return f"figma/{file_slug}/pages/{page_slug}.md"
+
+
+def component_path(file_slug: str, section_slug: str) -> str:
+    """Return the repo-relative path for a component library section markdown file.
+
+    Example: figma/design-system/components/buttons-10-1.md
+    """
+    return f"figma/{file_slug}/components/{section_slug}.md"

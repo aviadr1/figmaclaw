@@ -7,6 +7,7 @@ import click
 from figmaclaw import __version__
 from figmaclaw.commands.apply_webhook import apply_webhook_cmd
 from figmaclaw.commands.init import init_cmd
+from figmaclaw.commands.list_files import list_cmd
 from figmaclaw.commands.pull import pull_cmd
 from figmaclaw.commands.track import track_cmd
 
@@ -35,5 +36,6 @@ def cli(ctx: click.Context, json_mode: bool, verbose: int, quiet: int, repo_dir:
 
 cli.add_command(apply_webhook_cmd)
 cli.add_command(init_cmd)
+cli.add_command(list_cmd)
 cli.add_command(pull_cmd)
 cli.add_command(track_cmd)

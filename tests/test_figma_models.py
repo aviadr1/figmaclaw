@@ -174,3 +174,70 @@ def test_empty_page_has_no_sections():
     page = _canvas("0:1", "Empty Page", [])
     result = from_page_node(page, file_key="abc", file_name="App")
     assert result.sections == []
+
+
+def _component_set(node_id: str, name: str) -> dict:
+    return {"id": node_id, "name": name, "type": "COMPONENT_SET", "children": []}
+
+
+def _component(node_id: str, name: str) -> dict:
+    return {"id": node_id, "name": name, "type": "COMPONENT", "children": []}
+
+
+def test_section_with_component_sets_is_flagged_as_component_library():
+    """INVARIANT: A SECTION whose children are COMPONENT_SET nodes is a component library."""
+    page = _canvas("0:1", "Design System", [
+        _section("10:1", "Buttons", [
+            _component_set("20:1", "Button / Primary"),
+            _component_set("20:2", "Button / Secondary"),
+        ])
+    ])
+    result = from_page_node(page, file_key="ds", file_name="Design System")
+    assert result.sections[0].is_component_library is True
+
+
+def test_section_with_frames_is_not_component_library():
+    """INVARIANT: A SECTION with FRAME children is not a component library."""
+    page = _canvas("0:1", "My Page", [
+        _section("10:1", "Screens", [_frame("11:1", "Home"), _frame("11:2", "Settings")])
+    ])
+    result = from_page_node(page, file_key="abc", file_name="App")
+    assert result.sections[0].is_component_library is False
+
+
+def test_component_library_section_lists_component_nodes_as_frames():
+    """INVARIANT: Component nodes in a library section are exposed as FigmaFrame instances."""
+    page = _canvas("0:1", "DS", [
+        _section("10:1", "Icons", [
+            _component("20:1", "icon / star"),
+            _component("20:2", "icon / heart"),
+        ])
+    ])
+    result = from_page_node(page, file_key="ds", file_name="DS")
+    section = result.sections[0]
+    assert section.is_component_library is True
+    assert len(section.frames) == 2
+    assert section.frames[0].name == "icon / star"
+    assert section.frames[1].name == "icon / heart"
+
+
+def test_section_with_both_frames_and_components_prefers_frames():
+    """INVARIANT: Mixed sections (frames + components) use frames and are not flagged as library."""
+    page = _canvas("0:1", "Mixed", [
+        _section("10:1", "mixed section", [
+            _frame("11:1", "some screen"),
+            _component_set("20:1", "Button"),
+        ])
+    ])
+    result = from_page_node(page, file_key="abc", file_name="App")
+    section = result.sections[0]
+    assert section.is_component_library is False
+    # Only the frame should appear (frames take priority)
+    assert len(section.frames) == 1
+    assert section.frames[0].name == "some screen"
+
+
+def test_figma_section_is_component_library_defaults_to_false():
+    """INVARIANT: FigmaSection.is_component_library defaults to False."""
+    section = FigmaSection(node_id="1:1", name="Normal Section")
+    assert section.is_component_library is False

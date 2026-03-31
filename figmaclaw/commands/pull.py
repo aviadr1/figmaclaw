@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from pathlib import Path
 
 import click
 
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_sync_state import FigmaSyncState
+from figmaclaw.figma_utils import make_anthropic_client
 from figmaclaw.pull_logic import PullResult, pull_file
 
 
@@ -39,7 +39,7 @@ async def _run(api_key: str, repo_dir: Path, file_key: str | None, force: bool, 
     keys = [file_key] if file_key else state.manifest.tracked_files
     all_results: list[PullResult] = []
 
-    anthropic_client = _make_anthropic_client() if not no_llm else None
+    anthropic_client = make_anthropic_client() if not no_llm else None
     if anthropic_client is None and not no_llm:
         click.echo("Note: ANTHROPIC_API_KEY not set — skipping LLM description generation.")
 
@@ -60,16 +60,14 @@ async def _run(api_key: str, repo_dir: Path, file_key: str | None, force: bool, 
     state.save()
 
     # Emit commit message for CI (read by GitHub Actions shell)
-    all_paths = [p for r in all_results for p in r.md_paths]
-    if all_paths:
-        n = len(all_paths)
-        click.echo(f"COMMIT_MSG:sync: figmaclaw pull — {n} page(s) updated")
+    all_screen_paths = [p for r in all_results for p in r.md_paths]
+    all_comp_paths = [p for r in all_results for p in r.component_paths]
+    if all_screen_paths or all_comp_paths:
+        parts = []
+        if all_screen_paths:
+            parts.append(f"{len(all_screen_paths)} page(s)")
+        if all_comp_paths:
+            parts.append(f"{len(all_comp_paths)} component(s)")
+        click.echo(f"COMMIT_MSG:sync: figmaclaw pull — {', '.join(parts)} updated")
 
 
-def _make_anthropic_client() -> object | None:
-    """Create an AsyncAnthropic client if ANTHROPIC_API_KEY is set, else None."""
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        return None
-    from anthropic import AsyncAnthropic
-    return AsyncAnthropic(api_key=api_key)

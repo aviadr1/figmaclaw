@@ -83,6 +83,18 @@ class FigmaClient:
         """GET /v1/files/{file_key} — full file tree. Use only for initial track."""
         return await self._get(f"/v1/files/{file_key}")
 
+    async def list_team_projects(self, team_id: str) -> list[dict[str, Any]]:
+        """GET /v1/teams/{team_id}/projects — list projects for a team."""
+        data = await self._get(f"/v1/teams/{team_id}/projects")
+        result: list[dict[str, Any]] = data.get("projects", [])
+        return result
+
+    async def list_project_files(self, project_id: str) -> list[dict[str, Any]]:
+        """GET /v1/projects/{project_id}/files — list files in a project."""
+        data = await self._get(f"/v1/projects/{project_id}/files")
+        result: list[dict[str, Any]] = data.get("files", [])
+        return result
+
     async def list_webhooks(self, team_id: str) -> list[dict[str, Any]]:
         """GET /v2/teams/{team_id}/webhooks — list webhooks for a team."""
         data = await self._get(f"/v2/teams/{team_id}/webhooks")

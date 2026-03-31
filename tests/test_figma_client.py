@@ -198,3 +198,60 @@ async def test_list_webhooks_returns_list():
             webhooks = await client.list_webhooks(team_id=team_id)
 
     assert isinstance(webhooks, list)
+
+
+@pytest.mark.asyncio
+async def test_list_team_projects_returns_projects():
+    """INVARIANT: list_team_projects returns the projects list from the API."""
+    team_id = "1314617533998771588"
+    projects_payload = {
+        "projects": [
+            {"id": "proj1", "name": "Web"},
+            {"id": "proj2", "name": "Mobile"},
+        ]
+    }
+    with respx.mock:
+        respx.get(f"https://api.figma.com/v1/teams/{team_id}/projects").mock(
+            return_value=httpx.Response(200, json=projects_payload)
+        )
+        async with FigmaClient(api_key="figd_test") as client:
+            projects = await client.list_team_projects(team_id)
+
+    assert len(projects) == 2
+    assert projects[0]["name"] == "Web"
+    assert projects[1]["name"] == "Mobile"
+
+
+@pytest.mark.asyncio
+async def test_list_project_files_returns_files():
+    """INVARIANT: list_project_files returns the files list for a given project."""
+    project_id = "proj1"
+    files_payload = {
+        "files": [
+            {"key": "abc123", "name": "Web App", "last_modified": "2026-03-01T00:00:00Z"},
+        ]
+    }
+    with respx.mock:
+        respx.get(f"https://api.figma.com/v1/projects/{project_id}/files").mock(
+            return_value=httpx.Response(200, json=files_payload)
+        )
+        async with FigmaClient(api_key="figd_test") as client:
+            files = await client.list_project_files(project_id)
+
+    assert len(files) == 1
+    assert files[0]["key"] == "abc123"
+    assert files[0]["name"] == "Web App"
+
+
+@pytest.mark.asyncio
+async def test_list_project_files_returns_empty_list_when_none():
+    """INVARIANT: list_project_files returns [] when the API response has no files key."""
+    project_id = "empty_proj"
+    with respx.mock:
+        respx.get(f"https://api.figma.com/v1/projects/{project_id}/files").mock(
+            return_value=httpx.Response(200, json={})
+        )
+        async with FigmaClient(api_key="figd_test") as client:
+            files = await client.list_project_files(project_id)
+
+    assert files == []

@@ -13,13 +13,18 @@ from pydantic import BaseModel, Field
 
 
 class PageEntry(BaseModel):
-    """State for a single Figma page within a tracked file."""
+    """State for a single Figma page within a tracked file.
+
+    md_path is None when the page has no screen sections (all sections are
+    component libraries — only component_md_paths are written in that case).
+    """
 
     page_name: str
     page_slug: str
-    md_path: str
+    md_path: str | None = None  # None for all-component pages
     page_hash: str
     last_refreshed_at: str
+    component_md_paths: list[str] = Field(default_factory=list)
 
 
 class FileEntry(BaseModel):

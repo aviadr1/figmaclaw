@@ -20,6 +20,7 @@ class FigmaSection(BaseModel):
     node_id: str
     name: str
     frames: list[FigmaFrame] = Field(default_factory=list)
+    is_component_library: bool = False
 
 
 class FigmaPage(BaseModel):
@@ -49,6 +50,7 @@ class FigmaFile(BaseModel):
 
 
 _SKIP_NODE_TYPES = frozenset({"CONNECTOR", "TEXT", "VECTOR", "STAR", "LINE", "ELLIPSE", "BOOLEAN_OPERATION"})
+_COMPONENT_TYPES = frozenset({"COMPONENT_SET", "COMPONENT"})
 
 
 def _extract_flows(frames: list[dict]) -> list[tuple[str, str]]:
@@ -93,15 +95,19 @@ def from_page_node(page_node: dict, *, file_key: str, file_name: str) -> FigmaPa
         child_type = child.get("type", "")
 
         if child_type == "SECTION":
-            frame_nodes = [
-                c for c in child.get("children", [])
-                if c.get("type") not in _SKIP_NODE_TYPES and c.get("type") == "FRAME"
-            ]
+            child_children = child.get("children", [])
+            frame_nodes = [c for c in child_children if c.get("type") == "FRAME"]
+            component_nodes = [c for c in child_children if c.get("type") in _COMPONENT_TYPES]
+            # Component library: section has components but no frames
+            is_component_lib = bool(component_nodes) and not frame_nodes
+            # Render nodes: frames take priority; fall back to component nodes for libs
+            render_nodes = frame_nodes if frame_nodes else component_nodes
             all_frames_for_flows.extend(frame_nodes)
             sections.append(FigmaSection(
                 node_id=child["id"],
                 name=child.get("name", ""),
-                frames=[_node_to_frame(f, file_key) for f in frame_nodes],
+                frames=[_node_to_frame(f, file_key) for f in render_nodes],
+                is_component_library=is_component_lib,
             ))
 
         elif child_type == "FRAME":

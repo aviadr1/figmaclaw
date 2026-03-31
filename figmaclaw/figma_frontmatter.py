@@ -22,11 +22,12 @@ from pydantic import BaseModel, Field
 
 
 class FigmaclawMeta(BaseModel):
-    """Identity fields for a rendered figmaclaw page."""
+    """Identity fields for a rendered figmaclaw page or component section."""
 
     file_key: str
     page_node_id: str
     page_hash: str
+    section_node_id: str | None = None  # set for component library .md files
 
 
 class FigmaPageFrontmatter(BaseModel):
