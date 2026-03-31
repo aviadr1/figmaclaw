@@ -5,13 +5,17 @@ from __future__ import annotations
 import re
 
 
-def slugify(text: str) -> str:
-    """Convert text to a URL-friendly slug."""
-    text = text.lower().strip()
-    text = re.sub(r"[^\w\s-]", "", text)
-    text = re.sub(r"[\s_]+", "-", text)
-    text = re.sub(r"-+", "-", text)
-    return text.strip("-")
+def slugify(text: str, fallback: str = "untitled") -> str:
+    """Convert text to a URL-friendly slug.
+
+    Returns fallback if the result would be empty (e.g. text is "---").
+    """
+    result = text.lower().strip()
+    result = re.sub(r"[^\w\s-]", "", result)
+    result = re.sub(r"[\s_]+", "-", result)
+    result = re.sub(r"-+", "-", result)
+    result = result.strip("-")
+    return result or fallback
 
 
 def page_path(file_key: str, page_slug: str) -> str:
