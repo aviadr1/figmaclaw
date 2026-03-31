@@ -1,0 +1,7 @@
+name = "figmaclaw-webhook"
+main = "index.js"
+compatibility_date = "2024-01-01"
+
+# Set these as secrets via: wrangler secret put FIGMA_WEBHOOK_SECRET
+# wrangler secret put GITHUB_TOKEN
+# wrangler secret put GITHUB_REPO  (format: "owner/repo")

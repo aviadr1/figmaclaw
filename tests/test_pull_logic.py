@@ -576,3 +576,143 @@ async def test_pull_file_calls_progress_for_each_page(tmp_path: Path):
     assert len(progress_messages) >= 2
     assert any("[1/2]" in m for m in progress_messages)
     assert any("[2/2]" in m for m in progress_messages)
+
+
+# --- on_page_written callback ---
+
+@pytest.mark.asyncio
+async def test_pull_file_calls_on_page_written_for_each_written_page(tmp_path: Path):
+    """INVARIANT: pull_file calls on_page_written after each page is written to disk."""
+    from figmaclaw.figma_client import FigmaClient
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta_multi(2))
+    mock_client.get_page = AsyncMock(
+        side_effect=lambda fk, pid: _fake_page_node_for_id(pid, f"Page {pid}")
+    )
+
+    written_labels: list[str] = []
+    result = await pull_file(
+        mock_client, "abc123", state, tmp_path, force=False,
+        on_page_written=lambda label, paths: written_labels.append(label),
+    )
+
+    assert result.pages_written == 2
+    assert len(written_labels) == 2
+    assert all("Web App" in label for label in written_labels)
+
+
+@pytest.mark.asyncio
+async def test_pull_file_on_page_written_receives_written_paths(tmp_path: Path):
+    """INVARIANT: on_page_written receives the list of paths that were written."""
+    from figmaclaw.figma_client import FigmaClient
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta_multi(1))
+    mock_client.get_page = AsyncMock(
+        side_effect=lambda fk, pid: _fake_page_node_for_id(pid, f"Page {pid}")
+    )
+
+    received_paths: list[list[str]] = []
+    await pull_file(
+        mock_client, "abc123", state, tmp_path, force=False,
+        on_page_written=lambda label, paths: received_paths.append(paths),
+    )
+
+    assert len(received_paths) == 1
+    assert len(received_paths[0]) >= 1
+    assert all(isinstance(p, str) for p in received_paths[0])
+
+
+@pytest.mark.asyncio
+async def test_pull_file_skipped_pages_do_not_trigger_on_page_written(tmp_path: Path):
+    """INVARIANT: on_page_written is NOT called for pages that are skipped (hash unchanged)."""
+    from figmaclaw.figma_hash import compute_page_hash
+    from figmaclaw.figma_client import FigmaClient
+
+    page_node = _fake_page_node()
+    stored_hash = compute_page_hash(page_node)
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+    state.manifest.files["abc123"].pages["7741:45837"] = PageEntry(
+        page_name="Onboarding", page_slug="onboarding",
+        md_path="figma/abc123/pages/onboarding.md",
+        page_hash=stored_hash, last_refreshed_at="2026-03-30T00:00:00Z",
+    )
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
+    mock_client.get_page = AsyncMock(return_value=page_node)
+
+    written_labels: list[str] = []
+    result = await pull_file(
+        mock_client, "abc123", state, tmp_path, force=False,
+        on_page_written=lambda label, paths: written_labels.append(label),
+    )
+
+    assert result.pages_skipped == 1
+    assert len(written_labels) == 0
+
+
+# --- parallel fetch (max_pages=None fetches pages concurrently) ---
+
+@pytest.mark.asyncio
+async def test_pull_file_parallel_fetch_writes_all_pages(tmp_path: Path):
+    """INVARIANT: without max_pages, all pages are fetched and written (parallel path)."""
+    from figmaclaw.figma_client import FigmaClient
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    n_pages = 4
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta_multi(n_pages))
+    mock_client.get_page = AsyncMock(
+        side_effect=lambda fk, pid: _fake_page_node_for_id(pid, f"Page {pid}")
+    )
+
+    result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    assert result.pages_written == n_pages
+    assert result.has_more is False
+
+
+@pytest.mark.asyncio
+async def test_pull_file_parallel_fetch_handles_individual_page_errors(tmp_path: Path):
+    """INVARIANT: parallel fetch tolerates individual page errors and processes the rest."""
+    from figmaclaw.figma_client import FigmaClient
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta_multi(3))
+    mock_client.get_page = AsyncMock(
+        side_effect=[
+            _fake_page_node_for_id("100:1", "Page 1"),
+            Exception("timeout"),
+            _fake_page_node_for_id("100:3", "Page 3"),
+        ]
+    )
+
+    result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    assert result.pages_written == 2
+    assert result.pages_errored == 1
