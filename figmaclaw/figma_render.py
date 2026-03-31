@@ -47,7 +47,11 @@ def render_page(page: FigmaPage, entry: PageEntry) -> str:
         flows=[[src, dst] for src, dst in page.flows],
     )
 
-    fm_dict = frontmatter.model_dump()
+    fm_dict = frontmatter.model_dump(exclude_none=True)
+    if not fm_dict.get("frames"):
+        fm_dict.pop("frames", None)
+    if not fm_dict.get("flows"):
+        fm_dict.pop("flows", None)
     parts.append("---")
     parts.append(yaml.dump(fm_dict, default_flow_style=False, allow_unicode=True).rstrip())
     parts.append("---")
