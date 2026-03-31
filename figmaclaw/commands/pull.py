@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
 from pathlib import Path
 
 import click
@@ -18,19 +19,49 @@ from figmaclaw.pull_logic import PullResult, pull_file
 @click.option("--file-key", "file_key", default=None, help="Pull only this file key.")
 @click.option("--force", is_flag=True, help="Regenerate all pages even if hash is unchanged.")
 @click.option("--no-llm", is_flag=True, help="Skip LLM description generation.")
-@click.option("--max-pages", "max_pages", default=None, type=int, help="Stop after writing this many pages (for checkpointed CI loops).")
+@click.option("--max-pages", "max_pages", default=None, type=int, help="Global page budget per run (batch loop mode).")
+@click.option("--auto-commit", "auto_commit", is_flag=True, help="git commit after each page. CI should do a final git push.")
+@click.option("--push-every", "push_every", default=10, type=int, show_default=True, help="Push every N commits when --auto-commit is set.")
 @click.pass_context
-def pull_cmd(ctx: click.Context, file_key: str | None, force: bool, no_llm: bool, max_pages: int | None) -> None:
+def pull_cmd(ctx: click.Context, file_key: str | None, force: bool, no_llm: bool, max_pages: int | None, auto_commit: bool, push_every: int) -> None:
     """Pull all tracked Figma files and write changed pages to disk."""
     repo_dir = Path(ctx.obj["repo_dir"])
     api_key = os.environ.get("FIGMA_API_KEY", "")
     if not api_key:
         raise click.UsageError("FIGMA_API_KEY environment variable is not set.")
 
-    asyncio.run(_run(api_key, repo_dir, file_key, force, no_llm, max_pages))
+    asyncio.run(_run(api_key, repo_dir, file_key, force, no_llm, max_pages, auto_commit, push_every))
 
 
-async def _run(api_key: str, repo_dir: Path, file_key: str | None, force: bool, no_llm: bool, max_pages: int | None) -> None:
+def _git_commit_page(repo_dir: Path, page_label: str) -> bool:
+    """Stage figma/ and .figma-sync/, commit if anything changed. Returns True if committed."""
+    subprocess.run(["git", "-C", str(repo_dir), "add", "figma/", ".figma-sync/"], check=False)
+    diff = subprocess.run(["git", "-C", str(repo_dir), "diff", "--cached", "--quiet"], check=False)
+    if diff.returncode == 0:
+        return False  # nothing staged
+    msg = f"sync: figmaclaw — {page_label}"
+    subprocess.run(["git", "-C", str(repo_dir), "commit", "-m", msg], check=False)
+    return True
+
+
+def _git_push(repo_dir: Path) -> None:
+    result = subprocess.run(["git", "-C", str(repo_dir), "push"], check=False)
+    if result.returncode != 0:
+        # Another push landed — pull and retry once
+        subprocess.run(["git", "-C", str(repo_dir), "pull", "--no-rebase"], check=False)
+        subprocess.run(["git", "-C", str(repo_dir), "push"], check=False)
+
+
+async def _run(
+    api_key: str,
+    repo_dir: Path,
+    file_key: str | None,
+    force: bool,
+    no_llm: bool,
+    max_pages: int | None,
+    auto_commit: bool,
+    push_every: int,
+) -> None:
     state = FigmaSyncState(repo_dir)
     state.load()
 
@@ -45,6 +76,21 @@ async def _run(api_key: str, repo_dir: Path, file_key: str | None, force: bool, 
     if anthropic_client is None and not no_llm:
         click.echo("Note: ANTHROPIC_API_KEY not set — skipping LLM description generation.")
 
+    # Auto-commit state: track commit count for push-every logic
+    commit_count = 0
+
+    def on_page_written(page_label: str, paths: list[str]) -> None:
+        nonlocal commit_count
+        if not auto_commit:
+            return
+        committed = _git_commit_page(repo_dir, page_label)
+        if committed:
+            commit_count += 1
+            click.echo(f"  ✓ committed: {page_label}")
+            if push_every and commit_count % push_every == 0:
+                click.echo(f"  ↑ pushing ({commit_count} commits)...")
+                _git_push(repo_dir)
+
     # max_pages is a global budget across all files in this batch run
     pages_budget = max_pages
     has_more_global = False
@@ -55,13 +101,18 @@ async def _run(api_key: str, repo_dir: Path, file_key: str | None, force: bool, 
                 click.echo(f"File key {key!r} is not tracked. Run 'figmaclaw track {key}' first.")
                 continue
 
-            # Stop if global budget exhausted
             if max_pages is not None and pages_budget is not None and pages_budget <= 0:
                 has_more_global = True
                 break
 
             try:
-                result = await pull_file(client, key, state, repo_dir, force=force, anthropic_client=anthropic_client, max_pages=pages_budget)
+                result = await pull_file(
+                    client, key, state, repo_dir,
+                    force=force,
+                    anthropic_client=anthropic_client,
+                    max_pages=pages_budget,
+                    on_page_written=on_page_written,
+                )
             except Exception as exc:
                 click.echo(f"{key}: error — {exc} (skipping)")
                 continue
@@ -84,7 +135,7 @@ async def _run(api_key: str, repo_dir: Path, file_key: str | None, force: bool, 
 
     state.save()
 
-    # Emit commit message for CI (read by GitHub Actions shell)
+    # Emit commit message for CI
     all_screen_paths = [p for r in all_results for p in r.md_paths]
     all_comp_paths = [p for r in all_results for p in r.component_paths]
     if all_screen_paths or all_comp_paths:
@@ -95,8 +146,5 @@ async def _run(api_key: str, repo_dir: Path, file_key: str | None, force: bool, 
             parts.append(f"{len(all_comp_paths)} component(s)")
         click.echo(f"COMMIT_MSG:sync: figmaclaw pull — {', '.join(parts)} updated")
 
-    # Signal to CI loop whether more pages remain (HAS_MORE:true → loop continues)
     if has_more_global:
         click.echo("HAS_MORE:true")
-
-
