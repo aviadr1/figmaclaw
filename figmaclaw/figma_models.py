@@ -118,11 +118,13 @@ def from_page_node(page_node: dict, *, file_key: str, file_name: str) -> FigmaPa
 
     flows = _extract_flows(all_frames_for_flows)
 
+    figma_url = f"https://www.figma.com/design/{file_key}?node-id={page_node_id.replace(':', '-')}"
     return FigmaPage(
         file_key=file_key,
         file_name=file_name,
         page_node_id=page_node_id,
         page_name=page_name,
+        figma_url=figma_url,
         sections=sections,
         flows=flows,
     )

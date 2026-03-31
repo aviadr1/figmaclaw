@@ -448,6 +448,15 @@ Verify actual .md files written to tmp_path match the expected format.
 - `figma/{file_key}/pages/{page_slug}.md` — one file per Figma page
 - Files not in the manifest are stale and can be deleted
 
+## Refactoring Backlog
+
+- **DRY up code, remove duplicates, refactor for testability and reuse**
+  - Test mocks for `FigmaClient.get_page` are inconsistent (some tests passed wrapped format before the fix — audit all mocks)
+  - `_merge_descriptions` in `pull_logic.py` and the idempotency logic in `enrich_page_with_descriptions` in `figma_llm.py` do similar things — consider a single merge utility
+  - `pull_logic.py` is getting long — consider extracting `_process_page()` as a separate testable function (file-level logic vs page-level logic vs description-merge logic)
+  - `commands/pull.py` and `commands/apply_webhook.py` both call `pull_file` with the same state setup pattern — extract a shared `_load_and_pull(api_key, repo_dir, file_key, force)` helper
+  - TODO.md still has stale task list items that are now implemented — clean up and update to reflect actual current state
+
 ## Tested Figma File
 - **File:** Web App (`hOV4QMBnDIG5s5OYkSrX9E`)
 - **32 pages**, confirmed API works for metadata + page fetch

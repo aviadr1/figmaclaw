@@ -145,7 +145,7 @@ async def test_pull_file_force_bypasses_version_check(tmp_path: Path):
     from figmaclaw.figma_client import FigmaClient
     mock_client = MagicMock(spec=FigmaClient)
     mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2", "2026-03-31T12:00:00Z"))
-    mock_client.get_page = AsyncMock(return_value={"nodes": {"7741:45837": {"document": _fake_page_node()}}})
+    mock_client.get_page = AsyncMock(return_value=_fake_page_node())
 
     result = await pull_file(mock_client, "abc123", state, tmp_path, force=True)
 
@@ -174,7 +174,7 @@ async def test_pull_file_skips_page_when_hash_unchanged(tmp_path: Path):
     from figmaclaw.figma_client import FigmaClient
     mock_client = MagicMock(spec=FigmaClient)
     mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
-    mock_client.get_page = AsyncMock(return_value={"nodes": {"7741:45837": {"document": page_node}}})
+    mock_client.get_page = AsyncMock(return_value=page_node)
 
     result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
@@ -202,7 +202,7 @@ async def test_pull_file_writes_page_when_hash_changed(tmp_path: Path):
     from figmaclaw.figma_client import FigmaClient
     mock_client = MagicMock(spec=FigmaClient)
     mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
-    mock_client.get_page = AsyncMock(return_value={"nodes": {"7741:45837": {"document": _fake_page_node()}}})
+    mock_client.get_page = AsyncMock(return_value=_fake_page_node())
 
     result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
@@ -226,7 +226,7 @@ async def test_pull_file_updates_manifest_after_write(tmp_path: Path):
     from figmaclaw.figma_client import FigmaClient
     mock_client = MagicMock(spec=FigmaClient)
     mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
-    mock_client.get_page = AsyncMock(return_value={"nodes": {"7741:45837": {"document": page_node}}})
+    mock_client.get_page = AsyncMock(return_value=page_node)
 
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
@@ -259,7 +259,7 @@ async def test_pull_file_preserves_existing_descriptions(tmp_path: Path):
     from figmaclaw.figma_client import FigmaClient
     mock_client = MagicMock(spec=FigmaClient)
     mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
-    mock_client.get_page = AsyncMock(return_value={"nodes": {"7741:45837": {"document": page_node}}})
+    mock_client.get_page = AsyncMock(return_value=page_node)
 
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 

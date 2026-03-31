@@ -93,9 +93,8 @@ async def pull_file(
         page_node_id: str = page_stub["id"]
         page_name: str = page_stub.get("name", "")
 
-        # Fetch full page nodes
-        raw = await client.get_page(file_key, page_node_id)
-        page_node = raw["nodes"][page_node_id]["document"]
+        # Fetch full page node (FigmaClient.get_page already unwraps to CANVAS document)
+        page_node = await client.get_page(file_key, page_node_id)
 
         # Level 2: structural hash check
         new_hash = compute_page_hash(page_node)
