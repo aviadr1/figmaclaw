@@ -21,7 +21,7 @@ jobs:
           fetch-depth: 1
 
       - name: Install figmaclaw
-        run: pip install git+https://github.com/gigaverse-app/figmaclaw
+        run: pip install git+https://github.com/aviadr1/figmaclaw
 
       - name: Pull latest changes
         run: git pull --no-rebase
