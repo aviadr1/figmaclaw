@@ -4,6 +4,9 @@ Three-level short-circuit:
 1. File-level: compare version + lastModified — skip entire file if unchanged
 2. Page-level: compare structural hash — skip page if unchanged
 3. Frame-level: preserve existing descriptions for unchanged frames (LLM idempotency)
+
+Resumability: manifest is saved after every successfully written page so that
+a timeout, crash, or LLM quota error never causes full re-work on the next run.
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ class PullResult(BaseModel):
     skipped_file: bool = False
     pages_written: int = 0
     pages_skipped: int = 0
+    llm_errors: int = 0
     md_paths: list[str] = []
 
 
@@ -56,6 +60,22 @@ def _merge_descriptions(page: FigmaPage, existing_descs: dict[str, str]) -> Figm
     return page.model_copy(update={"sections": new_sections})
 
 
+async def _enrich_safe(anthropic_client: object, page: FigmaPage, result: PullResult) -> FigmaPage:
+    """Call LLM enrichment, catching quota/API errors per-section gracefully.
+
+    On any error, logs and increments result.llm_errors, then continues with
+    whatever descriptions were already filled in. Never aborts the page write.
+    """
+    try:
+        from anthropic import AsyncAnthropic, APIStatusError, RateLimitError
+        enriched = await enrich_page_with_descriptions(anthropic_client, page)  # type: ignore[arg-type]
+        return enriched
+    except Exception as exc:
+        log.warning("LLM enrichment failed for page %r: %s — writing with placeholders", page.page_name, exc)
+        result.llm_errors += 1
+        return page
+
+
 async def pull_file(
     client: FigmaClient,
     file_key: str,
@@ -66,6 +86,9 @@ async def pull_file(
     anthropic_client: object | None = None,
 ) -> PullResult:
     """Pull all pages for a tracked Figma file, writing changed pages to disk.
+
+    Saves the manifest after each page so a crash or quota error mid-file
+    doesn't lose progress — a subsequent pull will skip already-written pages.
 
     Returns a PullResult describing what was done.
     """
@@ -83,11 +106,18 @@ async def pull_file(
         result.skipped_file = True
         return result
 
+    # Update file-level metadata upfront so the file entry exists for page saves
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    state.set_file_meta(
+        file_key,
+        version=api_version,
+        last_modified=api_last_modified,
+        last_checked_at=now,
+    )
+
     # Discover pages from the depth=1 response
     doc = meta.get("document", {})
     page_nodes = [c for c in doc.get("children", []) if c.get("type") == "CANVAS"]
-
-    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     for page_stub in page_nodes:
         page_node_id: str = page_stub["id"]
@@ -118,8 +148,7 @@ async def pull_file(
             page = _merge_descriptions(page, existing_descs)
 
         if anthropic_client is not None:
-            from anthropic import AsyncAnthropic
-            page = await enrich_page_with_descriptions(anthropic_client, page)  # type: ignore[arg-type]
+            page = await _enrich_safe(anthropic_client, page, result)
 
         entry = PageEntry(
             page_name=page_name,
@@ -132,16 +161,11 @@ async def pull_file(
         written = write_page(repo_root, page, entry)
         state.set_page_entry(file_key, page_node_id, entry)
 
+        # Save after every page — crash/timeout/quota errors don't lose progress
+        state.save()
+
         result.pages_written += 1
         result.md_paths.append(str(written.relative_to(repo_root)))
         log.info("Wrote %s", written)
-
-    # Update file-level metadata
-    state.set_file_meta(
-        file_key,
-        version=api_version,
-        last_modified=api_last_modified,
-        last_checked_at=now,
-    )
 
     return result
