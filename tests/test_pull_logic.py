@@ -873,3 +873,36 @@ async def test_pull_cmd_skips_figjam_files_not_in_listing(tmp_path: Path):
         await _run("key", tmp_path, None, False, True, None, False, 10, "team123", "all")
 
     mock_client.get_file_meta.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pull_cmd_stamps_listing_last_modified_after_failed_get_file_meta(tmp_path: Path):
+    """INVARIANT: when get_file_meta fails (skipped_file=True) and the listing provides
+    a last_modified, that value is stored in the manifest so the next run pre-filters
+    the file without making another wasted API call."""
+    from figmaclaw.commands.pull import _run
+    from figmaclaw.pull_logic import PullResult
+
+    # File has empty last_modified (never successfully pulled)
+    state = _make_state_with_file(tmp_path, "restricted_key", "")
+    state.save()
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.list_team_projects = AsyncMock(return_value=[{"id": "p1", "name": "Web"}])
+    mock_client.list_project_files = AsyncMock(return_value=[
+        {"key": "restricted_key", "name": "Restricted", "last_modified": "2026-03-01T00:00:00Z"},
+    ])
+    # get_file_meta fails (400 / permission error) → pull_file returns skipped_file=True
+    failed_result = PullResult(file_key="restricted_key", skipped_file=True)
+    mock_pull = AsyncMock(return_value=failed_result)
+
+    with patch.object(FigmaClient, "__new__", return_value=mock_client):
+        with patch("figmaclaw.commands.pull.pull_file", mock_pull):
+            await _run("key", tmp_path, None, False, True, None, False, 10, "team123", "all")
+
+    # Manifest should now have the listing's last_modified stamped in
+    reloaded = FigmaSyncState(tmp_path)
+    reloaded.load()
+    assert reloaded.manifest.files["restricted_key"].last_modified == "2026-03-01T00:00:00Z"

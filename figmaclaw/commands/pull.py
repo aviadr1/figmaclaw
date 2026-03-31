@@ -216,6 +216,14 @@ async def _run(
                 has_more_global = True
 
             if result.skipped_file:
+                # If pull failed (e.g. 400 on get_file_meta) and we know the listing
+                # last_modified, stamp it into the manifest so future runs pre-filter
+                # this file without making a wasted API call.
+                if listing_last_modified is not None:
+                    listing_lm = listing_last_modified.get(key)
+                    stored_entry = state.manifest.files.get(key)
+                    if listing_lm and stored_entry and not stored_entry.last_modified:
+                        stored_entry.last_modified = listing_lm
                 click.echo(f"{key}: unchanged (skipped)")
             else:
                 errored = f", {result.pages_errored} error(s)" if result.pages_errored else ""
