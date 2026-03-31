@@ -110,7 +110,7 @@ async def _listing_prefilter(
 
             listing_last_modified[file_key] = last_modified
 
-            if file_key not in tracked:
+            if file_key not in tracked and file_key not in state.manifest.skipped_files:
                 state.add_tracked_file(file_key, file_name)
                 click.echo(f"  → now tracking {file_name!r}")
                 tracked.add(file_key)
@@ -178,6 +178,11 @@ async def _run(
         for key in keys:
             if key not in state.manifest.tracked_files:
                 click.echo(f"File key {key!r} is not tracked. Run 'figmaclaw track {key}' first.")
+                continue
+
+            skip_reason = state.manifest.skipped_files.get(key)
+            if skip_reason:
+                click.echo(f"{key}: skipped — {skip_reason}")
                 continue
 
             if max_pages is not None and pages_budget is not None and pages_budget <= 0:
