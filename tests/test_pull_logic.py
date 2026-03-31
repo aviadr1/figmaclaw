@@ -640,3 +640,333 @@ async def test_pull_file_calls_progress_for_each_page(tmp_path: Path):
     assert len(progress_messages) >= 2
     assert any("[1/2]" in m for m in progress_messages)
     assert any("[2/2]" in m for m in progress_messages)
+
+
+# --- on_page_written callback ---
+
+@pytest.mark.asyncio
+async def test_pull_file_calls_on_page_written_for_each_written_page(tmp_path: Path):
+    """INVARIANT: pull_file calls on_page_written after each page is written to disk."""
+    from figmaclaw.figma_client import FigmaClient
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta_multi(2))
+    mock_client.get_page = AsyncMock(
+        side_effect=lambda fk, pid: _fake_page_node_for_id(pid, f"Page {pid}")
+    )
+
+    written_labels: list[str] = []
+    result = await pull_file(
+        mock_client, "abc123", state, tmp_path, force=False,
+        on_page_written=lambda label, paths: written_labels.append(label),
+    )
+
+    assert result.pages_written == 2
+    assert len(written_labels) == 2
+    assert all("Web App" in label for label in written_labels)
+
+
+@pytest.mark.asyncio
+async def test_pull_file_on_page_written_receives_written_paths(tmp_path: Path):
+    """INVARIANT: on_page_written receives the list of paths that were written."""
+    from figmaclaw.figma_client import FigmaClient
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta_multi(1))
+    mock_client.get_page = AsyncMock(
+        side_effect=lambda fk, pid: _fake_page_node_for_id(pid, f"Page {pid}")
+    )
+
+    received_paths: list[list[str]] = []
+    await pull_file(
+        mock_client, "abc123", state, tmp_path, force=False,
+        on_page_written=lambda label, paths: received_paths.append(paths),
+    )
+
+    assert len(received_paths) == 1
+    assert len(received_paths[0]) >= 1
+    assert all(isinstance(p, str) for p in received_paths[0])
+
+
+@pytest.mark.asyncio
+async def test_pull_file_skipped_pages_do_not_trigger_on_page_written(tmp_path: Path):
+    """INVARIANT: on_page_written is NOT called for pages that are skipped (hash unchanged)."""
+    from figmaclaw.figma_hash import compute_page_hash
+    from figmaclaw.figma_client import FigmaClient
+
+    page_node = _fake_page_node()
+    stored_hash = compute_page_hash(page_node)
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+    state.manifest.files["abc123"].pages["7741:45837"] = PageEntry(
+        page_name="Onboarding", page_slug="onboarding",
+        md_path="figma/abc123/pages/onboarding.md",
+        page_hash=stored_hash, last_refreshed_at="2026-03-30T00:00:00Z",
+    )
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
+    mock_client.get_page = AsyncMock(return_value=page_node)
+
+    written_labels: list[str] = []
+    result = await pull_file(
+        mock_client, "abc123", state, tmp_path, force=False,
+        on_page_written=lambda label, paths: written_labels.append(label),
+    )
+
+    assert result.pages_skipped == 1
+    assert len(written_labels) == 0
+
+
+# --- parallel fetch (max_pages=None fetches pages concurrently) ---
+
+@pytest.mark.asyncio
+async def test_pull_file_parallel_fetch_writes_all_pages(tmp_path: Path):
+    """INVARIANT: without max_pages, all pages are fetched and written (parallel path)."""
+    from figmaclaw.figma_client import FigmaClient
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    n_pages = 4
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta_multi(n_pages))
+    mock_client.get_page = AsyncMock(
+        side_effect=lambda fk, pid: _fake_page_node_for_id(pid, f"Page {pid}")
+    )
+
+    result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    assert result.pages_written == n_pages
+    assert result.has_more is False
+
+
+@pytest.mark.asyncio
+async def test_pull_file_parallel_fetch_handles_individual_page_errors(tmp_path: Path):
+    """INVARIANT: parallel fetch tolerates individual page errors and processes the rest."""
+    from figmaclaw.figma_client import FigmaClient
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta_multi(3))
+    mock_client.get_page = AsyncMock(
+        side_effect=[
+            _fake_page_node_for_id("100:1", "Page 1"),
+            Exception("timeout"),
+            _fake_page_node_for_id("100:3", "Page 3"),
+        ]
+    )
+
+    result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    assert result.pages_written == 2
+    assert result.pages_errored == 1
+
+
+# Tests for --team-id listing pre-filter in commands/pull.py
+
+from figmaclaw.commands.pull import _listing_prefilter
+from figmaclaw.figma_client import FigmaClient
+
+
+def _make_state_with_file(tmp_path: Path, file_key: str, last_modified: str) -> FigmaSyncState:
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file(file_key, "My File")
+    state.manifest.files[file_key].last_modified = last_modified
+    return state
+
+
+@pytest.mark.asyncio
+async def test_listing_prefilter_returns_last_modified_for_each_file(tmp_path: Path):
+    """INVARIANT: _listing_prefilter returns {file_key: last_modified} for all files in listing."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    client = MagicMock(spec=FigmaClient)
+    client.list_team_projects = AsyncMock(return_value=[{"id": "p1", "name": "Web"}])
+    client.list_project_files = AsyncMock(return_value=[
+        {"key": "fileA", "name": "App", "last_modified": "2026-03-01T00:00:00Z"},
+        {"key": "fileB", "name": "DS",  "last_modified": "2026-02-01T00:00:00Z"},
+    ])
+
+    result = await _listing_prefilter(client, "team123", state, "all")
+
+    assert result == {
+        "fileA": "2026-03-01T00:00:00Z",
+        "fileB": "2026-02-01T00:00:00Z",
+    }
+
+
+@pytest.mark.asyncio
+async def test_listing_prefilter_tracks_new_files(tmp_path: Path):
+    """INVARIANT: _listing_prefilter adds newly discovered files to the manifest."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    client = MagicMock(spec=FigmaClient)
+    client.list_team_projects = AsyncMock(return_value=[{"id": "p1", "name": "Web"}])
+    client.list_project_files = AsyncMock(return_value=[
+        {"key": "fileA", "name": "New File", "last_modified": "2026-03-01T00:00:00Z"},
+    ])
+
+    await _listing_prefilter(client, "team123", state, "all")
+
+    assert "fileA" in state.manifest.tracked_files
+
+
+@pytest.mark.asyncio
+async def test_listing_prefilter_does_not_duplicate_existing_tracked_files(tmp_path: Path):
+    """INVARIANT: _listing_prefilter is idempotent for already-tracked files."""
+    state = _make_state_with_file(tmp_path, "fileA", "2026-03-01T00:00:00Z")
+    client = MagicMock(spec=FigmaClient)
+    client.list_team_projects = AsyncMock(return_value=[{"id": "p1", "name": "Web"}])
+    client.list_project_files = AsyncMock(return_value=[
+        {"key": "fileA", "name": "App", "last_modified": "2026-03-01T00:00:00Z"},
+    ])
+
+    await _listing_prefilter(client, "team123", state, "all")
+
+    assert state.manifest.tracked_files.count("fileA") == 1
+
+
+@pytest.mark.asyncio
+async def test_listing_prefilter_applies_since_filter_to_new_files(tmp_path: Path):
+    """INVARIANT: --since filter applies to new file discovery, not already-tracked files."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    client = MagicMock(spec=FigmaClient)
+    client.list_team_projects = AsyncMock(return_value=[{"id": "p1", "name": "Web"}])
+    client.list_project_files = AsyncMock(return_value=[
+        {"key": "old_file", "name": "Old",  "last_modified": "2020-01-01T00:00:00Z"},
+        {"key": "new_file", "name": "New",  "last_modified": "2026-03-01T00:00:00Z"},
+    ])
+
+    result = await _listing_prefilter(client, "team123", state, "3m")
+
+    assert "old_file" not in state.manifest.tracked_files
+    assert "new_file" in state.manifest.tracked_files
+    # old_file still in the returned dict (its last_modified may be useful for pull filtering)
+    assert "new_file" in result
+
+
+@pytest.mark.asyncio
+async def test_pull_cmd_skips_unchanged_files_via_listing(tmp_path: Path):
+    """INVARIANT: when --team-id is set, files whose listing last_modified matches stored
+    value are skipped without any get_file_meta call."""
+    from figmaclaw.commands.pull import _run
+
+    state = _make_state_with_file(tmp_path, "fileA", "2026-03-01T00:00:00Z")
+    state.save()
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.list_team_projects = AsyncMock(return_value=[{"id": "p1", "name": "Web"}])
+    mock_client.list_project_files = AsyncMock(return_value=[
+        {"key": "fileA", "name": "App", "last_modified": "2026-03-01T00:00:00Z"},  # unchanged
+    ])
+    mock_client.get_file_meta = AsyncMock()
+
+    with patch.object(FigmaClient, "__new__", return_value=mock_client):
+        await _run("key", tmp_path, None, False, True, None, False, 10, "team123", "all")
+
+    mock_client.get_file_meta.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pull_cmd_pulls_files_whose_listing_last_modified_changed(tmp_path: Path):
+    """INVARIANT: files with a changed listing last_modified proceed to get_file_meta."""
+    from figmaclaw.commands.pull import _run
+
+    state = _make_state_with_file(tmp_path, "fileA", "2026-01-01T00:00:00Z")
+    state.save()
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.list_team_projects = AsyncMock(return_value=[{"id": "p1", "name": "Web"}])
+    mock_client.list_project_files = AsyncMock(return_value=[
+        {"key": "fileA", "name": "App", "last_modified": "2026-03-01T00:00:00Z"},  # changed
+    ])
+    mock_client.get_file_meta = AsyncMock(return_value={
+        "version": "v2", "lastModified": "2026-03-01T00:00:00Z",
+        "name": "App", "document": {"children": []},
+    })
+
+    with patch.object(FigmaClient, "__new__", return_value=mock_client):
+        await _run("key", tmp_path, None, False, True, None, False, 10, "team123", "all")
+
+    mock_client.get_file_meta.assert_called_once_with("fileA")
+
+
+@pytest.mark.asyncio
+async def test_pull_cmd_skips_figjam_files_not_in_listing(tmp_path: Path):
+    """INVARIANT: files absent from the team listing (e.g. FigJam boards) are always
+    skipped — they cannot change if not reachable via the listing API."""
+    from figmaclaw.commands.pull import _run
+
+    state = _make_state_with_file(tmp_path, "figjam_key", "")
+    state.save()
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.list_team_projects = AsyncMock(return_value=[{"id": "p1", "name": "Web"}])
+    mock_client.list_project_files = AsyncMock(return_value=[])  # FigJam not in listing
+    mock_client.get_file_meta = AsyncMock()
+
+    with patch.object(FigmaClient, "__new__", return_value=mock_client):
+        await _run("key", tmp_path, None, False, True, None, False, 10, "team123", "all")
+
+    mock_client.get_file_meta.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pull_cmd_stamps_listing_last_modified_after_failed_get_file_meta(tmp_path: Path):
+    """INVARIANT: when get_file_meta fails (skipped_file=True) and the listing provides
+    a last_modified, that value is stored in the manifest so the next run pre-filters
+    the file without making another wasted API call."""
+    from figmaclaw.commands.pull import _run
+    from figmaclaw.pull_logic import PullResult
+
+    # File has empty last_modified (never successfully pulled)
+    state = _make_state_with_file(tmp_path, "restricted_key", "")
+    state.save()
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.list_team_projects = AsyncMock(return_value=[{"id": "p1", "name": "Web"}])
+    mock_client.list_project_files = AsyncMock(return_value=[
+        {"key": "restricted_key", "name": "Restricted", "last_modified": "2026-03-01T00:00:00Z"},
+    ])
+    # get_file_meta fails (400 / permission error) → pull_file returns skipped_file=True
+    failed_result = PullResult(file_key="restricted_key", skipped_file=True)
+    mock_pull = AsyncMock(return_value=failed_result)
+
+    with patch.object(FigmaClient, "__new__", return_value=mock_client):
+        with patch("figmaclaw.commands.pull.pull_file", mock_pull):
+            await _run("key", tmp_path, None, False, True, None, False, 10, "team123", "all")
+
+    # Manifest should now have the listing's last_modified stamped in
+    reloaded = FigmaSyncState(tmp_path)
+    reloaded.load()
+    assert reloaded.manifest.files["restricted_key"].last_modified == "2026-03-01T00:00:00Z"

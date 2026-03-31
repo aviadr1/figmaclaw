@@ -13,13 +13,17 @@ Output:
 Resumability: manifest is saved after every successfully written page so that
 a timeout, crash, or LLM quota error never causes full re-work on the next run.
 
-Batching: pass max_pages to limit how many pages are written per call — the
-manifest tracks progress so subsequent calls pick up from where they left off.
-Check result.has_more to know whether another call is needed.
+Parallelism: page nodes for a single file are fetched concurrently (asyncio.gather)
+when no max_pages limit is set. With a limit, pages are fetched sequentially so we
+don't waste API calls on pages we'll never process.
+
+on_page_written: optional callback called after each page is written to disk.
+Use this to trigger git commits from the caller (keeps git logic out of pull_logic).
 """
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import logging
 from collections.abc import Callable
@@ -105,11 +109,7 @@ def _merge_existing(page: FigmaPage, existing_descs: dict[str, str], existing_fl
 
 
 async def _enrich_safe(anthropic_client: object, page: FigmaPage, result: PullResult) -> FigmaPage:
-    """Call LLM enrichment, catching quota/API errors gracefully.
-
-    On any error, logs and increments result.llm_errors, then continues with
-    whatever descriptions were already filled in. Never aborts the page write.
-    """
+    """Call LLM enrichment, catching quota/API errors gracefully."""
     try:
         enriched = await enrich_page_with_descriptions(anthropic_client, page)  # type: ignore[arg-type]
         return enriched
@@ -129,6 +129,7 @@ async def pull_file(
     anthropic_client: object | None = None,
     max_pages: int | None = None,
     progress: Callable[[str], None] | None = None,
+    on_page_written: Callable[[str, list[str]], None] | None = None,
 ) -> PullResult:
     """Pull all (or up to max_pages) changed pages for a tracked Figma file.
 
@@ -140,10 +141,13 @@ async def pull_file(
 
     max_pages: stop after writing this many Figma pages (pages whose hash changed).
                Skipped pages don't count. Set result.has_more=True if more remain.
-               Use this to implement checkpointed CI loops.
+
+    on_page_written: called after each page is successfully written to disk with
+               (page_name, [paths_written]). Use this to trigger git commits from
+               the caller without coupling pull_logic to git.
 
     progress:  optional callback called with a human-readable status line for
-               each page as it is processed (suitable for click.echo or logging).
+               each page as it is processed.
 
     Returns a PullResult describing what was done.
     """
@@ -180,12 +184,27 @@ async def pull_file(
     )
 
     doc = meta.get("document", {})
-    page_nodes = [c for c in doc.get("children", []) if c.get("type") == "CANVAS"]
+    page_stubs = [c for c in doc.get("children", []) if c.get("type") == "CANVAS"]
     file_slug = slugify(file_name, fallback=file_key)
-    total_pages = len(page_nodes)
+    total_pages = len(page_stubs)
     pages_written_this_call = 0
 
-    for page_idx, page_stub in enumerate(page_nodes, 1):
+    # Fetch all page nodes concurrently when there is no page limit (fastest path).
+    # With a page limit, fetch sequentially to avoid wasting API calls on pages we
+    # will never process in this batch.
+    if max_pages is None:
+        async def _fetch(stub: dict) -> dict | Exception:
+            try:
+                return await client.get_page(file_key, stub["id"])
+            except Exception as exc:
+                return exc
+
+        fetched = await asyncio.gather(*[_fetch(stub) for stub in page_stubs])
+        page_nodes_iter: list[dict | Exception] = list(fetched)
+    else:
+        page_nodes_iter = []  # populated lazily below
+
+    for page_idx, page_stub in enumerate(page_stubs, 1):
         page_node_id: str = page_stub["id"]
         page_name: str = page_stub.get("name", "")
 
@@ -194,13 +213,27 @@ async def pull_file(
             result.pages_skipped += 1
             continue
 
-        # Level 2: structural hash check — fetch page only if needed
-        try:
-            page_node = await client.get_page(file_key, page_node_id)
-        except Exception as exc:
-            log.error("Failed to fetch page %r (%s): %s — skipping", page_name, page_node_id, exc)
-            result.pages_errored += 1
-            continue
+        # Level 2: structural hash check
+        if max_pages is None:
+            # Already fetched above
+            page_node_or_exc = page_nodes_iter[page_idx - 1]
+            if isinstance(page_node_or_exc, Exception):
+                log.error("Failed to fetch page %r (%s): %s — skipping", page_name, page_node_id, page_node_or_exc)
+                result.pages_errored += 1
+                continue
+            page_node: dict = page_node_or_exc
+        else:
+            # Sequential fetch — stop early if budget already hit
+            if pages_written_this_call >= max_pages:
+                result.has_more = True
+                _progress(f"  [{page_idx}/{total_pages}] {page_name} — reached max_pages={max_pages}, stopping")
+                break
+            try:
+                page_node = await client.get_page(file_key, page_node_id)
+            except Exception as exc:
+                log.error("Failed to fetch page %r (%s): %s — skipping", page_name, page_node_id, exc)
+                result.pages_errored += 1
+                continue
 
         new_hash = compute_page_hash(page_node)
         stored_hash = state.get_page_hash(file_key, page_node_id)
@@ -209,12 +242,6 @@ async def pull_file(
             _progress(f"  [{page_idx}/{total_pages}] {page_name} — unchanged (skip)")
             result.pages_skipped += 1
             continue
-
-        # Stop early if we've hit the per-call page limit
-        if max_pages is not None and pages_written_this_call >= max_pages:
-            result.has_more = True
-            _progress(f"  [{page_idx}/{total_pages}] {page_name} — reached max_pages={max_pages}, stopping")
-            break
 
         _progress(f"  [{page_idx}/{total_pages}] {page_name} — processing...")
 
@@ -248,11 +275,9 @@ async def pull_file(
             if anthropic_client is not None:
                 page = await _enrich_safe(anthropic_client, page, result)
 
-            # Re-classify from the merged/enriched page so descriptions are included
             screen_sections = [s for s in page.sections if not s.is_component_library]
             component_sections = [s for s in page.sections if s.is_component_library]
 
-            # Write screen .md (only when there are screen sections)
             written_screen_rel: str | None = None
             if screen_sections:
                 screen_page = page.model_copy(update={"sections": screen_sections})
@@ -268,7 +293,6 @@ async def pull_file(
                 result.md_paths.append(written_screen_rel)
                 result.pages_written += 1
 
-            # Write component .mds (one per component library section)
             written_component_rels: list[str] = []
             for section in component_sections:
                 if not section.frames:
@@ -292,7 +316,7 @@ async def pull_file(
             result.pages_errored += 1
             continue
 
-        # Save manifest entry — captures both screen and component output paths
+        # Save manifest entry
         entry = PageEntry(
             page_name=page_name,
             page_slug=page_slug,
@@ -302,10 +326,12 @@ async def pull_file(
             component_md_paths=written_component_rels,
         )
         state.set_page_entry(file_key, page_node_id, entry)
-
-        # Save after every page — crash/timeout/quota errors don't lose progress
         state.save()
-
         pages_written_this_call += 1
+
+        # Notify caller so it can commit/push incrementally
+        if on_page_written:
+            all_written = ([written_screen_rel] if written_screen_rel else []) + written_component_rels
+            on_page_written(f"{file_name} / {page_name}", all_written)
 
     return result

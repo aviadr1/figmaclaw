@@ -13,6 +13,7 @@ from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_utils import make_anthropic_client
 from figmaclaw.figma_sync_state import FigmaSyncState
 from figmaclaw.pull_logic import pull_file
+from figmaclaw.commands.pull import _git_commit_page, _git_push
 
 
 class WebhookAuthError(Exception):
@@ -20,8 +21,10 @@ class WebhookAuthError(Exception):
 
 
 @click.command("apply-webhook")
+@click.option("--auto-commit", "auto_commit", is_flag=True, help="git commit after each page.")
+@click.option("--push-every", "push_every", default=10, type=int, show_default=True, help="Push every N commits when --auto-commit is set.")
 @click.pass_context
-def apply_webhook_cmd(ctx: click.Context) -> None:
+def apply_webhook_cmd(ctx: click.Context, auto_commit: bool, push_every: int) -> None:
     """Process a Figma FILE_UPDATE webhook payload from FIGMA_WEBHOOK_PAYLOAD env var."""
     repo_dir = Path(ctx.obj["repo_dir"])
     api_key = os.environ.get("FIGMA_API_KEY", "")
@@ -35,7 +38,14 @@ def apply_webhook_cmd(ctx: click.Context) -> None:
     webhook_secret = os.environ.get("FIGMA_WEBHOOK_SECRET") or None
 
     try:
-        asyncio.run(_run(api_key=api_key, repo_dir=repo_dir, payload=payload, webhook_secret=webhook_secret))
+        asyncio.run(_run(
+            api_key=api_key,
+            repo_dir=repo_dir,
+            payload=payload,
+            webhook_secret=webhook_secret,
+            auto_commit=auto_commit,
+            push_every=push_every,
+        ))
     except WebhookAuthError as exc:
         raise click.ClickException(str(exc)) from exc
 
@@ -46,6 +56,8 @@ async def _run(
     repo_dir: Path,
     payload: str,
     webhook_secret: str | None,
+    auto_commit: bool = False,
+    push_every: int = 10,
 ) -> None:
     data = json.loads(payload)
 
@@ -69,8 +81,26 @@ async def _run(
 
     anthropic_client = make_anthropic_client()
 
+    commit_count = 0
+
+    def on_page_written(page_label: str, paths: list[str]) -> None:
+        nonlocal commit_count
+        if not auto_commit:
+            return
+        committed = _git_commit_page(repo_dir, page_label)
+        if committed:
+            commit_count += 1
+            click.echo(f"  ✓ committed: {page_label}")
+            if push_every and commit_count % push_every == 0:
+                click.echo(f"  ↑ pushing ({commit_count} commits)...")
+                _git_push(repo_dir)
+
     async with FigmaClient(api_key) as client:
-        result = await pull_file(client, file_id, state, repo_dir, anthropic_client=anthropic_client)
+        result = await pull_file(
+            client, file_id, state, repo_dir,
+            anthropic_client=anthropic_client,
+            on_page_written=on_page_written,
+        )
 
     state.save()
 

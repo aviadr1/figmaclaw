@@ -39,7 +39,24 @@ class FileEntry(BaseModel):
 
 
 class Manifest(BaseModel):
-    """Root manifest model persisted to .figma-sync/manifest.json."""
+    """Root manifest model persisted to .figma-sync/manifest.json.
+
+    Skip filters
+    ------------
+    Add a file key to ``skipped_files`` to permanently exclude it from every
+    pull run without removing it from ``tracked_files``.  The value is a
+    human-readable reason string shown in ``figmaclaw pull`` output.
+
+    Example::
+
+        "skipped_files": {
+            "ueCg0J6cIauP2sxZULxU7F": "no access — returns 400 on get_file_meta",
+            "WXhYDTovwb5vCcjisWwq0j": "scratch file — not useful to sync"
+        }
+
+    The auto-discovery step (``--team-id``) will never add a file to
+    ``tracked_files`` if it is already present in ``skipped_files``.
+    """
 
     schema_version: int = 1
     skip_pages: list[str] = Field(
@@ -51,6 +68,7 @@ class Manifest(BaseModel):
         ),
     )
     tracked_files: list[str] = Field(default_factory=list)
+    skipped_files: dict[str, str] = Field(default_factory=dict)
     files: dict[str, FileEntry] = Field(default_factory=dict)
 
 
