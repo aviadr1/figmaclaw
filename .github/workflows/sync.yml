@@ -1,0 +1,96 @@
+# Reusable workflow — called by host repos via:
+#   uses: aviadr1/figmaclaw/.github/workflows/sync.yml@main
+#
+# NOTE: concurrency must be set in the CALLER, not here.
+# Concurrency groups are repo-scoped; defining them here would lock across
+# every repo using figmaclaw under one shared queue.
+
+on:
+  workflow_call:
+    inputs:
+      force:
+        required: false
+        type: string
+        default: 'false'
+      since:
+        required: false
+        type: string
+        default: '3m'
+      figma_team_id:
+        required: false
+        type: string
+        default: ''
+    secrets:
+      FIGMA_API_KEY:
+        required: true
+      ANTHROPIC_API_KEY:
+        required: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install figmaclaw
+        run: pip install uv && uv tool install git+https://github.com/aviadr1/figmaclaw
+
+      - name: Pull latest changes
+        run: git pull --no-rebase
+
+      - name: Configure git
+        run: |
+          git config user.name "figmaclaw[bot]"
+          git config user.email "figmaclaw[bot]@users.noreply.github.com"
+
+      - name: Discover and track new Figma files
+        if: ${{ inputs.figma_team_id != '' }}
+        env:
+          FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+        run: |
+          figmaclaw list "${{ inputs.figma_team_id }}" --since "${{ inputs.since }}" --track-only | tee /tmp/figmaclaw-discover.txt || true
+          git add .figma-sync/
+          if ! git diff --cached --quiet; then
+            NEWLY=$(grep '^NEWLY_TRACKED:' /tmp/figmaclaw-discover.txt | head -1 | sed 's/^NEWLY_TRACKED://')
+            git commit -m "sync: figmaclaw — tracking ${NEWLY:-?} new file(s)"
+            git push
+            git pull --no-rebase
+          fi
+
+      - name: Pull Figma files (checkpointed loop)
+        env:
+          FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          FORCE_FLAG=""
+          if [ "${{ inputs.force }}" = "true" ]; then
+            FORCE_FLAG="--force"
+          fi
+
+          BATCH=0
+          while true; do
+            BATCH=$((BATCH + 1))
+            echo "--- batch $BATCH ---"
+
+            if [ -n "$FORCE_FLAG" ]; then
+              figmaclaw pull $FORCE_FLAG | tee /tmp/figmaclaw-out.txt || true
+            else
+              figmaclaw pull --max-pages 5 | tee /tmp/figmaclaw-out.txt || true
+            fi
+
+            git pull --no-rebase
+            git add figma/ .figma-sync/
+            if ! git diff --cached --quiet; then
+              COMMIT_MSG=$(grep '^COMMIT_MSG:' /tmp/figmaclaw-out.txt | head -1 | sed 's/^COMMIT_MSG://')
+              if [ -z "$COMMIT_MSG" ]; then
+                COMMIT_MSG="sync: figmaclaw — checkpoint batch $BATCH"
+              fi
+              git commit -m "$COMMIT_MSG"
+              git push
+            fi
+
+            grep -q '^HAS_MORE:true' /tmp/figmaclaw-out.txt || break
+            [ -n "$FORCE_FLAG" ] && break
+          done

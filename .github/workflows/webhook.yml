@@ -1,0 +1,65 @@
+# Reusable workflow — called by host repos via:
+#   uses: aviadr1/figmaclaw/.github/workflows/webhook.yml@main
+#
+# NOTE: concurrency must be set in the CALLER, not here.
+# github.event.client_payload is not available in the callee —
+# the caller must pass it as the webhook_payload input.
+
+on:
+  workflow_call:
+    inputs:
+      webhook_payload:
+        required: true
+        type: string
+    secrets:
+      FIGMA_API_KEY:
+        required: true
+      ANTHROPIC_API_KEY:
+        required: true
+      FIGMA_WEBHOOK_SECRET:
+        required: false
+
+jobs:
+  apply-webhook:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install figmaclaw
+        run: pip install uv && uv tool install git+https://github.com/aviadr1/figmaclaw
+
+      - name: Pull latest changes
+        run: git pull --no-rebase
+
+      - name: Apply webhook
+        id: apply
+        continue-on-error: true  # timeout/quota errors still save partial progress
+        env:
+          FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          FIGMA_WEBHOOK_SECRET: ${{ secrets.FIGMA_WEBHOOK_SECRET }}
+          FIGMA_WEBHOOK_PAYLOAD: ${{ inputs.webhook_payload }}
+        run: |
+          figmaclaw apply-webhook | tee /tmp/figmaclaw-out.txt
+          COMMIT_MSG=$(grep '^COMMIT_MSG:' /tmp/figmaclaw-out.txt | head -1 | sed 's/^COMMIT_MSG://')
+          echo "commit_msg=${COMMIT_MSG}" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and push progress
+        if: always()  # run even after timeout/quota error — commits partial progress
+        run: |
+          git config user.name "figmaclaw[bot]"
+          git config user.email "figmaclaw[bot]@users.noreply.github.com"
+          git pull --no-rebase
+          git add figma/ .figma-sync/
+          if git diff --cached --quiet; then
+            echo "Nothing to commit."
+          else
+            COMMIT_MSG="${{ steps.apply.outputs.commit_msg }}"
+            if [ -z "$COMMIT_MSG" ]; then
+              COMMIT_MSG="sync: figmaclaw — checkpoint (partial run)"
+            fi
+            git commit -m "$COMMIT_MSG"
+            git push
+          fi

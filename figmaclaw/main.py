@@ -10,6 +10,7 @@ from figmaclaw.commands.init import init_cmd
 from figmaclaw.commands.list_files import list_cmd
 from figmaclaw.commands.pull import pull_cmd
 from figmaclaw.commands.track import track_cmd
+from figmaclaw.commands.workflows_cmd import workflows_group
 
 
 @click.group()
@@ -39,3 +40,4 @@ cli.add_command(init_cmd)
 cli.add_command(list_cmd)
 cli.add_command(pull_cmd)
 cli.add_command(track_cmd)
+cli.add_command(workflows_group)

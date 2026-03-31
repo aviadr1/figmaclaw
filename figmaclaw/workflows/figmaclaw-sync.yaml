@@ -1,0 +1,38 @@
+# Installed by: figmaclaw init (or figmaclaw workflows upgrade)
+# Upgrade after tool update: figmaclaw workflows upgrade
+# Logic lives in: aviadr1/figmaclaw/.github/workflows/sync.yml
+
+name: figmaclaw — nightly sync
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # 2am UTC daily
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force full regeneration of all pages'
+        required: false
+        default: 'false'
+      since:
+        description: 'Discover files modified within this window (e.g. 3m, 7d, 1y, all). Default: 3m'
+        required: false
+        default: '3m'
+
+# Must be in caller: concurrency groups are repo-scoped.
+# Shared with webhook so both queue behind each other.
+# cancel-in-progress: false — never drop a scheduled sync run.
+concurrency:
+  group: figma-git-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    uses: aviadr1/figmaclaw/.github/workflows/sync.yml@main
+    with:
+      force: ${{ github.event.inputs.force || 'false' }}
+      since: ${{ github.event.inputs.since || '3m' }}
+      # vars.FIGMA_TEAM_ID is a repo variable (not secret) — must be passed as input
+      figma_team_id: ${{ vars.FIGMA_TEAM_ID }}
+    secrets:
+      FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

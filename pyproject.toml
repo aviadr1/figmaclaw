@@ -64,3 +64,6 @@ testpaths = ["tests"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["figmaclaw"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"figmaclaw/workflows" = "figmaclaw/workflows"

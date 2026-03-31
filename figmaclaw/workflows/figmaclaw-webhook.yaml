@@ -1,0 +1,28 @@
+# Installed by: figmaclaw init (or figmaclaw workflows upgrade)
+# Upgrade after tool update: figmaclaw workflows upgrade
+# Logic lives in: aviadr1/figmaclaw/.github/workflows/webhook.yml
+
+name: figmaclaw — Figma webhook
+
+on:
+  repository_dispatch:
+    types: [figma-webhook]
+
+# Must be in caller: concurrency groups are repo-scoped.
+# Shared with sync so both queue behind each other.
+# cancel-in-progress: true debounces rapid-fire Figma edit events —
+# if a designer saves repeatedly, only the last webhook runs.
+concurrency:
+  group: figma-git-sync
+  cancel-in-progress: true
+
+jobs:
+  apply-webhook:
+    uses: aviadr1/figmaclaw/.github/workflows/webhook.yml@main
+    with:
+      # github.event is not available in the callee — pass payload as input
+      webhook_payload: ${{ toJson(github.event.client_payload) }}
+    secrets:
+      FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      FIGMA_WEBHOOK_SECRET: ${{ secrets.FIGMA_WEBHOOK_SECRET }}
