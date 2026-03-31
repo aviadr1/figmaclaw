@@ -2,14 +2,16 @@
 
 Output format:
 - YAML frontmatter with machine-readable metadata (FigmaPageFrontmatter schema)
+  including frame descriptions (by node_id) and flow edges
 - H1 header with file + page name
 - Figma deep link
+- Optional page summary (LLM-generated)
 - Per-section tables (Screen | Node ID | Description) — human-readable display
-- Optional Mermaid flowchart for prototype flows
+- Mermaid flowchart (from prototype reactions + LLM-inferred flows)
 - Quick Reference table
 
 Policy: all structured data needed by machines lives in the YAML frontmatter.
-        The table rows are for human/AI reading only — never parse them.
+        The table rows and prose are for human/AI reading only — never parse them.
 """
 
 from __future__ import annotations
@@ -27,9 +29,9 @@ def render_page(page: FigmaPage, entry: PageEntry) -> str:
     """Render a FigmaPage to semantic markdown with YAML frontmatter."""
     parts: list[str] = []
 
-    # Collect frame descriptions for frontmatter
+    # Collect frame descriptions keyed by node_id (not name) for frontmatter
     frame_descs: dict[str, str] = {
-        frame.name: frame.description
+        frame.node_id: frame.description
         for section in page.sections
         for frame in section.frames
         if frame.description
@@ -42,6 +44,7 @@ def render_page(page: FigmaPage, entry: PageEntry) -> str:
             page_hash=entry.page_hash,
         ),
         frames=frame_descs,
+        flows=[[src, dst] for src, dst in page.flows],
     )
 
     fm_dict = frontmatter.model_dump()
@@ -58,6 +61,11 @@ def render_page(page: FigmaPage, entry: PageEntry) -> str:
     parts.append(f"[Open in Figma]({page.figma_url})")
     parts.append("")
 
+    # Page summary (LLM-generated)
+    if page.page_summary:
+        parts.append(page.page_summary)
+        parts.append("")
+
     # Per-section tables
     for section in page.sections:
         parts.append(f"## {section.name} (`{section.node_id}`)")
@@ -69,14 +77,14 @@ def render_page(page: FigmaPage, entry: PageEntry) -> str:
             parts.append(f"| {frame.name} | `{frame.node_id}` | {desc} |")
         parts.append("")
 
-    # Optional Mermaid flowchart
+    # Mermaid flowchart — from prototype reactions + LLM-inferred flows
     if page.flows:
         node_labels: dict[str, str] = {
             frame.node_id: frame.name
             for section in page.sections
             for frame in section.frames
         }
-        parts.append("## Prototype Flows")
+        parts.append("## Screen Flow")
         parts.append("")
         parts.append("```mermaid")
         parts.append("flowchart LR")

@@ -21,7 +21,7 @@ from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_hash import compute_page_hash
 from figmaclaw.figma_llm import enrich_page_with_descriptions
 from figmaclaw.figma_models import FigmaPage, from_page_node
-from figmaclaw.figma_parse import parse_frame_descriptions
+from figmaclaw.figma_parse import parse_flows, parse_frame_descriptions
 from figmaclaw.figma_paths import page_path, slugify
 from figmaclaw.figma_render import render_page
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
@@ -48,16 +48,29 @@ def write_page(repo_root: Path, page: FigmaPage, entry: PageEntry) -> Path:
     return out_path
 
 
-def _merge_descriptions(page: FigmaPage, existing_descs: dict[str, str]) -> FigmaPage:
-    """Return a copy of the page with descriptions filled from existing_descs where missing."""
+def _merge_existing(page: FigmaPage, existing_descs: dict[str, str], existing_flows: list[tuple[str, str]]) -> FigmaPage:
+    """Return a copy of the page with descriptions and flows restored from an existing .md file.
+
+    existing_descs: {node_id: description} from parse_frame_descriptions()
+    existing_flows: [(src, dst), ...] from parse_flows()
+    """
     new_sections = []
     for section in page.sections:
         new_frames = []
         for frame in section.frames:
-            desc = frame.description or existing_descs.get(frame.name, "")
+            desc = frame.description or existing_descs.get(frame.node_id, "")
             new_frames.append(frame.model_copy(update={"description": desc}))
         new_sections.append(section.model_copy(update={"frames": new_frames}))
-    return page.model_copy(update={"sections": new_sections})
+
+    # Merge flows: prototype reactions take priority; restore LLM-inferred flows from existing .md
+    existing_flow_set = set(page.flows)
+    merged_flows = list(page.flows)
+    for edge in existing_flows:
+        if edge not in existing_flow_set:
+            merged_flows.append(edge)
+            existing_flow_set.add(edge)
+
+    return page.model_copy(update={"sections": new_sections, "flows": merged_flows})
 
 
 async def _enrich_safe(anthropic_client: object, page: FigmaPage, result: PullResult) -> FigmaPage:
@@ -140,12 +153,14 @@ async def pull_file(
         page = from_page_node(page_node, file_key=file_key, file_name=file_name)
         page = page.model_copy(update={"page_slug": page_slug, "version": api_version, "last_modified": api_last_modified})
 
-        # Level 3: preserve existing descriptions, then call LLM for new frames
+        # Level 3: preserve existing descriptions + flows, then call LLM for new frames
         md_rel_path = page_path(file_key, page_slug)
         existing_md = repo_root / md_rel_path
         if existing_md.exists():
-            existing_descs = parse_frame_descriptions(existing_md.read_text())
-            page = _merge_descriptions(page, existing_descs)
+            md_text = existing_md.read_text()
+            existing_descs = parse_frame_descriptions(md_text)
+            existing_flows = parse_flows(md_text)
+            page = _merge_existing(page, existing_descs, existing_flows)
 
         if anthropic_client is not None:
             page = await _enrich_safe(anthropic_client, page, result)

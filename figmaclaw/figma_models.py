@@ -33,6 +33,7 @@ class FigmaPage(BaseModel):
     figma_url: str = ""
     sections: list[FigmaSection] = Field(default_factory=list)
     flows: list[tuple[str, str]] = Field(default_factory=list)
+    page_summary: str = ""
     last_modified: str = ""
     version: str = ""
 

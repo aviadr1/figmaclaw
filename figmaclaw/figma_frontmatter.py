@@ -34,3 +34,4 @@ class FigmaPageFrontmatter(BaseModel):
 
     figmaclaw: FigmaclawMeta
     frames: dict[str, str] = Field(default_factory=dict)
+    flows: list[list[str]] = Field(default_factory=list)  # [[src_node_id, dst_node_id], ...]

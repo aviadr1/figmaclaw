@@ -82,7 +82,7 @@ def test_render_page_frontmatter_carries_identity_fields():
 
 
 def test_render_page_frontmatter_carries_frame_descriptions():
-    """INVARIANT: Frame descriptions appear in the frontmatter frames dict."""
+    """INVARIANT: Frame descriptions appear in frontmatter keyed by node_id."""
     frames = [
         FigmaFrame(node_id="11:1", name="welcome screen", description="The onboarding welcome."),
     ]
@@ -91,7 +91,7 @@ def test_render_page_frontmatter_carries_frame_descriptions():
     md = render_page(page, _make_entry())
     fm = parse_frontmatter(md)
     assert fm is not None
-    assert fm.frames["welcome screen"] == "The onboarding welcome."
+    assert fm.frames["11:1"] == "The onboarding welcome."
 
 
 def test_render_page_frontmatter_omits_empty_descriptions():
@@ -218,7 +218,7 @@ def test_parse_page_metadata_returns_none_for_missing_frontmatter():
 
 
 def test_parse_frame_descriptions_recovers_descriptions():
-    """INVARIANT: parse_frame_descriptions recovers {frame_name: description} from rendered md."""
+    """INVARIANT: parse_frame_descriptions recovers {node_id: description} from rendered md."""
     frames = [
         FigmaFrame(node_id="11:1", name="welcome screen", description="The onboarding welcome."),
         FigmaFrame(node_id="11:2", name="permissions screen", description="Asks for camera access."),
@@ -227,8 +227,8 @@ def test_parse_frame_descriptions_recovers_descriptions():
     page = _make_page(sections=[section])
     md = render_page(page, _make_entry())
     descriptions = parse_frame_descriptions(md)
-    assert descriptions["welcome screen"] == "The onboarding welcome."
-    assert descriptions["permissions screen"] == "Asks for camera access."
+    assert descriptions["11:1"] == "The onboarding welcome."
+    assert descriptions["11:2"] == "Asks for camera access."
 
 
 def test_parse_frame_descriptions_empty_for_plain_file():
