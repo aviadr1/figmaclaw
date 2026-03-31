@@ -207,7 +207,7 @@ async def test_pull_file_writes_page_when_hash_changed(tmp_path: Path):
     result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
     assert result.pages_written == 1
-    out = tmp_path / "figma" / "abc123" / "pages" / "onboarding.md"
+    out = tmp_path / "figma" / "web-app" / "pages" / "onboarding.md"
     assert out.exists()
 
 
@@ -237,8 +237,9 @@ async def test_pull_file_updates_manifest_after_write(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_pull_file_preserves_existing_descriptions(tmp_path: Path):
     """INVARIANT: pull_file preserves frame descriptions from existing .md for unchanged frames."""
-    # Pre-write a .md with existing descriptions
+    # Pre-write a .md with existing descriptions at the slug-based path
     existing_entry = _make_entry("0000000000000000")
+    existing_entry = existing_entry.model_copy(update={"md_path": "figma/web-app/pages/onboarding.md"})
     page_with_descs = _make_page()  # has descriptions
     write_page(tmp_path, page_with_descs, existing_entry)
 
@@ -263,7 +264,7 @@ async def test_pull_file_preserves_existing_descriptions(tmp_path: Path):
 
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
-    out = tmp_path / "figma" / "abc123" / "pages" / "onboarding.md"
+    out = tmp_path / "figma" / "web-app" / "pages" / "onboarding.md"
     content = out.read_text()
     # The existing descriptions should be preserved in the output
     assert "Welcome screen." in content

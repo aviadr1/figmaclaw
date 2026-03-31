@@ -15,9 +15,9 @@ from figmaclaw.figma_sync_state import FigmaSyncState, Manifest
 # --- figma_paths ---
 
 def test_page_path_format():
-    """INVARIANT: page_path returns figma/{file_key}/pages/{slug}.md"""
-    result = page_path("abc123", "onboarding")
-    assert result == "figma/abc123/pages/onboarding.md"
+    """INVARIANT: page_path returns figma/{file_slug}/pages/{slug}.md"""
+    result = page_path("web-app", "onboarding")
+    assert result == "figma/web-app/pages/onboarding.md"
 
 
 def test_slugify_lowercases():

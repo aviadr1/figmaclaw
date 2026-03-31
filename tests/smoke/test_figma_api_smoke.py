@@ -113,7 +113,7 @@ async def test_render_and_parse_round_trip_against_real_page(api_key: str) -> No
     entry = PageEntry(
         page_name=page.page_name,
         page_slug="reach-auto-content-sharing",
-        md_path=f"figma/{TEST_FILE_KEY}/pages/reach-auto-content-sharing.md",
+        md_path="figma/web-app/pages/reach-auto-content-sharing.md",
         page_hash="smoketest00000000",
         last_refreshed_at="2026-03-31T00:00:00Z",
     )

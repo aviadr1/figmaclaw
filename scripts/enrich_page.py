@@ -55,10 +55,11 @@ async def _run(file_key: str, page_node_id: str) -> None:
     described = sum(1 for s in enriched.sections for f in s.frames if f.description)
     click.echo(f"Described: {described}/{n_frames} frames, {len(enriched.flows)} flows", err=True)
 
+    file_slug = slugify(file_name, fallback=file_key)
     entry = PageEntry(
         page_name=enriched.page_name,
         page_slug=enriched.page_slug,
-        md_path=f"figma/{file_key}/pages/{enriched.page_slug}.md",
+        md_path=f"figma/{file_slug}/pages/{enriched.page_slug}.md",
         page_hash="preview",
         last_refreshed_at="now",
     )

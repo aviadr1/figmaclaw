@@ -18,9 +18,9 @@ def slugify(text: str, fallback: str = "untitled") -> str:
     return result or fallback
 
 
-def page_path(file_key: str, page_slug: str) -> str:
+def page_path(file_slug: str, page_slug: str) -> str:
     """Return the repo-relative path for a page markdown file.
 
-    Example: figma/hOV4QM/pages/onboarding.md
+    Example: figma/web-app/pages/onboarding.md
     """
-    return f"figma/{file_key}/pages/{page_slug}.md"
+    return f"figma/{file_slug}/pages/{page_slug}.md"

@@ -150,11 +150,12 @@ async def pull_file(
 
         # Build FigmaPage from the node
         page_slug = slugify(page_name)
+        file_slug = slugify(file_name, fallback=file_key)
         page = from_page_node(page_node, file_key=file_key, file_name=file_name)
         page = page.model_copy(update={"page_slug": page_slug, "version": api_version, "last_modified": api_last_modified})
 
         # Level 3: preserve existing descriptions + flows, then call LLM for new frames
-        md_rel_path = page_path(file_key, page_slug)
+        md_rel_path = page_path(file_slug, page_slug)
         existing_md = repo_root / md_rel_path
         if existing_md.exists():
             md_text = existing_md.read_text()
