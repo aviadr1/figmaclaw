@@ -11,7 +11,7 @@ import click
 
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_sync_state import FigmaSyncState
-from figmaclaw.figma_utils import make_anthropic_client
+from figmaclaw.figma_utils import make_anthropic_client, parse_since
 from figmaclaw.pull_logic import PullResult, pull_file
 
 
@@ -22,15 +22,17 @@ from figmaclaw.pull_logic import PullResult, pull_file
 @click.option("--max-pages", "max_pages", default=None, type=int, help="Global page budget per run (batch loop mode).")
 @click.option("--auto-commit", "auto_commit", is_flag=True, help="git commit after each page. CI should do a final git push.")
 @click.option("--push-every", "push_every", default=10, type=int, show_default=True, help="Push every N commits when --auto-commit is set.")
+@click.option("--team-id", "team_id", default=None, envvar="FIGMA_TEAM_ID", help="Figma team ID. Enables fast listing pre-filter and auto-discovery of new files.")
+@click.option("--since", "since", default="3m", show_default=True, help="When --team-id is set, only track files modified within this window (e.g. 3m, 7d, all).")
 @click.pass_context
-def pull_cmd(ctx: click.Context, file_key: str | None, force: bool, no_llm: bool, max_pages: int | None, auto_commit: bool, push_every: int) -> None:
+def pull_cmd(ctx: click.Context, file_key: str | None, force: bool, no_llm: bool, max_pages: int | None, auto_commit: bool, push_every: int, team_id: str | None, since: str) -> None:
     """Pull all tracked Figma files and write changed pages to disk."""
     repo_dir = Path(ctx.obj["repo_dir"])
     api_key = os.environ.get("FIGMA_API_KEY", "")
     if not api_key:
         raise click.UsageError("FIGMA_API_KEY environment variable is not set.")
 
-    asyncio.run(_run(api_key, repo_dir, file_key, force, no_llm, max_pages, auto_commit, push_every))
+    asyncio.run(_run(api_key, repo_dir, file_key, force, no_llm, max_pages, auto_commit, push_every, team_id, since))
 
 
 def _git_commit_page(repo_dir: Path, page_label: str) -> bool:
@@ -52,6 +54,74 @@ def _git_push(repo_dir: Path) -> None:
         subprocess.run(["git", "-C", str(repo_dir), "push"], check=False)
 
 
+async def _listing_prefilter(
+    client: FigmaClient,
+    team_id: str,
+    state: FigmaSyncState,
+    since: str,
+) -> dict[str, str]:
+    """List all team files in parallel, track new ones, return {file_key: last_modified}.
+
+    Files whose last_modified matches the stored value can be skipped without
+    calling get_file_meta — the cheap listing replaces 63 individual meta calls
+    in the no-op case.
+    """
+    from figmaclaw.figma_utils import parse_since
+    from datetime import datetime
+
+    since_dt: datetime | None = None
+    if since:
+        try:
+            since_dt = parse_since(since)
+        except ValueError:
+            pass
+
+    projects = await client.list_team_projects(team_id)
+
+    # Fetch all project file listings concurrently
+    async def _list_project(project: dict) -> list[dict]:
+        try:
+            return await client.list_project_files(str(project.get("id", "")))
+        except Exception:
+            return []
+
+    all_file_lists = await asyncio.gather(*[_list_project(p) for p in projects])
+
+    listing_last_modified: dict[str, str] = {}
+    newly_tracked = 0
+    tracked = set(state.manifest.tracked_files)
+
+    for files in all_file_lists:
+        for file_info in files:
+            file_key: str = file_info.get("key", "")
+            file_name: str = file_info.get("name", "")
+            last_modified: str = file_info.get("last_modified", "")
+            if not file_key:
+                continue
+
+            # Date filter for auto-discovery only
+            if since_dt and last_modified and file_key not in tracked:
+                try:
+                    modified_dt = datetime.fromisoformat(last_modified.replace("Z", "+00:00"))
+                    if modified_dt < since_dt:
+                        continue
+                except ValueError:
+                    pass
+
+            listing_last_modified[file_key] = last_modified
+
+            if file_key not in tracked:
+                state.add_tracked_file(file_key, file_name)
+                click.echo(f"  → now tracking {file_name!r}")
+                tracked.add(file_key)
+                newly_tracked += 1
+
+    if newly_tracked:
+        click.echo(f"NEWLY_TRACKED:{newly_tracked}")
+
+    return listing_last_modified
+
+
 async def _run(
     api_key: str,
     repo_dir: Path,
@@ -61,22 +131,16 @@ async def _run(
     max_pages: int | None,
     auto_commit: bool,
     push_every: int,
+    team_id: str | None,
+    since: str,
 ) -> None:
     state = FigmaSyncState(repo_dir)
     state.load()
-
-    if not state.manifest.tracked_files:
-        click.echo("No tracked files. Run 'figmaclaw track <file-key>' first.")
-        return
-
-    keys = [file_key] if file_key else state.manifest.tracked_files
-    all_results: list[PullResult] = []
 
     anthropic_client = make_anthropic_client() if not no_llm else None
     if anthropic_client is None and not no_llm:
         click.echo("Note: ANTHROPIC_API_KEY not set — skipping LLM description generation.")
 
-    # Auto-commit state: track commit count for push-every logic
     commit_count = 0
 
     def on_page_written(page_label: str, paths: list[str]) -> None:
@@ -91,11 +155,24 @@ async def _run(
                 click.echo(f"  ↑ pushing ({commit_count} commits)...")
                 _git_push(repo_dir)
 
-    # max_pages is a global budget across all files in this batch run
+    all_results: list[PullResult] = []
     pages_budget = max_pages
     has_more_global = False
 
     async with FigmaClient(api_key) as client:
+        # Fast listing pre-filter: one listing pass replaces N individual get_file_meta
+        # calls for unchanged files. Also handles auto-discovery when team_id is set.
+        listing_last_modified: dict[str, str] = {}
+        if team_id and not file_key:
+            listing_last_modified = await _listing_prefilter(client, team_id, state, since)
+            state.save()  # persist any newly tracked files before pulling
+
+        if not state.manifest.tracked_files:
+            click.echo("No tracked files. Run 'figmaclaw track <file-key>' first.")
+            return
+
+        keys = [file_key] if file_key else list(state.manifest.tracked_files)
+
         for key in keys:
             if key not in state.manifest.tracked_files:
                 click.echo(f"File key {key!r} is not tracked. Run 'figmaclaw track {key}' first.")
@@ -104,6 +181,13 @@ async def _run(
             if max_pages is not None and pages_budget is not None and pages_budget <= 0:
                 has_more_global = True
                 break
+
+            # Listing pre-filter: skip get_file_meta entirely if last_modified unchanged
+            if not force and listing_last_modified:
+                listing_lm = listing_last_modified.get(key)
+                stored = state.manifest.files.get(key)
+                if listing_lm and stored and stored.last_modified == listing_lm:
+                    continue  # unchanged — no API call needed
 
             try:
                 result = await pull_file(
@@ -135,7 +219,6 @@ async def _run(
 
     state.save()
 
-    # Emit commit message for CI
     all_screen_paths = [p for r in all_results for p in r.md_paths]
     all_comp_paths = [p for r in all_results for p in r.component_paths]
     if all_screen_paths or all_comp_paths:
