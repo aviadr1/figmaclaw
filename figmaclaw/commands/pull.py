@@ -54,9 +54,11 @@ async def _run(api_key: str, repo_dir: Path, file_key: str | None, force: bool, 
             if result.skipped_file:
                 click.echo(f"{key}: unchanged (skipped)")
             else:
-                click.echo(f"{key}: wrote {result.pages_written} page(s), skipped {result.pages_skipped}")
+                click.echo(f"{key}: wrote {result.pages_written} page(s), {result.component_sections_written} component(s), skipped {result.pages_skipped}")
                 for path in result.md_paths:
                     click.echo(f"  → {path}")
+                for path in result.component_paths:
+                    click.echo(f"  ❖ {path}")
 
     state.save()
 
