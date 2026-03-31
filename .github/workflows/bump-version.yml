@@ -1,0 +1,46 @@
+name: Bump plugin version
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  bump:
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bump patch version
+        run: |
+          python3 - <<'EOF'
+          import json
+          from pathlib import Path
+
+          plugin_path = Path(".claude-plugin/plugin.json")
+          marketplace_path = Path(".claude-plugin/marketplace.json")
+
+          plugin = json.loads(plugin_path.read_text())
+          major, minor, patch = plugin["version"].split(".")
+          new_version = f"{major}.{minor}.{int(patch) + 1}"
+
+          plugin["version"] = new_version
+          plugin_path.write_text(json.dumps(plugin, indent=2) + "\n")
+
+          marketplace = json.loads(marketplace_path.read_text())
+          for p in marketplace.get("plugins", []):
+              if p["name"] == "figmaclaw":
+                  p["version"] = new_version
+          marketplace_path.write_text(json.dumps(marketplace, indent=2) + "\n")
+
+          print(f"Bumped to {new_version}")
+          EOF
+
+      - name: Commit version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .claude-plugin/plugin.json .claude-plugin/marketplace.json
+          git diff --staged --quiet || git commit -m "chore: bump plugin version [skip ci]" && git push
