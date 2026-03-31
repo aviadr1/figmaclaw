@@ -1,77 +1,51 @@
-"""Parse machine-readable metadata from figmaclaw-rendered markdown files.
+"""Parse YAML frontmatter from figmaclaw-rendered markdown files.
 
-Used for incremental pulls — read back what was previously written so we can
-preserve existing descriptions for unchanged frames and detect page hashes.
+Policy: all structured data for machines lives in the YAML frontmatter.
+        The frontmatter schema is FigmaPageFrontmatter (Pydantic).
+
+parse_frontmatter() is the primary entry point — it returns the full
+FigmaPageFrontmatter model. The convenience functions parse_page_metadata()
+and parse_frame_descriptions() delegate to it.
 """
 
 from __future__ import annotations
 
 import re
 
-from pydantic import BaseModel
+import yaml
+
+from figmaclaw.figma_frontmatter import FigmaclawMeta, FigmaPageFrontmatter
+
+_FRONTMATTER_RE = re.compile(r"^---\n(.+?)\n---", re.DOTALL)
 
 
-class PageMetadata(BaseModel):
-    """Structured metadata extracted from the HTML comment in a rendered page."""
+def parse_frontmatter(md: str) -> FigmaPageFrontmatter | None:
+    """Parse and validate the YAML frontmatter block from a rendered page.
 
-    file_key: str
-    page_node_id: str
-    page_hash: str
-
-
-_COMMENT_RE = re.compile(r"<!--\s*figmaclaw:\s*(.+?)\s*-->", re.DOTALL)
-_KV_RE = re.compile(r"(\w+)=(\S+)")
-
-# Matches 3-column section table rows: | frame name | `node_id` | description |
-# Does NOT match 4-column Quick Reference rows: | frame | `id` | section | desc |
-_TABLE_ROW_RE = re.compile(r"^\|\s*(.+?)\s*\|\s*`([^`]+)`\s*\|\s*([^|]+?)\s*\|$")
-
-
-def parse_page_metadata(md: str) -> PageMetadata | None:
-    """Extract file_key, page_node_id, page_hash from the HTML comment.
-
-    Returns None if no figmaclaw comment is found.
+    Returns None if no frontmatter is found or it doesn't have a 'figmaclaw' key.
     """
-    match = _COMMENT_RE.search(md)
+    match = _FRONTMATTER_RE.match(md)
     if not match:
         return None
-
-    body = match.group(1)
-    kv: dict[str, str] = {m.group(1): m.group(2) for m in _KV_RE.finditer(body)}
-
-    try:
-        return PageMetadata(
-            file_key=kv["file_key"],
-            page_node_id=kv["page_node_id"],
-            page_hash=kv["page_hash"],
-        )
-    except KeyError:
+    data = yaml.safe_load(match.group(1))
+    if not isinstance(data, dict) or "figmaclaw" not in data:
         return None
+    return FigmaPageFrontmatter.model_validate(data)
+
+
+def parse_page_metadata(md: str) -> FigmaclawMeta | None:
+    """Extract file_key, page_node_id, page_hash from the frontmatter.
+
+    Returns None if no figmaclaw frontmatter is found.
+    """
+    fm = parse_frontmatter(md)
+    return fm.figmaclaw if fm else None
 
 
 def parse_frame_descriptions(md: str) -> dict[str, str]:
-    """Extract {frame_name: description} from a rendered figmaclaw markdown file.
+    """Extract {frame_name: description} from the frontmatter.
 
-    Reads from section tables (3-column: Screen | Node ID | Description).
-    Skips header rows and Quick Reference table (4-column).
-    Returns empty dict if the file has no figmaclaw tables.
+    Returns empty dict if the file has no figmaclaw frontmatter.
     """
-    # Only parse files that have the figmaclaw comment
-    if "<!-- figmaclaw:" not in md:
-        return {}
-
-    descriptions: dict[str, str] = {}
-    for line in md.splitlines():
-        m = _TABLE_ROW_RE.match(line)
-        if m:
-            frame_name = m.group(1)
-            description = m.group(3)
-            # Skip header rows
-            if frame_name.lower() == "screen":
-                continue
-            # Skip separator rows
-            if set(description.replace("-", "").replace("|", "").strip()) <= set():
-                continue
-            descriptions[frame_name] = description
-
-    return descriptions
+    fm = parse_frontmatter(md)
+    return fm.frames if fm else {}

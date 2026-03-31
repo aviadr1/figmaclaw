@@ -13,6 +13,12 @@ This means: API response models, manifest models, frontmatter/metadata models, d
 If you find yourself writing `@dataclass`, stop and write `class Foo(BaseModel)` instead.
 Benefits: validation on construction, `model_dump_json()` for free, type-safe field access, easy testing.
 
+### Frontmatter Policy — Structured Data Belongs in YAML Frontmatter
+All structured information needed by machines in a `.md` file goes in the YAML frontmatter block.
+The frontmatter schema is YAML; every frontmatter shape must have a corresponding Pydantic `BaseModel` class.
+The markdown body (tables, headings, prose) is for human and AI reading only — never parse it programmatically.
+See `figma_frontmatter.py` → `FigmaPageFrontmatter` as the reference implementation.
+
 ### Test-Driven Development
 - Write the test first. Always. Even for a 5-line helper.
 - Smoke test the API/integration layer before writing any implementation code.

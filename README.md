@@ -21,24 +21,35 @@ Plus nightly `figmaclaw pull` for reconciliation.
 
 ## Output format
 
-One `.md` per Figma page, stored at `figma/{file-key}/pages/{page-slug}.md`:
+One `.md` per Figma page, stored at `figma/{file-key}/pages/{page-slug}.md`.
+
+**Policy: all structured data needed by machines goes in the YAML frontmatter.** The frontmatter schema is enforced by `FigmaPageFrontmatter` (Pydantic). The body is for human and AI reading only — never parse the table rows.
 
 ```markdown
+---
+figmaclaw:
+  file_key: hOV4QMBnDIG5s5OYkSrX9E
+  page_node_id: "7741:45837"
+  page_hash: a3f1b2c4deadbeef
+frames:
+  no account connected: Empty state – no socials connected yet, CTA to connect
+  one account connected: Single account view with option to add more
+---
+
 # Web App / Reach - Auto Content Sharing
 
-<!-- figmaclaw: file_key=hOV4QMBnDIG5s5OYkSrX9E page_node_id=7741:45837 page_hash=a3f1b2c4 -->
-
-**Figma:** https://www.figma.com/design/...
-
-Full flow for auto content sharing: connecting social accounts, scheduling events, going live, and sharing clips.
-
----
+[Open in Figma](https://www.figma.com/design/...)
 
 ## manage accounts (`10706:9231`)
 
 | Screen | Node ID | Description |
 |--------|---------|-------------|
 | no account connected | `10676:5534` | Empty state – no socials connected yet, CTA to connect |
+...
+
+## Quick Reference
+
+| Screen | Node ID | Section | Description |
 ...
 ```
 
