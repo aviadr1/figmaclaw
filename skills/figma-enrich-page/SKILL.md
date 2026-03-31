@@ -106,6 +106,21 @@ git push
 
 **On flowcharts:** Screenshots don't tell you flows. The Figma API node tree includes a `reactions` field on each frame — these are the prototype arrows (click/hover interactions) connecting frames. That's the authoritative source. `figmaclaw enrich` extracts these automatically. If a page has no prototype reactions, no Mermaid block is generated — that's correct behavior, not a gap.
 
+## File format contract
+
+**All machine-readable data lives in the YAML frontmatter — never in the prose body.**
+
+| Field | Location | Purpose |
+|---|---|---|
+| `file_key` | frontmatter | Figma file key for API calls |
+| `page_node_id` | frontmatter | Figma CANVAS node ID |
+| `frames` | frontmatter (flow-style dict) | node_id → description, authoritative source |
+| `flows` | frontmatter (flow-style list) | `[[from_id, to_id], ...]` prototype edges |
+
+The table rows in the body are a human/AI reading view rendered from the frontmatter. Do not parse table cells to extract node IDs or descriptions — read `frames` from the frontmatter instead. The body may be reformatted, reflowed, or regenerated at any time.
+
+When writing descriptions back to a file, use `figmaclaw set-frames` (CLI) or write to the `frames` frontmatter dict directly. Do not edit table cells.
+
 ## Notes
 
 - The `reserach` section typo in some Figma files is real — preserve it as-is so the node_id mapping stays correct

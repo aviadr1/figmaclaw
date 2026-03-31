@@ -22,28 +22,32 @@ Plus nightly `figmaclaw pull` for reconciliation.
 
 One `.md` per Figma page, stored at `figma/{file-key}/pages/{page-slug}.md`.
 
-**Policy: all structured data needed by machines goes in the YAML frontmatter.** The frontmatter schema is enforced by `FigmaPageFrontmatter` (Pydantic). The body is for human and AI reading only — never parse the table rows.
+**Policy: all structured data needed by machines lives in the YAML frontmatter.** The frontmatter schema is enforced by `FigmaPageFrontmatter` (Pydantic). The body (tables, Mermaid chart, prose) is a rendered view for human and AI reading only — never parse table rows or prose to extract node IDs, descriptions, or flows.
+
+| Field | Location | Purpose |
+|---|---|---|
+| `file_key` | frontmatter | Figma file key for API calls |
+| `page_node_id` | frontmatter | Figma CANVAS node ID |
+| `frames` | frontmatter (inline dict) | node_id → description, authoritative source |
+| `flows` | frontmatter (inline list) | `[[from_id, to_id], ...]` prototype edges |
 
 ```markdown
 ---
-figmaclaw:
-  file_key: hOV4QMBnDIG5s5OYkSrX9E
-  page_node_id: "7741:45837"
-  page_hash: a3f1b2c4deadbeef
-frames:
-  no account connected: Empty state – no socials connected yet, CTA to connect
-  one account connected: Single account view with option to add more
+file_key: hOV4QMBnDIG5s5OYkSrX9E
+page_node_id: "7741:45837"
+frames: {"10676:5534": "Empty state – no socials connected yet", "10705:6560": "Full list of connected platforms"}
+flows: [["10706:9231", "10639:4378"]]
 ---
 
-# Web App / Reach - Auto Content Sharing
+# Web App / Reach — Auto Content Sharing
 
-[Open in Figma](https://www.figma.com/design/...)
+**File:** Web App · [Open in Figma](https://www.figma.com/design/...)
 
 ## manage accounts (`10706:9231`)
 
 | Screen | Node ID | Description |
 |--------|---------|-------------|
-| no account connected | `10676:5534` | Empty state – no socials connected yet, CTA to connect |
+| no account connected | `10676:5534` | Empty state – no socials connected yet |
 ...
 
 ## Quick Reference
