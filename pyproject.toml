@@ -67,3 +67,4 @@ packages = ["figmaclaw"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "figmaclaw/workflows" = "figmaclaw/workflows"
+"figmaclaw/skills" = "figmaclaw/skills"
