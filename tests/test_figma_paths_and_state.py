@@ -193,3 +193,79 @@ def test_sync_state_manifest_written_as_json(tmp_path: Path):
     assert manifest_file.exists()
     data = json.loads(manifest_file.read_text())
     assert data["tracked_files"] == ["abc123"]
+
+
+# --- should_skip_page ---
+
+def test_should_skip_page_matches_old_prefix(tmp_path: Path):
+    """INVARIANT: Pages named 'old-*' are skipped by default."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    assert state.should_skip_page("old-components") is True
+    assert state.should_skip_page("old-concept-community") is True
+
+
+def test_should_skip_page_matches_old_space_prefix(tmp_path: Path):
+    """INVARIANT: Pages named 'old *' (with space) are skipped by default."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    assert state.should_skip_page("old concept") is True
+    assert state.should_skip_page("old gigaverse design system") is True
+
+
+def test_should_skip_page_matches_separator(tmp_path: Path):
+    """INVARIANT: Pages named '---' (separator) are skipped by default."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    assert state.should_skip_page("---") is True
+
+
+def test_should_skip_page_is_case_insensitive(tmp_path: Path):
+    """INVARIANT: skip_pages matching is case-insensitive."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    assert state.should_skip_page("OLD-Components") is True
+    assert state.should_skip_page("OLD CONCEPT") is True
+
+
+def test_should_skip_page_does_not_skip_normal_page(tmp_path: Path):
+    """INVARIANT: Normal pages are not skipped."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    assert state.should_skip_page("Onboarding") is False
+    assert state.should_skip_page("Home Feed") is False
+    assert state.should_skip_page("Components") is False
+
+
+def test_should_skip_page_respects_custom_patterns(tmp_path: Path):
+    """INVARIANT: Custom skip_pages patterns in the manifest are respected."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.manifest.skip_pages = ["archive*", "📦*"]
+    assert state.should_skip_page("archive-v1") is True
+    assert state.should_skip_page("📦 Icons") is True
+    assert state.should_skip_page("Onboarding") is False
+
+
+def test_skip_pages_default_values_persisted_to_manifest(tmp_path: Path):
+    """INVARIANT: Default skip_pages patterns are written to manifest.json on save."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.save()
+
+    data = json.loads((tmp_path / ".figma-sync" / "manifest.json").read_text())
+    assert "old-*" in data["skip_pages"]
+    assert "old *" in data["skip_pages"]
+    assert "---" in data["skip_pages"]
+
+
+def test_skip_pages_custom_patterns_round_trip(tmp_path: Path):
+    """INVARIANT: Custom skip_pages patterns survive a save/load round-trip."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.manifest.skip_pages = ["archive*", "wip-*"]
+    state.save()
+
+    state2 = FigmaSyncState(tmp_path)
+    state2.load()
+    assert state2.manifest.skip_pages == ["archive*", "wip-*"]

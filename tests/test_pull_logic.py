@@ -550,6 +550,70 @@ async def test_pull_file_continues_after_page_fetch_error(tmp_path: Path):
     assert result.pages_written == 2
 
 
+# --- skip_pages ---
+
+def _fake_file_meta_with_pages(*page_names: str) -> dict:
+    return {
+        "version": "v2",
+        "lastModified": "2026-03-31T12:00:00Z",
+        "name": "Web App",
+        "document": {
+            "children": [
+                {"id": f"100:{i}", "name": name, "type": "CANVAS"}
+                for i, name in enumerate(page_names, 1)
+            ]
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_pull_file_skips_pages_matching_skip_pages_patterns(tmp_path: Path):
+    """INVARIANT: pull_file skips pages whose names match skip_pages glob patterns."""
+    from figmaclaw.figma_client import FigmaClient
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta_with_pages(
+        "Onboarding", "old-components", "old concept", "---"
+    ))
+    mock_client.get_page = AsyncMock(
+        side_effect=lambda fk, pid: _fake_page_node_for_id(pid, "Onboarding")
+    )
+
+    result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    # Only "Onboarding" should be written; the 3 skip-pattern pages are skipped
+    assert result.pages_written == 1
+    assert result.pages_skipped == 3
+    # get_page should never be called for skipped pages (saves API calls)
+    assert mock_client.get_page.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_pull_file_skip_pages_does_not_fetch_page_content(tmp_path: Path):
+    """INVARIANT: Skipped pages are filtered before any API fetch — no wasted calls."""
+    from figmaclaw.figma_client import FigmaClient
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta_with_pages("old-archive"))
+    mock_client.get_page = AsyncMock()
+
+    result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    assert result.pages_skipped == 1
+    assert result.pages_written == 0
+    mock_client.get_page.assert_not_called()
+
+
 # --- progress callback ---
 
 @pytest.mark.asyncio

@@ -189,6 +189,11 @@ async def pull_file(
         page_node_id: str = page_stub["id"]
         page_name: str = page_stub.get("name", "")
 
+        if state.should_skip_page(page_name):
+            _progress(f"  [{page_idx}/{total_pages}] {page_name} — skipped (matches skip_pages pattern)")
+            result.pages_skipped += 1
+            continue
+
         # Level 2: structural hash check — fetch page only if needed
         try:
             page_node = await client.get_page(file_key, page_node_id)

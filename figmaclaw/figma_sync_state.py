@@ -7,6 +7,7 @@ generated .md files — never .gitignored.
 
 from __future__ import annotations
 
+import fnmatch
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -41,6 +42,14 @@ class Manifest(BaseModel):
     """Root manifest model persisted to .figma-sync/manifest.json."""
 
     schema_version: int = 1
+    skip_pages: list[str] = Field(
+        default_factory=lambda: ["old-*", "old *", "---"],
+        description=(
+            "Glob patterns (case-insensitive) for page names to skip during sync. "
+            "Edit this list in .figma-sync/manifest.json to customise. "
+            "Examples: 'old-*', '📦*', '---', 'archive*'"
+        ),
+    )
     tracked_files: list[str] = Field(default_factory=list)
     files: dict[str, FileEntry] = Field(default_factory=dict)
 
@@ -100,6 +109,14 @@ class FigmaSyncState:
         """Update or insert a page entry for a tracked file."""
         if file_key in self.manifest.files:
             self.manifest.files[file_key].pages[page_node_id] = entry
+
+    def should_skip_page(self, page_name: str) -> bool:
+        """Return True if page_name matches any skip_pages glob pattern (case-insensitive)."""
+        name_lower = page_name.lower()
+        return any(
+            fnmatch.fnmatch(name_lower, pattern.lower())
+            for pattern in self.manifest.skip_pages
+        )
 
     def set_file_meta(self, file_key: str, version: str, last_modified: str, last_checked_at: str) -> None:
         """Update file-level metadata after a successful check."""
