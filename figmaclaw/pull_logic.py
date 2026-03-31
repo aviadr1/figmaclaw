@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_hash import compute_page_hash
+from figmaclaw.figma_llm import enrich_page_with_descriptions
 from figmaclaw.figma_models import FigmaPage, from_page_node
 from figmaclaw.figma_parse import parse_frame_descriptions
 from figmaclaw.figma_paths import page_path, slugify
@@ -62,6 +63,7 @@ async def pull_file(
     repo_root: Path,
     *,
     force: bool = False,
+    anthropic_client: "object | None" = None,
 ) -> PullResult:
     """Pull all pages for a tracked Figma file, writing changed pages to disk.
 
@@ -109,12 +111,16 @@ async def pull_file(
         page = from_page_node(page_node, file_key=file_key, file_name=file_name)
         page = page.model_copy(update={"page_slug": page_slug, "version": api_version, "last_modified": api_last_modified})
 
-        # Level 3: preserve existing descriptions
+        # Level 3: preserve existing descriptions, then call LLM for new frames
         md_rel_path = page_path(file_key, page_slug)
         existing_md = repo_root / md_rel_path
         if existing_md.exists():
             existing_descs = parse_frame_descriptions(existing_md.read_text())
             page = _merge_descriptions(page, existing_descs)
+
+        if anthropic_client is not None:
+            from anthropic import AsyncAnthropic
+            page = await enrich_page_with_descriptions(anthropic_client, page)  # type: ignore[arg-type]
 
         entry = PageEntry(
             page_name=page_name,

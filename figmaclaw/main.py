@@ -5,6 +5,8 @@ from __future__ import annotations
 import click
 
 from figmaclaw import __version__
+from figmaclaw.commands.pull import pull_cmd
+from figmaclaw.commands.track import track_cmd
 
 
 @click.group()
@@ -27,3 +29,7 @@ def cli(ctx: click.Context, json_mode: bool, verbose: int, quiet: int, repo_dir:
     ctx.obj["verbose"] = verbose
     ctx.obj["quiet"] = quiet
     ctx.obj["repo_dir"] = repo_dir
+
+
+cli.add_command(pull_cmd)
+cli.add_command(track_cmd)
