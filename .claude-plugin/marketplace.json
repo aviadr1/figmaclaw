@@ -1,0 +1,13 @@
+{
+  "name": "figmaclaw",
+  "owner": {
+    "name": "Aviad Rozenhek"
+  },
+  "plugins": [
+    {
+      "name": "figmaclaw",
+      "description": "Figma → git semantic design memory for AI agents",
+      "source": "./"
+    }
+  ]
+}
