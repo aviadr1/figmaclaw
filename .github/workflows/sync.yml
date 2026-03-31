@@ -1,9 +1,13 @@
 # Reusable workflow — called by host repos via:
 #   uses: aviadr1/figmaclaw/.github/workflows/sync.yml@main
 #
-# NOTE: concurrency must be set in the CALLER, not here.
-# Concurrency groups are repo-scoped; defining them here would lock across
-# every repo using figmaclaw under one shared queue.
+# Concurrency: serializes sync runs per calling repo.
+# GitHub evaluates the concurrency group in the context of the calling repo,
+# so "figmaclaw-sync" is isolated per repo — no cross-repo locking.
+
+concurrency:
+  group: figmaclaw-sync
+  cancel-in-progress: false  # queue, never discard a sync run
 
 on:
   workflow_call:
