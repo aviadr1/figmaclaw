@@ -44,11 +44,15 @@ def _build_table_row_re(node_id: str) -> re.Pattern[str]:
 
     Targets the LAST column as the description, so it works for both the
     3-column per-section tables and the 4-column Quick Reference table.
-    Groups: (prefix up to last col)(description content)( |)
+    Groups: (prefix including opening '| ' of last col)(description content)(closing ' |')
+
+    Non-greedy .+? combined with the end-of-line anchor ensures the match
+    consumes everything up to the last ' |', so descriptions containing
+    pipe characters round-trip correctly.
     """
     escaped = re.escape(node_id)
     return re.compile(
-        r"^(\| [^|]+ \| `" + escaped + r"` )(.*\| )([^|]+)( \|)[ \t]*$",
+        r"^(\| [^|]+ \| `" + escaped + r"` \| )(.+?)( \|)[ \t]*$",
         re.MULTILINE,
     )
 
@@ -65,7 +69,7 @@ def _apply_descriptions(md: str, descriptions: dict[str, str]) -> str:
                 pattern = _build_table_row_re(node_id)
                 m = pattern.search(line)
                 if m:
-                    updated = pattern.sub(r"\g<1>\g<2>" + desc + r"\g<4>", line)
+                    updated = pattern.sub(lambda _m, _d=desc: _m.group(1) + _d + _m.group(3), line)
                     break  # each row has at most one node_id
         result.append(updated)
     return "".join(result)
