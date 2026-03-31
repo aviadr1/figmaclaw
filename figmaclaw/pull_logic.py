@@ -192,17 +192,22 @@ async def pull_file(
     # Fetch all page nodes concurrently when there is no page limit (fastest path).
     # With a page limit, fetch sequentially to avoid wasting API calls on pages we
     # will never process in this batch.
+    # skip_pages stubs are excluded from the parallel fetch to avoid wasted API calls.
     if max_pages is None:
+        fetch_stubs = [s for s in page_stubs if not state.should_skip_page(s.get("name", ""))]
+
         async def _fetch(stub: dict) -> dict | Exception:
             try:
                 return await client.get_page(file_key, stub["id"])
             except Exception as exc:
                 return exc
 
-        fetched = await asyncio.gather(*[_fetch(stub) for stub in page_stubs])
-        page_nodes_iter: list[dict | Exception] = list(fetched)
+        fetched = await asyncio.gather(*[_fetch(stub) for stub in fetch_stubs])
+        page_nodes_map: dict[str, dict | Exception] = {
+            stub["id"]: result for stub, result in zip(fetch_stubs, fetched)
+        }
     else:
-        page_nodes_iter = []  # populated lazily below
+        page_nodes_map = {}  # populated lazily below
 
     for page_idx, page_stub in enumerate(page_stubs, 1):
         page_node_id: str = page_stub["id"]
@@ -216,7 +221,7 @@ async def pull_file(
         # Level 2: structural hash check
         if max_pages is None:
             # Already fetched above
-            page_node_or_exc = page_nodes_iter[page_idx - 1]
+            page_node_or_exc = page_nodes_map[page_node_id]
             if isinstance(page_node_or_exc, Exception):
                 log.error("Failed to fetch page %r (%s): %s — skipping", page_name, page_node_id, page_node_or_exc)
                 result.pages_errored += 1
