@@ -2,11 +2,12 @@
 
 Performs a surgical in-place update:
   1. Merges new descriptions into the `frames:` dict in the YAML frontmatter.
-  2. Replaces the description cell in every matching table row in the body.
-  3. Optionally sets the page summary paragraph.
-  4. Optionally replaces the flows list.
+  2. Optionally sets the page summary paragraph.
+  3. Optionally replaces the flows list.
 
 No Figma API call is made — the file is updated entirely from the supplied data.
+The body table rows are NOT updated here; they are regenerated on the next
+`figmaclaw enrich` or `figmaclaw pull`.
 
 Input formats (--frames / --summary / --flows):
   --frames     JSON object: {"node_id": "description", ...}
@@ -30,45 +31,11 @@ import click
 from figmaclaw.figma_parse import parse_frontmatter
 from figmaclaw.figma_render import _FlowDict, _FlowList, _FrontmatterDumper
 
-_PLACEHOLDER = "(no description yet)"
-_FRONTMATTER_RE = re.compile(r"^(---\n)(.+?\n)(---)", re.DOTALL)
 _SUMMARY_RE = re.compile(
     r"(\[Open in Figma\]\([^)]+\)\n\n)"  # anchor line + blank
     r"(?:[^\n#][^\n]*\n\n)?",            # optional existing summary paragraph
     re.MULTILINE,
 )
-
-
-def _build_table_row_re(node_id: str) -> re.Pattern[str]:
-    """Match a table row containing `node_id` in the node-id column.
-
-    Targets the LAST column as the description, so it works for both the
-    3-column per-section tables and the 4-column Quick Reference table.
-    Groups: (prefix up to last col)(description content)( |)
-    """
-    escaped = re.escape(node_id)
-    return re.compile(
-        r"^(\| [^|]+ \| `" + escaped + r"` )(.*\| )([^|]+)( \|)[ \t]*$",
-        re.MULTILINE,
-    )
-
-
-def _apply_descriptions(md: str, descriptions: dict[str, str]) -> str:
-    """Replace description cells in all table rows for matching node IDs."""
-    lines = md.splitlines(keepends=True)
-    result: list[str] = []
-    for line in lines:
-        updated = line
-        # Quick scan: only process lines that look like table rows
-        if line.startswith("|") and "`" in line:
-            for node_id, desc in descriptions.items():
-                pattern = _build_table_row_re(node_id)
-                m = pattern.search(line)
-                if m:
-                    updated = pattern.sub(r"\g<1>\g<2>" + desc + r"\g<4>", line)
-                    break  # each row has at most one node_id
-        result.append(updated)
-    return "".join(result)
 
 
 def _apply_frontmatter(md: str, descriptions: dict[str, str], flows: list[list[str]] | None) -> str:
@@ -94,8 +61,16 @@ def _apply_frontmatter(md: str, descriptions: dict[str, str], flows: list[list[s
     new_fm_body = yaml.dump(
         fm_data, Dumper=_FrontmatterDumper, default_flow_style=False, allow_unicode=True
     ).rstrip()
-    new_fm_block = f"---\n{new_fm_body}\n---"
-    return _FRONTMATTER_RE.sub(new_fm_block, md, count=1)
+    # Replace frontmatter block: md = "---\n{fm}\n---\n{body}" — use partition to avoid regex
+    _, sep, after_open = md.partition("---\n")
+    if not sep:
+        return md
+    _, sep2, body = after_open.partition("\n---")
+    if not sep2:
+        return md
+    if body.startswith("\n"):
+        body = body[1:]
+    return f"---\n{new_fm_body}\n---\n{body}"
 
 
 def _apply_summary(md: str, summary: str) -> str:
@@ -137,8 +112,9 @@ def set_frames_cmd(
 
     MD_PATH is the path to a figmaclaw-rendered page .md file.
 
-    Surgically updates the frontmatter `frames:` dict and description cells in
-    all body tables. Does not call the Figma API or re-render the full file.
+    Writes descriptions to the frontmatter `frames:` dict only. Body table rows
+    are NOT updated — they are regenerated on the next enrich or pull. Does not
+    call the Figma API.
     """
     repo_dir = Path(ctx.obj["repo_dir"])
     if not md_path.is_absolute():
@@ -179,7 +155,6 @@ def set_frames_cmd(
 
     # Apply updates
     md_text = _apply_frontmatter(md_text, descriptions, flows)
-    md_text = _apply_descriptions(md_text, descriptions)
     if summary is not None:
         md_text = _apply_summary(md_text, summary)
 
