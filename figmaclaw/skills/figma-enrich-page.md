@@ -8,7 +8,7 @@ Enrich a figmaclaw `.md` file with:
 - **Frame descriptions** — 1–3 sentence description for every frame
 - **Page summary** — 2–3 sentence prose overview of the whole page
 - **Section intros** — one sentence per section describing what that group shows
-- **Mermaid flowchart** — screen-flow diagram derived from prototype reactions (only if flows exist)
+- **Mermaid flowchart** — screen-flow diagram showing how screens connect (always present)
 
 **Format spec:** [`docs/figmaclaw-md-format.md`](https://github.com/aviadr1/figmaclaw/blob/main/docs/figmaclaw-md-format.md) — authoritative reference for frontmatter schema, body structure, and known limitations.
 
@@ -59,8 +59,7 @@ flowchart LR
 Body placement rules:
 - **Page summary** — immediately after the `[Open in Figma]` link, before the first `##`
 - **Section intro** — one sentence immediately after each `##` heading, before the table
-- **Mermaid block** — at the very end of the file under `## Screen flows`
-- If no `flows:` in frontmatter → omit `## Screen flows` entirely
+- **Mermaid block** — always present, at the very end of the file under `## Screen flows`
 
 ## Workflow (figmaclaw CLI available — e.g. CI)
 
@@ -136,7 +135,9 @@ Read the current file (frontmatter now has all descriptions and flows). Then rew
 
 - **Page summary** — if missing or placeholder, write 2–3 sentences: what this page covers, its purpose, what differentiates the main sections. Insert after `[Open in Figma]` link, before first `##`.
 - **Section intros** — if missing, add one sentence after each `##` heading describing what that group of frames shows.
-- **Mermaid flowchart** — if `flows:` is non-empty and `## Screen flows` doesn't exist yet, append at the end:
+- **Mermaid flowchart** — always include. If `## Screen flows` doesn't exist yet, append it at the end. Build the graph from:
+  1. `flows:` frontmatter (authoritative Figma prototype reactions) — use these edges first
+  2. Infer remaining transitions from frame names and descriptions — screens have a logical order humans need to understand even without wired prototypes
 
 ```markdown
 ## Screen flows
@@ -147,8 +148,7 @@ flowchart LR
 ` `` `
 ```
 
-  Use frame names from the body tables as node labels (not raw node IDs). Infer transition labels
-  from frame names and descriptions.
+  Use frame names from the body tables as node labels (not raw node IDs). Infer transition labels from frame names and descriptions (e.g. "user taps Go Live", "OTP verified", "form submitted").
 
 - **Preserve existing prose** — if a page summary, section intros, or Mermaid block already exist
   and are still accurate, keep them. Only update what's wrong or missing.
@@ -208,7 +208,7 @@ See Step 7 above.
 | Frame descriptions | Screenshots — CLI: `figmaclaw screenshots` + Read tool; MCP: `get_screenshot` |
 | Page summary | Screenshots + overall understanding of the page |
 | Section intros | Screenshots + what each frame group has in common |
-| Mermaid edges | `flows:` frontmatter — extracted by `figmaclaw enrich` from Figma `reactions` |
+| Mermaid flowchart | Always present. `flows:` frontmatter as authoritative edges; infer remaining transitions from frame names and descriptions |
 
 ## Notes
 
@@ -216,4 +216,4 @@ See Step 7 above.
 - The `reserach` section typo in some Figma files is real — preserve it as-is
 - Small frames (≤200px) inside sections are usually icon/component details — describe them, note they are components
 - If a section's table is empty after `figmaclaw enrich`, those frames had no node IDs in Figma — skip it
-- If `flows:` is absent or empty → omit `## Screen flows` entirely (correct behavior, not a gap)
+- Always include `## Screen flows` — humans can't read frontmatter YAML. Infer the logical screen order from frame names and descriptions even when Figma has no prototype reactions.
