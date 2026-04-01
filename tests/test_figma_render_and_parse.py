@@ -4,7 +4,7 @@ INVARIANTS:
 - render_page produces YAML frontmatter with FigmaPageFrontmatter schema
 - Frontmatter carries file_key, page_node_id, and frame descriptions (flat schema)
 - page_hash is NOT in frontmatter (manifest only)
-- Body has H1 header, Figma URL, section tables, optional Mermaid, Quick Reference
+- Body has H1 header, Figma URL, section tables, optional Mermaid
 - Section tables list all frames with node IDs
 - Mermaid block absent when no flow edges
 - Placeholder description used in table when frame has no description
@@ -174,8 +174,8 @@ def test_render_page_has_mermaid_when_flows_present():
     assert "flowchart" in md
 
 
-def test_render_page_has_quick_reference_table():
-    """INVARIANT: Quick Reference table present at end of document."""
+def test_render_page_has_no_quick_reference_table():
+    """INVARIANT: Quick Reference table is not rendered — data is in frontmatter frames dict."""
     section = FigmaSection(
         node_id="10:1",
         name="auth",
@@ -183,7 +183,7 @@ def test_render_page_has_quick_reference_table():
     )
     page = _make_page(sections=[section])
     md = render_page(page, _make_entry())
-    assert "Quick Reference" in md
+    assert "Quick Reference" not in md
 
 
 # --- figma_parse ---

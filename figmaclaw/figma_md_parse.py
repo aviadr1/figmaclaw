@@ -12,8 +12,8 @@ Parsing strategy: line-by-line scan, no regex soup.
 Frame descriptions are NOT extracted from the body — read them from YAML frontmatter
 via figma_parse.parse_frontmatter() which is the source of truth.
 
-The Quick Reference section (## Quick Reference) is intentionally skipped —
-it duplicates the per-section tables and would inflate the output.
+The Screen Flow section (## Screen Flow) is skipped — it contains a Mermaid diagram,
+not a frame table.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ _ANY_H2_RE = re.compile(r"^## ")
 # Match any table row that has a backtick-quoted node_id in the second column.
 # We only capture name and node_id; descriptions come from YAML frontmatter (source of truth).
 _FRAME_ROW_RE = re.compile(r"^\| ([^|]+) \| `([^`]+)` \|")
-_SKIP_SECTIONS = {"Quick Reference", "Screen Flow"}
+_SKIP_SECTIONS = {"Screen Flow"}
 
 
 @dataclass
@@ -50,7 +50,7 @@ class ParsedSection:
 def parse_sections(md: str) -> list[ParsedSection]:
     """Extract sections and their frames from a figmaclaw page .md body.
 
-    Returns sections in document order, skipping Quick Reference and Screen Flow.
+    Returns sections in document order, skipping Screen Flow (Mermaid diagram section).
     Component library files (with a 'Variants' section) are handled identically.
     """
     sections: list[ParsedSection] = []
