@@ -14,7 +14,6 @@ from figmaclaw.commands.self_cmd import self_group
 from figmaclaw.commands.screenshots import screenshots_cmd
 from figmaclaw.commands.set_frames import set_frames_cmd
 from figmaclaw.commands.track import track_cmd
-from figmaclaw.commands.skills_cmd import skills_group
 from figmaclaw.commands.workflows_cmd import workflows_group
 
 
@@ -66,5 +65,4 @@ cli.add_command(self_group)
 cli.add_command(screenshots_cmd)
 cli.add_command(set_frames_cmd)
 cli.add_command(track_cmd)
-cli.add_command(skills_group)
 cli.add_command(workflows_group)
