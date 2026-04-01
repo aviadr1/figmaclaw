@@ -11,7 +11,7 @@ from pathlib import Path
 
 import click
 
-_SKILLS_DIR = Path(__file__).parent.parent.parent / ".claude" / "skills" / "figmaclaw"
+_SKILLS_DIR = Path(__file__).parent.parent / "skills"
 
 
 @click.group("self")
