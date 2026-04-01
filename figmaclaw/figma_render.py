@@ -122,7 +122,11 @@ def render_page(page: FigmaPage, entry: PageEntry) -> str:
         parts.append(page.page_summary)
         parts.append("")
 
-    # Per-section: optional intro + table
+    # Per-section: optional intro + table.
+    # NOTE: figma_md_parse._SECTION_RE and _FRAME_ROW_RE are coupled to this format:
+    #   section header: "## {name} (`{node_id}`)"
+    #   frame row:      "| {name} | `{node_id}` | {desc} |"
+    # Keep those patterns in sync if either format changes.
     for section in screen_sections:
         parts.append(f"## {section.name} (`{section.node_id}`)")
         parts.append("")
