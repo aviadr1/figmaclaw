@@ -26,10 +26,9 @@ DESIGN CONTRACT — body vs frontmatter:
 - Body is human/LLM-readable prose: page summary, section intros, frame tables,
   Mermaid flowcharts. The body is generated and updated by the figma-enrich-page
   skill via LLM — NEVER by code parsing or mechanical rewriting.
-- pull_logic writes a skeleton body (placeholder descriptions) for new pages.
-  For pages that already have LLM-generated prose, the correct update path is the
-  figma-enrich-page skill: it receives the existing body + new Figma data and the
-  LLM rewrites the body intelligently, preserving page summary and section intros.
+- write_new_page() writes a skeleton body (with LLM placeholders) for NEW pages only.
+  For existing pages, update_page_frontmatter() updates only the frontmatter, leaving
+  the LLM-authored body completely untouched.
 - NEVER parse prose from the body in Python code. No parse_page_summary(),
   no parse_section_intros(), no extracting text between headings.
 """
@@ -49,7 +48,9 @@ from figmaclaw.figma_hash import compute_page_hash
 from figmaclaw.figma_models import FigmaPage, FigmaSection, from_page_node
 from figmaclaw.figma_parse import parse_flows, parse_frame_descriptions
 from figmaclaw.figma_paths import component_path, page_path, slugify
-from figmaclaw.figma_render import render_component_section, render_page
+import frontmatter as _frontmatter
+
+from figmaclaw.figma_render import build_page_frontmatter, render_component_section, scaffold_page
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
 
 log = logging.getLogger(__name__)
@@ -69,15 +70,40 @@ class PullResult(BaseModel):
     has_more: bool = False  # True when max_pages was hit and more pages remain
 
 
-def write_page(repo_root: Path, page: FigmaPage, entry: PageEntry) -> Path:
-    """Render a FigmaPage (screen sections only) to disk and return the absolute path written.
+def write_new_page(repo_root: Path, page: FigmaPage, entry: PageEntry) -> Path:
+    """Write a NEW scaffold .md for a FigmaPage (screen sections only) and return the path.
+
+    Only call this when the file does NOT exist yet. For existing files, use
+    update_page_frontmatter() which preserves the LLM-authored body.
 
     entry.md_path must not be None — only call this when there are screen sections to write.
     """
-    assert entry.md_path is not None, "entry.md_path must be set to call write_page()"
+    assert entry.md_path is not None, "entry.md_path must be set to call write_new_page()"
     out_path = repo_root / entry.md_path
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(render_page(page, entry))
+    out_path.write_text(scaffold_page(page, entry))
+    return out_path
+
+
+def update_page_frontmatter(repo_root: Path, page: FigmaPage, entry: PageEntry) -> Path:
+    """Update ONLY the frontmatter of an existing page .md file, preserving the body.
+
+    Uses python-frontmatter to cleanly separate frontmatter from body, then rebuilds
+    the frontmatter from the FigmaPage model using _build_frontmatter() (which produces
+    the correct flow-style YAML formatting).
+
+    entry.md_path must not be None and the file must already exist.
+    """
+    assert entry.md_path is not None, "entry.md_path must be set"
+    out_path = repo_root / entry.md_path
+    assert out_path.exists(), f"update_page_frontmatter requires existing file: {out_path}"
+
+    md_text = out_path.read_text()
+    post = _frontmatter.loads(md_text)
+    body = post.content
+
+    new_fm = build_page_frontmatter(page)
+    out_path.write_text(f"{new_fm}\n\n{body}\n")
     return out_path
 
 
@@ -292,7 +318,10 @@ async def pull_file(
                     page_hash=new_hash,
                     last_refreshed_at=now,
                 )
-                written = write_page(repo_root, screen_page, screen_entry)
+                if screen_md.exists():
+                    written = update_page_frontmatter(repo_root, screen_page, screen_entry)
+                else:
+                    written = write_new_page(repo_root, screen_page, screen_entry)
                 written_screen_rel = str(written.relative_to(repo_root))
                 result.md_paths.append(written_screen_rel)
                 result.pages_written += 1

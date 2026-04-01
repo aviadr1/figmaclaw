@@ -17,6 +17,29 @@ import frontmatter
 from figmaclaw.figma_frontmatter import FigmaPageFrontmatter
 
 
+def split_frontmatter(md: str) -> tuple[str, str] | None:
+    """Split a figmaclaw .md file into (frontmatter_block, body).
+
+    Returns None if the file has no valid ``---`` delimiters.
+
+    The frontmatter_block is the raw YAML string between the ``---`` markers
+    (without the markers themselves). The body is everything after the closing
+    ``---`` marker (with the leading newline stripped).
+
+    This is the single shared implementation — use it instead of hand-rolling
+    ``str.partition("---")`` in each command.
+    """
+    _, sep, after_open = md.partition("---\n")
+    if not sep:
+        return None
+    fm_body, sep2, body = after_open.partition("\n---")
+    if not sep2:
+        return None
+    if body.startswith("\n"):
+        body = body[1:]
+    return fm_body, body
+
+
 def parse_frontmatter(md: str) -> FigmaPageFrontmatter | None:
     """Parse and validate the YAML frontmatter block from a rendered page.
 

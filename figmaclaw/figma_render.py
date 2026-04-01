@@ -2,24 +2,29 @@
 
 Two render targets:
 
-render_page() — for screen pages (figma/*/pages/*.md)
+scaffold_page() — for screen pages (figma/*/pages/*.md)
   - YAML frontmatter: flat file_key/page_node_id + compact flow-style frames/flows
-  - H1 header, Figma deep link, optional page summary paragraph
-  - Per-section: optional intro sentence + table (Screen | Node ID | Description)
-  - Mermaid flowchart from prototype reactions + LLM-inferred flows
+  - H1 header, Figma deep link, LLM placeholder for page summary
+  - Per-section: LLM placeholder for intro + table (Screen | Node ID | Description)
+  - Mermaid flowchart placeholder from prototype reactions
   - Component library sections are omitted — they get their own files
+  - Writes initial skeleton for NEW pages only. Existing pages are updated via
+    the figma-enrich-page skill (LLM) — never by scaffold_page().
 
 render_component_section() — for component library sections (figma/*/components/*.md)
   - YAML frontmatter: flat file_key/page_node_id/section_node_id + compact frames
   - H1 header: {file} / {page} / {section}
   - Variants table: Variant | Node ID | Description
 
+build_page_frontmatter() — build YAML frontmatter string from a FigmaPage's screen
+  sections, for use when updating only the frontmatter of an existing file.
+
 DESIGN CONTRACT — body vs frontmatter:
   - Frontmatter = machine-readable source of truth. CI reads/writes this.
     Use it to determine WHAT needs updating (which frames changed, new flows, etc).
   - Body = human/LLM-readable prose: page summary, section intros, frame tables,
     Mermaid charts. Updated ONLY by the figma-enrich-page skill via LLM.
-  - render_page() writes a skeleton body for new pages (placeholder descriptions).
+  - scaffold_page() writes a skeleton body for new pages (with LLM placeholders).
     For existing pages with LLM prose, body updates go through the skill, not here.
   - NEVER parse prose from the body. No code should extract page_summary, section
     intros, or any other prose from the markdown body. The LLM receives the whole
@@ -94,28 +99,47 @@ def _build_frontmatter(
     return f"---\n{body}\n---"
 
 
-def render_page(page: FigmaPage, entry: PageEntry) -> str:
-    """Render screen sections of a FigmaPage to semantic markdown with YAML frontmatter.
+def build_page_frontmatter(page: FigmaPage) -> str:
+    """Build the YAML frontmatter block for a screen page from a FigmaPage model.
 
-    Component library sections are skipped — use render_component_section() for those.
+    Returns the full frontmatter string including ``---`` delimiters. Used by
+    update_page_frontmatter() to replace frontmatter without touching the body.
     """
-    parts: list[str] = []
-
     screen_sections = [s for s in page.sections if not s.is_component_library]
-
     frame_descs: dict[str, str] = {
         frame.node_id: frame.description
         for section in screen_sections
         for frame in section.frames
     }
-
-    parts.append(_build_frontmatter(
+    return _build_frontmatter(
         file_key=page.file_key,
         page_node_id=page.page_node_id,
         section_node_id=None,
         frame_descs=frame_descs,
         flows=page.flows,
-    ))
+    )
+
+
+def scaffold_page(page: FigmaPage, entry: PageEntry) -> str:
+    """Generate a skeleton markdown page with LLM placeholders for a NEW FigmaPage.
+
+    Component library sections are skipped — use render_component_section() for those.
+
+    The scaffold contains explicit ``<!-- LLM: ... -->`` placeholders telling the LLM
+    exactly what to fill in. This is used in two ways:
+
+    1. **Write mode** (new file): caller writes the returned string to disk as the
+       initial .md file. The LLM fills in placeholders on the next enrich-page run.
+    2. **Hint mode** (existing file changed structure): caller prints the scaffold to
+       stdout so the LLM can see the expected structure alongside the existing body
+       and rewrite the body to match the new structure.
+
+    NEVER call this on an existing file to overwrite it — that destroys LLM prose.
+    Use update_page_frontmatter() to update frontmatter of existing files.
+    """
+    parts: list[str] = []
+
+    parts.append(build_page_frontmatter(page))
     parts.append("")
 
     # H1 header
@@ -126,22 +150,27 @@ def render_page(page: FigmaPage, entry: PageEntry) -> str:
     parts.append(f"[Open in Figma]({page.figma_url})")
     parts.append("")
 
-    # Page summary (LLM-generated)
+    # Page summary placeholder
     if page.page_summary:
         parts.append(page.page_summary)
-        parts.append("")
+    else:
+        parts.append("<!-- LLM: Write a 2-3 sentence page summary describing what this page covers -->")
+    parts.append("")
 
     # Per-section: optional intro + table.
     # NOTE: figma_md_parse._SECTION_RE and _FRAME_ROW_RE are coupled to this format:
     #   section header: "## {name} (`{node_id}`)"
     #   frame row:      "| {name} | `{node_id}` | {desc} |"
     # Keep those patterns in sync if either format changes.
+    screen_sections = [s for s in page.sections if not s.is_component_library]
     for section in screen_sections:
         parts.append(f"## {section.name} (`{section.node_id}`)")
         parts.append("")
         if section.intro:
             parts.append(section.intro)
-            parts.append("")
+        else:
+            parts.append("<!-- LLM: Write a 1-sentence section intro if the section has a distinct theme -->")
+        parts.append("")
         parts.append("| Screen | Node ID | Description |")
         parts.append("|--------|---------|-------------|")
         for frame in section.frames:
@@ -167,6 +196,9 @@ def render_page(page: FigmaPage, entry: PageEntry) -> str:
                 f'    {_mermaid_id(src)}["{src_label}"] --> {_mermaid_id(dst)}["{dst_label}"]'
             )
         parts.append("```")
+        parts.append("")
+    else:
+        parts.append("<!-- LLM: Generate Mermaid flowchart from the flows in frontmatter, or omit if no flows -->")
         parts.append("")
 
     return "\n".join(parts)

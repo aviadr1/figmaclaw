@@ -1,7 +1,7 @@
 """Tests for figma_render.py and figma_parse.py.
 
 INVARIANTS:
-- render_page produces YAML frontmatter with FigmaPageFrontmatter schema
+- scaffold_page produces YAML frontmatter with FigmaPageFrontmatter schema
 - Frontmatter carries file_key, page_node_id, and frame descriptions (flat schema)
 - page_hash is NOT in frontmatter (manifest only)
 - Body has H1 header, Figma URL, section tables, optional Mermaid
@@ -19,7 +19,7 @@ import yaml
 
 from figmaclaw.figma_frontmatter import FigmaPageFrontmatter
 from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection
-from figmaclaw.figma_render import render_page
+from figmaclaw.figma_render import scaffold_page
 from figmaclaw.figma_parse import parse_frame_descriptions, parse_frontmatter
 from figmaclaw.figma_sync_state import PageEntry
 import yaml
@@ -53,84 +53,84 @@ def _make_entry(page_hash: str = "deadbeef12345678") -> PageEntry:
     )
 
 
-# --- render_page: frontmatter ---
+# --- scaffold_page: frontmatter ---
 
-def test_render_page_has_yaml_frontmatter():
+def test_scaffold_page_has_yaml_frontmatter():
     """INVARIANT: Rendered markdown starts with a valid YAML frontmatter block."""
     page = _make_page()
-    md = render_page(page, _make_entry())
+    md = scaffold_page(page, _make_entry())
     assert md.startswith("---\n")
     assert "\n---\n" in md
 
 
-def test_render_page_frontmatter_is_valid_figmapagefrontmatter():
+def test_scaffold_page_frontmatter_is_valid_figmapagefrontmatter():
     """INVARIANT: Frontmatter parses to a valid FigmaPageFrontmatter Pydantic model."""
     page = _make_page()
-    md = render_page(page, _make_entry("deadbeef12345678"))
+    md = scaffold_page(page, _make_entry("deadbeef12345678"))
     fm = parse_frontmatter(md)
     assert fm is not None
     assert isinstance(fm, FigmaPageFrontmatter)
 
 
-def test_render_page_frontmatter_carries_identity_fields():
+def test_scaffold_page_frontmatter_carries_identity_fields():
     """INVARIANT: Frontmatter contains file_key and page_node_id (flat schema, no page_hash)."""
     page = _make_page()
-    md = render_page(page, _make_entry("deadbeef12345678"))
+    md = scaffold_page(page, _make_entry("deadbeef12345678"))
     fm = parse_frontmatter(md)
     assert fm is not None
     assert fm.file_key == "hOV4QM"
     assert fm.page_node_id == "7741:45837"
 
 
-def test_render_page_frontmatter_carries_frame_descriptions():
+def test_scaffold_page_frontmatter_carries_frame_descriptions():
     """INVARIANT: Frame descriptions appear in frontmatter keyed by node_id."""
     frames = [
         FigmaFrame(node_id="11:1", name="welcome screen", description="The onboarding welcome."),
     ]
     section = FigmaSection(node_id="10:1", name="onboarding", frames=frames)
     page = _make_page(sections=[section])
-    md = render_page(page, _make_entry())
+    md = scaffold_page(page, _make_entry())
     fm = parse_frontmatter(md)
     assert fm is not None
     assert fm.frames["11:1"] == "The onboarding welcome."
 
 
-def test_render_page_frontmatter_omits_empty_descriptions():
+def test_scaffold_page_frontmatter_omits_empty_descriptions():
     """INVARIANT: Frames with no description are not in frontmatter.frames."""
     frame = FigmaFrame(node_id="11:1", name="untitled frame", description="")
     section = FigmaSection(node_id="10:1", name="misc", frames=[frame])
     page = _make_page(sections=[section])
-    md = render_page(page, _make_entry())
+    md = scaffold_page(page, _make_entry())
     fm = parse_frontmatter(md)
     assert fm is not None
     assert "untitled frame" not in fm.frames
 
 
-# --- render_page: body ---
+# --- scaffold_page: body ---
 
-def test_render_page_has_h1_header():
+def test_scaffold_page_has_h1_header():
     """INVARIANT: Body contains # {file_name} / {page_name}"""
     page = _make_page()
-    md = render_page(page, _make_entry())
+    md = scaffold_page(page, _make_entry())
     assert "# Web App / Reach - auto content sharing" in md
 
 
-def test_render_page_has_figma_url():
+def test_scaffold_page_has_figma_url():
     """INVARIANT: Rendered markdown contains the Figma deep link."""
     page = _make_page()
-    md = render_page(page, _make_entry())
+    md = scaffold_page(page, _make_entry())
     assert "https://www.figma.com/design/hOV4QM?node-id=7741-45837" in md
 
 
-def test_render_page_section_heading_with_node_id():
+def test_scaffold_page_section_heading_with_node_id():
     """INVARIANT: Each section appears as ## {name} (`{node_id}`)"""
     section = FigmaSection(node_id="10639:4378", name="schedule event", frames=[])
     page = _make_page(sections=[section])
-    md = render_page(page, _make_entry())
+    md = scaffold_page(page, _make_entry())
     assert "## schedule event (`10639:4378`)" in md
 
 
-def test_render_page_section_table_has_all_frames():
+def test_scaffold_page_section_table_has_all_frames():
     """INVARIANT: Every frame appears in the section table with its node ID."""
     frames = [
         FigmaFrame(node_id="10635:89503", name="schedule / information box", description="Empty form."),
@@ -138,30 +138,30 @@ def test_render_page_section_table_has_all_frames():
     ]
     section = FigmaSection(node_id="10639:4378", name="schedule event", frames=frames)
     page = _make_page(sections=[section])
-    md = render_page(page, _make_entry())
+    md = scaffold_page(page, _make_entry())
     assert "`10635:89503`" in md
     assert "schedule / information box" in md
     assert "`10635:89347`" in md
     assert "schedule / socials enabled" in md
 
 
-def test_render_page_uses_placeholder_in_table_when_no_description():
+def test_scaffold_page_uses_placeholder_in_table_when_no_description():
     """INVARIANT: Frames with empty description use a placeholder in the table row."""
     frame = FigmaFrame(node_id="11:1", name="untitled frame", description="")
     section = FigmaSection(node_id="10:1", name="misc", frames=[frame])
     page = _make_page(sections=[section])
-    md = render_page(page, _make_entry())
+    md = scaffold_page(page, _make_entry())
     assert "(no description yet)" in md
 
 
-def test_render_page_no_mermaid_when_no_flows():
+def test_scaffold_page_no_mermaid_when_no_flows():
     """INVARIANT: Mermaid block is absent when the page has no prototype flows."""
     page = _make_page(flows=[])
-    md = render_page(page, _make_entry())
+    md = scaffold_page(page, _make_entry())
     assert "```mermaid" not in md
 
 
-def test_render_page_has_mermaid_when_flows_present():
+def test_scaffold_page_has_mermaid_when_flows_present():
     """INVARIANT: Mermaid flowchart block present when flows exist."""
     frames = [
         FigmaFrame(node_id="11:1", name="welcome"),
@@ -169,12 +169,12 @@ def test_render_page_has_mermaid_when_flows_present():
     ]
     section = FigmaSection(node_id="10:1", name="onboarding", frames=frames)
     page = _make_page(sections=[section], flows=[("11:1", "11:2")])
-    md = render_page(page, _make_entry())
+    md = scaffold_page(page, _make_entry())
     assert "```mermaid" in md
     assert "flowchart" in md
 
 
-def test_render_page_has_no_quick_reference_table():
+def test_scaffold_page_has_no_quick_reference_table():
     """INVARIANT: Quick Reference table is not rendered — data is in frontmatter frames dict."""
     section = FigmaSection(
         node_id="10:1",
@@ -182,17 +182,17 @@ def test_render_page_has_no_quick_reference_table():
         frames=[FigmaFrame(node_id="11:1", name="login", description="Login screen.")],
     )
     page = _make_page(sections=[section])
-    md = render_page(page, _make_entry())
+    md = scaffold_page(page, _make_entry())
     assert "Quick Reference" not in md
 
 
 # --- figma_parse ---
 
 def test_parse_frontmatter_from_rendered_output():
-    """INVARIANT: parse_frontmatter recovers FigmaPageFrontmatter (flat schema) from render_page output."""
+    """INVARIANT: parse_frontmatter recovers FigmaPageFrontmatter (flat schema) from scaffold_page output."""
     page = _make_page()
     entry = _make_entry("deadbeef12345678")
-    md = render_page(page, entry)
+    md = scaffold_page(page, entry)
     fm = parse_frontmatter(md)
     assert fm is not None
     assert fm.file_key == "hOV4QM"
@@ -203,7 +203,7 @@ def test_parse_frontmatter_from_rendered_output():
     """INVARIANT: parse_frontmatter returns FigmaPageFrontmatter with file_key and page_node_id."""
     page = _make_page()
     entry = _make_entry("deadbeef12345678")
-    md = render_page(page, entry)
+    md = scaffold_page(page, entry)
     meta = parse_frontmatter(md)
     assert meta is not None
     assert meta.file_key == "hOV4QM"
@@ -216,7 +216,7 @@ def test_parse_frontmatter_returns_none_for_missing_frontmatter():
     assert parse_frontmatter(md) is None
 
 
-def test_render_page_frontmatter_is_compact_flow_style():
+def test_scaffold_page_frontmatter_is_compact_flow_style():
     """INVARIANT: frames and flows are single-line YAML flow style in frontmatter.
 
     Both must appear on exactly one line each, using inline { } / [ ] notation.
@@ -226,7 +226,7 @@ def test_render_page_frontmatter_is_compact_flow_style():
     frames = [FigmaFrame(node_id="11:1", name="welcome", description="Welcome screen.")]
     section = FigmaSection(node_id="10:1", name="onboarding", frames=frames)
     page = _make_page(sections=[section], flows=[("11:1", "11:2")])
-    md = render_page(page, _make_entry())
+    md = scaffold_page(page, _make_entry())
     fm_block = md.split("---\n")[1]  # content between first two ---
     lines = fm_block.strip().splitlines()
     frames_lines = [l for l in lines if l.startswith("frames:")]
@@ -242,7 +242,7 @@ def test_render_page_frontmatter_is_compact_flow_style():
     assert data["flows"] == [["11:1", "11:2"]]
 
 
-def test_render_page_frontmatter_flow_style_no_wrapping():
+def test_scaffold_page_frontmatter_flow_style_no_wrapping():
     """INVARIANT: frames stays on one line even with long descriptions containing apostrophes/colons.
 
     PyYAML's default width=80 would wrap long flow-style values across multiple lines,
@@ -255,7 +255,7 @@ def test_render_page_frontmatter_flow_style_no_wrapping():
     )
     frame = FigmaFrame(node_id="11:1", name="prepare", description=long_desc)
     section = FigmaSection(node_id="10:1", name="Going live", frames=[frame])
-    md = render_page(_make_page(sections=[section]), _make_entry())
+    md = scaffold_page(_make_page(sections=[section]), _make_entry())
     fm_block = md.split("---\n")[1]
     frames_lines = [l for l in fm_block.strip().splitlines() if l.startswith("frames:")]
     assert len(frames_lines) == 1, "frames must stay on one line regardless of description length"
@@ -264,10 +264,10 @@ def test_render_page_frontmatter_flow_style_no_wrapping():
     assert data["frames"]["11:1"] == long_desc
 
 
-def test_render_page_frontmatter_no_page_hash():
+def test_scaffold_page_frontmatter_no_page_hash():
     """INVARIANT: page_hash is NOT stored in the .md frontmatter (manifest only)."""
     page = _make_page()
-    md = render_page(page, _make_entry("deadbeef12345678"))
+    md = scaffold_page(page, _make_entry("deadbeef12345678"))
     fm_block = md.split("---\n")[1]
     assert "page_hash" not in fm_block
     assert "deadbeef" not in fm_block
@@ -281,7 +281,7 @@ def test_parse_frame_descriptions_recovers_descriptions():
     ]
     section = FigmaSection(node_id="10:1", name="onboarding", frames=frames)
     page = _make_page(sections=[section])
-    md = render_page(page, _make_entry())
+    md = scaffold_page(page, _make_entry())
     descriptions = parse_frame_descriptions(md)
     assert descriptions["11:1"] == "The onboarding welcome."
     assert descriptions["11:2"] == "Asks for camera access."
@@ -293,10 +293,10 @@ def test_parse_frame_descriptions_empty_for_plain_file():
     assert descriptions == {}
 
 
-# --- render_page: component library sections skipped ---
+# --- scaffold_page: component library sections skipped ---
 
-def test_render_page_skips_component_library_sections():
-    """INVARIANT: render_page omits component library sections — they get their own files."""
+def test_scaffold_page_skips_component_library_sections():
+    """INVARIANT: scaffold_page omits component library sections — they get their own files."""
     from figmaclaw.figma_models import FigmaSection, FigmaFrame
     comp_section = FigmaSection(
         node_id="20:1",
@@ -310,7 +310,7 @@ def test_render_page_skips_component_library_sections():
         frames=[FigmaFrame(node_id="11:1", name="welcome", description="Welcome screen.")],
     )
     page = _make_page(sections=[screen_section, comp_section])
-    md = render_page(page, _make_entry())
+    md = scaffold_page(page, _make_entry())
 
     assert "Onboarding" in md          # screen section present
     assert "welcome" in md
@@ -318,7 +318,7 @@ def test_render_page_skips_component_library_sections():
     assert "Button / Primary" not in md
 
 
-def test_render_page_omits_component_frame_descriptions_from_frontmatter():
+def test_scaffold_page_omits_component_frame_descriptions_from_frontmatter():
     """INVARIANT: Component frame descriptions are not in the page frontmatter.frames."""
     from figmaclaw.figma_models import FigmaSection, FigmaFrame
     comp_section = FigmaSection(
@@ -328,7 +328,7 @@ def test_render_page_omits_component_frame_descriptions_from_frontmatter():
         is_component_library=True,
     )
     page = _make_page(sections=[comp_section])
-    md = render_page(page, _make_entry())
+    md = scaffold_page(page, _make_entry())
     fm = parse_frontmatter(md)
     assert fm is not None
     # Component descriptions must not leak into the page frontmatter

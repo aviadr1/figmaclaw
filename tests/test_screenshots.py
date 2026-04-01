@@ -18,7 +18,7 @@ import pytest
 from figmaclaw.commands import screenshots as screenshots_module
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection
-from figmaclaw.figma_render import render_page
+from figmaclaw.figma_render import scaffold_page
 from figmaclaw.figma_sync_state import PageEntry
 
 
@@ -55,7 +55,7 @@ def _write_md(tmp_path: Path, page: FigmaPage) -> Path:
         page_hash="deadbeef",
         last_refreshed_at="2026-03-31T00:00:00Z",
     )
-    md = render_page(page, entry)
+    md = scaffold_page(page, entry)
     p = tmp_path / "page.md"
     p.write_text(md)
     return p

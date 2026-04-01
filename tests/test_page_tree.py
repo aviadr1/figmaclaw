@@ -19,7 +19,7 @@ import pytest
 from click.testing import CliRunner
 
 from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection
-from figmaclaw.figma_render import render_page
+from figmaclaw.figma_render import scaffold_page
 from figmaclaw.figma_sync_state import PageEntry
 from figmaclaw.main import cli
 
@@ -55,7 +55,7 @@ def _make_entry() -> PageEntry:
 
 
 def _write_md(tmp_path: Path, page: FigmaPage) -> Path:
-    md = render_page(page, _make_entry())
+    md = scaffold_page(page, _make_entry())
     p = tmp_path / "page.md"
     p.write_text(md)
     return p

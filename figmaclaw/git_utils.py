@@ -1,4 +1,4 @@
-"""Shared git helpers used by pull, enrich, set-frames, and apply-webhook commands."""
+"""Shared git helpers used by pull, sync, set-frames, and apply-webhook commands."""
 
 from __future__ import annotations
 

@@ -9,34 +9,20 @@
 - **Body** = human/LLM prose + Mermaid charts. Written by humans and LLMs **only**. Never parsed by code. Never mechanically rewritten by code.
 - To update a page: read the existing body, fetch new Figma data using the frontmatter, pass both to the LLM, LLM rewrites the body preserving page summary and section intros.
 - `set-frames` writes frontmatter only. After `set-frames`, run the skill (LLM) to update the body.
+- `replace-body` writes body only. The LLM uses this to update prose without touching frontmatter.
 - NEVER add `parse_page_summary()`, `parse_section_intros()`, or any code that reads prose from the body.
 
-**Frontmatter fields:**
+**Body preservation invariants (BP-1 through BP-6):** No CLI command can destroy body content. Tested in `tests/test_body_preservation.py`. Full details: [`docs/body-preservation-invariants.md`](docs/body-preservation-invariants.md).
 
-| Field | Type | Purpose |
+**Commands** (see [`docs/figmaclaw-md-format.md`](docs/figmaclaw-md-format.md) for full format spec):
+
+| Command | Writes | Body touched? |
 |---|---|---|
-| `file_key` | string | Figma file key (for API calls) |
-| `page_node_id` | string | Figma CANVAS node ID |
-| `frames` | single-line flow-style `{node_id: desc}` | Authoritative frame descriptions |
-| `flows` | single-line flow-style `[[src, dst], ...]` | Prototype navigation edges |
-| `section_node_id` | string | Component library files only |
-
-**Format rules:**
-- `frames` and `flows` must be single-line YAML flow style — never block-indented
-- `yaml.dump` must use `width=2**20` to prevent PyYAML from wrapping long values
-- Never parse body table cells or prose for node IDs, descriptions, or flows — read frontmatter
-- To write descriptions: `figmaclaw set-frames` (frontmatter only) or `figmaclaw enrich` (full body rebuild)
-- `set-frames` does NOT update the body — run `figmaclaw enrich` after to regenerate prose
-
-**Update paths:**
-
-| Path | Writes | When to use |
-|---|---|---|
-| `set-frames` | Frontmatter only (`frames` dict) | Surgical: write frame descriptions from AI/screenshots |
-| skill (`figma-enrich-page`) | Full body via LLM | Always use this to update prose — it reads existing body + new Figma data and rewrites via LLM |
-| `pull` | Frontmatter + skeleton body | Initial sync only (new pages with no existing prose) |
-
-**Known issue:** `pull` and `enrich` (CLI, no LLM) currently overwrite the body without calling the LLM, destroying `page_summary` and section intros. Fix: CI hooks must call the skill (LLM path) for all page updates, not just `pull`/`enrich`. Tracked in ENG.
+| `set-frames` | Frontmatter only | Never |
+| `replace-body` | Body only | Yes — preserves frontmatter (BP-6) |
+| `sync` | Frontmatter only (existing) / scaffold (new) | Never for existing files (BP-1) |
+| `pull` | Frontmatter only (existing) / scaffold (new) | Never for existing files (BP-2) |
+| skill (`figma-enrich-page`) | Orchestrates full LLM update | LLM rewrites body via `replace-body` |
 
 ## Development
 

@@ -1,12 +1,23 @@
-"""figmaclaw enrich — re-sync a single figmaclaw .md file from the Figma REST API.
+"""figmaclaw sync — re-sync a single figmaclaw .md file from the Figma REST API.
 
 Re-fetches the current page structure for one .md file, restores all existing
-descriptions from the current file, and writes the updated .md back in-place.
-Updates the manifest so the next pull skips this page (hash is already current).
+descriptions from the current file, and updates the YAML frontmatter in-place.
+The LLM-authored body (page summary, section intros, Mermaid charts) is NEVER
+overwritten — only frontmatter changes.
+
+If the file does not exist yet, writes a new scaffold with LLM placeholders.
 
 This is a pure structure re-sync — it does NOT call an LLM.  To generate or
 refresh descriptions, use the figma-enrich-page skill (which calls page-tree
 then set-frames after generating descriptions via the agent).
+
+Optional flags:
+  --scaffold   Print the scaffold template (with LLM placeholders) to stdout
+               without writing it to disk. Useful as a structural hint for the
+               LLM when the page changed significantly.
+  --show-body  Print the existing body to stdout. The LLM should ALWAYS see
+               the existing body so it can preserve prose, adapt descriptions,
+               and only change what actually needs changing.
 
 Typical use cases:
 - The page structure changed in Figma but you want to re-sync before the next
@@ -23,29 +34,37 @@ import os
 from pathlib import Path
 
 import click
+import frontmatter as _frontmatter
 
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_hash import compute_page_hash
 from figmaclaw.figma_models import from_page_node
 from figmaclaw.figma_parse import parse_flows, parse_frame_descriptions, parse_frontmatter
 from figmaclaw.figma_paths import slugify
+from figmaclaw.figma_render import scaffold_page
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
 from figmaclaw.git_utils import git_commit
-from figmaclaw.pull_logic import _merge_existing, write_page
+from figmaclaw.pull_logic import _merge_existing, update_page_frontmatter, write_new_page
 
 
-@click.command("enrich")
+@click.command("sync")
 @click.argument("md_path", type=click.Path(exists=True, path_type=Path))
 @click.option("--auto-commit", "auto_commit", is_flag=True, help="git commit the result.")
+@click.option("--scaffold", "show_scaffold", is_flag=True, help="Print scaffold template to stdout (does not write).")
+@click.option("--show-body", "show_body", is_flag=True, help="Print the existing body to stdout.")
 @click.pass_context
-def enrich_cmd(ctx: click.Context, md_path: Path, auto_commit: bool) -> None:
-    """Re-sync a figmaclaw .md file from the Figma REST API, preserving existing descriptions.
+def sync_cmd(ctx: click.Context, md_path: Path, auto_commit: bool, show_scaffold: bool, show_body: bool) -> None:
+    """Re-sync a figmaclaw .md file from the Figma REST API, preserving the body.
 
     MD_PATH is the path to a figmaclaw-rendered page .md file, e.g.
     figma/web-app/pages/event-landing-page-8421-74664.md
 
     Fetches the current page structure from Figma, restores all existing
-    descriptions, and writes the file back in-place. Does not call an LLM.
+    descriptions, and updates ONLY the frontmatter. The LLM-authored body
+    is never overwritten. Does not call an LLM.
+
+    Use --scaffold to print the scaffold template (structural hint for the LLM).
+    Use --show-body to print the existing body (so the LLM can preserve it).
 
     To also generate descriptions, use:  figmaclaw page-tree + figmaclaw set-frames
     """
@@ -54,10 +73,17 @@ def enrich_cmd(ctx: click.Context, md_path: Path, auto_commit: bool) -> None:
     if not api_key:
         raise click.UsageError("FIGMA_API_KEY environment variable is not set.")
 
-    asyncio.run(_run(api_key, repo_dir, md_path, auto_commit))
+    asyncio.run(_run(api_key, repo_dir, md_path, auto_commit, show_scaffold, show_body))
 
 
-async def _run(api_key: str, repo_dir: Path, md_path: Path, auto_commit: bool) -> None:
+async def _run(
+    api_key: str,
+    repo_dir: Path,
+    md_path: Path,
+    auto_commit: bool,
+    show_scaffold: bool = False,
+    show_body: bool = False,
+) -> None:
     if not md_path.is_absolute():
         md_path = repo_dir / md_path
 
@@ -70,7 +96,7 @@ async def _run(api_key: str, repo_dir: Path, md_path: Path, auto_commit: bool) -
     page_node_id = meta.page_node_id
     md_rel = str(md_path.relative_to(repo_dir))
 
-    click.echo(f"enrich: {md_rel}")
+    click.echo(f"sync: {md_rel}")
     click.echo(f"  file_key={file_key}  page_node_id={page_node_id}")
 
     state = FigmaSyncState(repo_dir)
@@ -86,7 +112,7 @@ async def _run(api_key: str, repo_dir: Path, md_path: Path, auto_commit: bool) -
         api_version: str = file_meta.get("version", "")
         api_last_modified: str = file_meta.get("lastModified", "")
 
-        click.echo(f"  fetching page from Figma...")
+        click.echo("  fetching page from Figma...")
         try:
             page_node = await client.get_page(file_key, page_node_id)
         except Exception as exc:
@@ -130,8 +156,28 @@ async def _run(api_key: str, repo_dir: Path, md_path: Path, auto_commit: bool) -
         component_md_paths=component_md_paths,
     )
 
-    write_page(repo_dir, screen_page, entry)
-    click.echo(f"  wrote: {md_rel}")
+    # --scaffold: print scaffold template and exit (no write)
+    if show_scaffold:
+        click.echo("\n--- SCAFFOLD (structural hint for LLM) ---\n")
+        click.echo(scaffold_page(screen_page, entry))
+
+    # --show-body: print existing body and exit (no write)
+    if show_body:
+        post = _frontmatter.loads(md_text)
+        click.echo("\n--- EXISTING BODY (preserve/adapt this) ---\n")
+        click.echo(post.content)
+
+    if show_scaffold or show_body:
+        return
+
+    # File exists → update frontmatter only (preserve body)
+    # File doesn't exist → write new scaffold
+    if md_path.exists():
+        update_page_frontmatter(repo_dir, screen_page, entry)
+        click.echo(f"  updated frontmatter: {md_rel}")
+    else:
+        write_new_page(repo_dir, screen_page, entry)
+        click.echo(f"  wrote new scaffold: {md_rel}")
 
     state.set_page_entry(file_key, page_node_id, entry)
     if state.manifest.files.get(file_key):

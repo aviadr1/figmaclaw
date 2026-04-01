@@ -55,8 +55,8 @@ Or pipe JSON:
 echo '{"node_id": "description"}' | figmaclaw set-frames <md-path>
 ```
 
-Surgically updates the `frames:` frontmatter dict and all matching table cells
-(both per-section tables and Quick Reference). No Figma API call.
+Surgically updates the `frames:` frontmatter dict only. Body prose is never
+touched by code — the LLM owns it. No Figma API call.
 
 Use `--summary "..."` to set or replace the page summary paragraph.
 Use `--auto-commit` to git commit the result.
@@ -75,11 +75,11 @@ If the page structure changed in Figma and you want to pull in new frames before
 enriching:
 
 ```bash
-figmaclaw enrich <md-path>
+figmaclaw sync <md-path>
 ```
 
-Re-fetches the page from Figma REST API, preserves all existing descriptions,
-re-renders the `.md` in canonical format. Does not call an LLM.
+Re-fetches the page from Figma REST API, updates only the frontmatter.
+The LLM-authored body is never overwritten. Does not call an LLM.
 
 ## Bulk enrichment pattern
 
@@ -100,9 +100,9 @@ Then enrich each file with the workflow above.
 ## Notes
 
 - `set-frames` only works on canonical figmaclaw-rendered `.md` files. If a file
-  was hand-written, run `figmaclaw enrich` first to canonicalize it.
+  was hand-written, run `figmaclaw sync` first to canonicalize it.
 - The `frames:` dict in frontmatter is the machine-readable source of truth.
-  The body tables are regenerated from it on the next `figmaclaw enrich` or `pull`.
+  Body tables are LLM-authored prose — code never touches them.
 - Small frames (≤200px in size, visible in the frame name or section name) are
   usually icon/component details — describe as component, not full screen.
 - If a frame has no name (`|   |`), note the section context and describe from

@@ -17,7 +17,7 @@ import pytest
 from figmaclaw.commands.set_frames import _apply_frontmatter
 from figmaclaw.figma_md_parse import parse_sections
 from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection
-from figmaclaw.figma_render import render_page
+from figmaclaw.figma_render import scaffold_page
 from figmaclaw.figma_parse import parse_frontmatter
 from figmaclaw.figma_sync_state import PageEntry
 
@@ -50,7 +50,7 @@ def _make_entry():
 def _rendered_md_with_frame(node_id: str, name: str, description: str = "") -> str:
     frame = FigmaFrame(node_id=node_id, name=name, description=description)
     section = FigmaSection(node_id="10:1", name="Onboarding", frames=[frame])
-    return render_page(_make_page(sections=[section]), _make_entry())
+    return scaffold_page(_make_page(sections=[section]), _make_entry())
 
 
 def test_apply_frontmatter_persists_pipe_description():
@@ -79,7 +79,7 @@ def test_parse_sections_extracts_frame_names_and_node_ids():
     frame_a = FigmaFrame(node_id="11:1", name="Welcome screen", description="desc A")
     frame_b = FigmaFrame(node_id="11:2", name="Login screen", description="desc B")
     section = FigmaSection(node_id="10:1", name="Auth", frames=[frame_a, frame_b])
-    md = render_page(_make_page(sections=[section]), _make_entry())
+    md = scaffold_page(_make_page(sections=[section]), _make_entry())
 
     sections = parse_sections(md)
     assert len(sections) == 1
@@ -101,7 +101,7 @@ def test_parse_sections_exposes_no_description_frontmatter_is_source_of_truth():
     """
     frame = FigmaFrame(node_id="11:1", name="Frame", description="a real description")
     section = FigmaSection(node_id="10:1", name="Sect", frames=[frame])
-    md = render_page(_make_page(sections=[section]), _make_entry())
+    md = scaffold_page(_make_page(sections=[section]), _make_entry())
 
     sections = parse_sections(md)
     for s in sections:
@@ -119,7 +119,7 @@ def test_parse_sections_skips_screen_flow():
     frame = FigmaFrame(node_id="11:1", name="Frame", description="")
     section = FigmaSection(node_id="10:1", name="Onboarding", frames=[frame])
     page = _make_page(sections=[section], flows=[("11:1", "11:2")])
-    md = render_page(page, _make_entry())
+    md = scaffold_page(page, _make_entry())
 
     sections = parse_sections(md)
     names = [s.name for s in sections]

@@ -5,7 +5,7 @@ INVARIANTS:
 - pull_file writes .md files for pages with changed hashes
 - pull_file updates the manifest after writing
 - pull_file skips file entirely when version and lastModified unchanged (not --force)
-- write_page creates parent dirs and writes rendered markdown
+- write_new_page creates parent dirs and writes rendered markdown
 - existing frame descriptions are preserved for unchanged frames (LLM idempotency)
 """
 
@@ -18,7 +18,7 @@ import pytest
 
 from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection  # noqa: F401 — used in tests
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
-from figmaclaw.pull_logic import PullResult, pull_file, write_page
+from figmaclaw.pull_logic import PullResult, pull_file, write_new_page
 
 
 def _make_page(page_node_id: str = "7741:45837", page_name: str = "Onboarding") -> FigmaPage:
@@ -51,31 +51,31 @@ def _make_entry(page_hash: str = "aaaa1111bbbb2222") -> PageEntry:
     )
 
 
-# --- write_page ---
+# --- write_new_page ---
 
-def test_write_page_creates_file(tmp_path: Path):
-    """INVARIANT: write_page creates the .md file at the correct path."""
+def test_write_new_page_creates_file(tmp_path: Path):
+    """INVARIANT: write_new_page creates the .md file at the correct path."""
     page = _make_page()
     entry = _make_entry()
-    write_page(tmp_path, page, entry)
+    write_new_page(tmp_path, page, entry)
     out = tmp_path / "figma" / "abc123" / "pages" / "onboarding.md"
     assert out.exists()
     assert "# Web App / Onboarding" in out.read_text()
 
 
-def test_write_page_creates_parent_dirs(tmp_path: Path):
-    """INVARIANT: write_page creates all intermediate directories."""
+def test_write_new_page_creates_parent_dirs(tmp_path: Path):
+    """INVARIANT: write_new_page creates all intermediate directories."""
     page = _make_page()
     entry = _make_entry()
-    write_page(tmp_path, page, entry)
+    write_new_page(tmp_path, page, entry)
     assert (tmp_path / "figma" / "abc123" / "pages").is_dir()
 
 
-def test_write_page_returns_path(tmp_path: Path):
-    """INVARIANT: write_page returns the Path where the file was written."""
+def test_write_new_page_returns_path(tmp_path: Path):
+    """INVARIANT: write_new_page returns the Path where the file was written."""
     page = _make_page()
     entry = _make_entry()
-    result = write_page(tmp_path, page, entry)
+    result = write_new_page(tmp_path, page, entry)
     assert result == tmp_path / "figma" / "abc123" / "pages" / "onboarding.md"
 
 
@@ -364,7 +364,7 @@ async def test_pull_file_preserves_existing_descriptions(tmp_path: Path):
     existing_entry = _make_entry("0000000000000000")
     existing_entry = existing_entry.model_copy(update={"md_path": "figma/web-app/pages/onboarding-7741-45837.md"})
     page_with_descs = _make_page()  # has descriptions
-    write_page(tmp_path, page_with_descs, existing_entry)
+    write_new_page(tmp_path, page_with_descs, existing_entry)
 
     state = FigmaSyncState(tmp_path)
     state.load()

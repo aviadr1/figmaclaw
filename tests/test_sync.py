@@ -1,11 +1,11 @@
-"""Tests for commands/enrich.py.
+"""Tests for commands/sync.py.
 
 INVARIANTS:
-- enrich fetches file meta and page node from Figma API
-- enrich writes the updated .md file, preserving existing descriptions
-- enrich updates the manifest with the new page hash after re-sync
-- enrich fails with a usage error when FIGMA_API_KEY is not set
-- enrich fails with a usage error for a file with no figmaclaw frontmatter
+- sync fetches file meta and page node from Figma API
+- sync updates only the frontmatter, preserving the LLM-authored body
+- sync updates the manifest with the new page hash after re-sync
+- sync fails with a usage error when FIGMA_API_KEY is not set
+- sync fails with a usage error for a file with no figmaclaw frontmatter
 """
 
 from __future__ import annotations
@@ -15,12 +15,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from figmaclaw.commands import enrich as enrich_module
+from figmaclaw.commands import sync as sync_module
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_hash import compute_page_hash
 from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection
 from figmaclaw.figma_parse import parse_frontmatter
-from figmaclaw.figma_render import render_page
+from figmaclaw.figma_render import scaffold_page
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
 
 
@@ -82,11 +82,11 @@ def _fake_file_meta() -> dict:
 
 
 @pytest.mark.asyncio
-async def test_enrich_updates_manifest_hash(tmp_path: Path) -> None:
-    """INVARIANT: enrich updates the manifest with the new page hash after re-syncing from Figma."""
+async def test_sync_updates_manifest_hash(tmp_path: Path) -> None:
+    """INVARIANT: sync updates the manifest with the new page hash after re-syncing from Figma."""
     page = _make_page()
     entry = _make_entry("figma/abc123/pages/onboarding.md")
-    md = render_page(page, entry)
+    md = scaffold_page(page, entry)
     md_path = tmp_path / "page.md"
     md_path.write_text(md)
 
@@ -103,11 +103,11 @@ async def test_enrich_updates_manifest_hash(tmp_path: Path) -> None:
     mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta())
     mock_client.get_page = AsyncMock(return_value=page_node)
 
-    with patch.object(enrich_module, "FigmaClient") as MockClientClass:
+    with patch.object(sync_module, "FigmaClient") as MockClientClass:
         MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        await enrich_module._run("fake-api-key", tmp_path, md_path, auto_commit=False)
+        await sync_module._run("fake-api-key", tmp_path, md_path, auto_commit=False)
 
     state2 = FigmaSyncState(tmp_path)
     state2.load()
@@ -116,11 +116,11 @@ async def test_enrich_updates_manifest_hash(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_enrich_preserves_existing_descriptions(tmp_path: Path) -> None:
-    """INVARIANT: enrich restores existing frame descriptions into the re-synced .md file."""
+async def test_sync_preserves_existing_descriptions(tmp_path: Path) -> None:
+    """INVARIANT: sync restores existing frame descriptions into the re-synced frontmatter."""
     page = _make_page()  # has "Welcome screen." on 11:1
     entry = _make_entry("figma/abc123/pages/onboarding.md")
-    md = render_page(page, entry)
+    md = scaffold_page(page, entry)
     md_path = tmp_path / "page.md"
     md_path.write_text(md)
 
@@ -134,11 +134,11 @@ async def test_enrich_preserves_existing_descriptions(tmp_path: Path) -> None:
     mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta())
     mock_client.get_page = AsyncMock(return_value=_fake_page_node())
 
-    with patch.object(enrich_module, "FigmaClient") as MockClientClass:
+    with patch.object(sync_module, "FigmaClient") as MockClientClass:
         MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        await enrich_module._run("fake-api-key", tmp_path, md_path, auto_commit=False)
+        await sync_module._run("fake-api-key", tmp_path, md_path, auto_commit=False)
 
     fm = parse_frontmatter(md_path.read_text())
     assert fm is not None
@@ -146,12 +146,56 @@ async def test_enrich_preserves_existing_descriptions(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_enrich_fails_for_non_figmaclaw_file(tmp_path: Path) -> None:
-    """INVARIANT: enrich raises UsageError when the .md file has no figmaclaw frontmatter."""
+async def test_sync_preserves_body(tmp_path: Path) -> None:
+    """INVARIANT: sync updates only frontmatter — the LLM-authored body is never overwritten."""
+    page = _make_page()
+    entry = _make_entry("figma/abc123/pages/onboarding.md")
+    md = scaffold_page(page, entry)
+
+    # Simulate LLM-authored body by replacing placeholders with real prose
+    md = md.replace(
+        "<!-- LLM: Write a 2-3 sentence page summary describing what this page covers -->",
+        "This page covers the onboarding flow with welcome and permissions screens.",
+    )
+    md = md.replace(
+        "<!-- LLM: Write a 1-sentence section intro if the section has a distinct theme -->",
+        "The onboarding section walks new users through initial setup.",
+    )
+    md_path = tmp_path / "page.md"
+    md_path.write_text(md)
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.set_page_entry("abc123", "7741:45837", entry)
+    state.save()
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta())
+    mock_client.get_page = AsyncMock(return_value=_fake_page_node())
+
+    with patch.object(sync_module, "FigmaClient") as MockClientClass:
+        MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        await sync_module._run("fake-api-key", tmp_path, md_path, auto_commit=False)
+
+    updated = md_path.read_text()
+    # Body prose must be preserved
+    assert "This page covers the onboarding flow with welcome and permissions screens." in updated
+    assert "The onboarding section walks new users through initial setup." in updated
+    # Frontmatter must still be valid
+    fm = parse_frontmatter(updated)
+    assert fm is not None
+
+
+@pytest.mark.asyncio
+async def test_sync_fails_for_non_figmaclaw_file(tmp_path: Path) -> None:
+    """INVARIANT: sync raises UsageError when the .md file has no figmaclaw frontmatter."""
     import click
 
     md_path = tmp_path / "plain.md"
     md_path.write_text("# Plain markdown\n\nNo frontmatter.\n")
 
     with pytest.raises(click.UsageError):
-        await enrich_module._run("fake-api-key", tmp_path, md_path, auto_commit=False)
+        await sync_module._run("fake-api-key", tmp_path, md_path, auto_commit=False)

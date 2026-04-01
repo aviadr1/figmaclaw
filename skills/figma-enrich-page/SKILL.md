@@ -23,7 +23,9 @@ Run `figmaclaw self skill enrich-page` to print it at runtime.
 3. Pass **both** to the LLM: existing body + new data
 4. LLM rewrites the body — preserving existing prose where still accurate, adding what's missing
 
-**Never call `figmaclaw enrich` or `figmaclaw pull` as part of body enrichment — both rewrite the body and destroy page summaries and section intros.**
+Use `figmaclaw sync` to re-sync frontmatter from Figma without touching the body.
+Use `figmaclaw sync --scaffold` to print the scaffold template as a structural hint.
+Use `figmaclaw sync --show-body` to print the existing body for the LLM to preserve.
 
 ## When to use
 
@@ -54,7 +56,7 @@ EOF
 
 # 7. Commit and push
 git add <file_path> .figma-sync/
-git commit -m "sync: enrich <page-name> with frame descriptions"
+git commit -m "sync: describe <page-name> frames"
 git push || (git pull --no-rebase && git push)
 ```
 

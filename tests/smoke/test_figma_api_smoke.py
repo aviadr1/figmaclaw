@@ -16,7 +16,7 @@ from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_frontmatter import FigmaPageFrontmatter
 from figmaclaw.figma_models import FigmaPage, FigmaSection, from_page_node
 from figmaclaw.figma_parse import parse_frontmatter
-from figmaclaw.figma_render import render_page
+from figmaclaw.figma_render import scaffold_page
 from figmaclaw.figma_sync_state import PageEntry
 
 # The Web App file used in linear-git
@@ -99,9 +99,9 @@ async def test_from_page_node_matches_real_api_structure(api_key: str) -> None:
 @pytest.mark.smoke
 @pytest.mark.asyncio
 async def test_render_and_parse_round_trip_against_real_page(api_key: str) -> None:
-    """Smoke: render_page + parse_frontmatter round-trips correctly for a real Figma page.
+    """Smoke: scaffold_page + parse_frontmatter round-trips correctly for a real Figma page.
 
-    INVARIANT: The YAML frontmatter written by render_page must be parseable
+    INVARIANT: The YAML frontmatter written by scaffold_page must be parseable
     by parse_frontmatter into a valid FigmaPageFrontmatter with correct identity fields.
     """
     async with FigmaClient(api_key=api_key) as client:
@@ -118,7 +118,7 @@ async def test_render_and_parse_round_trip_against_real_page(api_key: str) -> No
         last_refreshed_at="2026-03-31T00:00:00Z",
     )
 
-    md = render_page(page, entry)
+    md = scaffold_page(page, entry)
 
     # Must start with frontmatter
     assert md.startswith("---\n"), "Rendered markdown must start with YAML frontmatter"

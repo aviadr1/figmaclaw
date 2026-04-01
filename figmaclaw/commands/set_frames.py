@@ -6,8 +6,7 @@ Performs a surgical in-place update:
   3. Optionally replaces the flows list.
 
 No Figma API call is made — the file is updated entirely from the supplied data.
-The body table rows are NOT updated here; they are regenerated on the next
-`figmaclaw enrich` or `figmaclaw pull`.
+Body prose (tables, intros, Mermaid) is NEVER touched by code — the LLM owns it.
 
 Input formats (--frames / --summary / --flows):
   --frames     JSON object: {"node_id": "description", ...}
@@ -27,7 +26,7 @@ from pathlib import Path
 
 import click
 
-from figmaclaw.figma_parse import parse_frontmatter
+from figmaclaw.figma_parse import parse_frontmatter, split_frontmatter
 from figmaclaw.figma_render import _FlowDict, _FlowList, _FrontmatterDumper
 from figmaclaw.git_utils import git_commit
 
@@ -62,15 +61,10 @@ def _apply_frontmatter(md: str, descriptions: dict[str, str], flows: list[list[s
         fm_data, Dumper=_FrontmatterDumper, default_flow_style=False, allow_unicode=True,
         width=2**20,  # prevent PyYAML from wrapping long flow-style values
     ).rstrip()
-    # Replace frontmatter block: md = "---\n{fm}\n---\n{body}" — use partition to avoid regex
-    _, sep, after_open = md.partition("---\n")
-    if not sep:
+    parts = split_frontmatter(md)
+    if parts is None:
         return md
-    _, sep2, body = after_open.partition("\n---")
-    if not sep2:
-        return md
-    if body.startswith("\n"):
-        body = body[1:]
+    _, body = parts
     return f"---\n{new_fm_body}\n---\n{body}"
 
 
@@ -85,7 +79,7 @@ def _apply_summary(md: str, summary: str) -> str:
     updated, n = _SUMMARY_RE.subn(_replace, md, count=1)
     if n == 0:
         # Anchor line not found (unusual file structure) — leave body unchanged.
-        # Descriptions are already in frontmatter; summary can be set on next enrich.
+        # Descriptions are already in frontmatter; summary can be set on next sync.
         return md
     return updated
 
@@ -120,7 +114,7 @@ def set_frames_cmd(
     MD_PATH is the path to a figmaclaw-rendered page .md file.
 
     Writes descriptions to the frontmatter `frames:` dict only. Body table rows
-    are NOT updated — they are regenerated on the next enrich or pull. Does not
+    are NOT updated — they are regenerated on the next sync or pull. Does not
     call the Figma API.
     """
     repo_dir = Path(ctx.obj["repo_dir"])

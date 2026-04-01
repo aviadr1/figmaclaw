@@ -77,11 +77,14 @@ Note the full body verbatim — you will pass it to the LLM in Step 7. Identify 
 ### Step 2 — Re-sync structure from Figma
 
 ```bash
-figmaclaw enrich <file_path>
+figmaclaw sync <file_path>
 ```
 
-Fetches the latest page structure, rebuilds sections/frames tables, extracts prototype `reactions`
-into the `flows:` frontmatter field. **Does NOT generate descriptions.** Preserves existing ones.
+Fetches the latest page structure and updates ONLY the frontmatter (frames, flows).
+The LLM-authored body is never overwritten. **Does NOT generate descriptions.** Preserves existing ones.
+
+Use `--scaffold` to print the scaffold template (structural hint when the page changed significantly).
+Use `--show-body` to print the existing body (so the LLM can preserve/adapt it).
 
 ### Step 3 — Check what's missing
 
@@ -178,7 +181,7 @@ Confirm `missing_descriptions` is 0.
 
 ```bash
 git add <file_path> .figma-sync/
-git commit -m "sync: enrich <page-name> with frame descriptions"
+git commit -m "sync: describe <page-name> frames"
 git push || (git pull --no-rebase && git push)
 ```
 
@@ -225,5 +228,5 @@ See Step 7 above.
 - **Never parse body prose** for node IDs, descriptions, or flows — always read frontmatter
 - The `reserach` section typo in some Figma files is real — preserve it as-is
 - Small frames (≤200px) inside sections are usually icon/component details — describe them, note they are components
-- If a section's table is empty after `figmaclaw enrich`, those frames had no node IDs in Figma — skip it
+- If a section's table is empty after `figmaclaw sync`, those frames had no node IDs in Figma — skip it
 - Always include `## Screen flows` — humans can't read frontmatter YAML. Look at the screenshots to understand what connects to what. Buttons, arrows, step indicators, and CTAs in the design show the flow.
