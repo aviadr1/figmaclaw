@@ -19,6 +19,19 @@ don't waste API calls on pages we'll never process.
 
 on_page_written: optional callback called after each page is written to disk.
 Use this to trigger git commits from the caller (keeps git logic out of pull_logic).
+
+DESIGN CONTRACT — body vs frontmatter:
+- Frontmatter is machine-readable source of truth. pull_logic reads and writes it.
+  Use frontmatter to know WHAT needs updating (which frames changed, new flows, etc).
+- Body is human/LLM-readable prose: page summary, section intros, frame tables,
+  Mermaid flowcharts. The body is generated and updated by the figma-enrich-page
+  skill via LLM — NEVER by code parsing or mechanical rewriting.
+- pull_logic writes a skeleton body (placeholder descriptions) for new pages.
+  For pages that already have LLM-generated prose, the correct update path is the
+  figma-enrich-page skill: it receives the existing body + new Figma data and the
+  LLM rewrites the body intelligently, preserving page summary and section intros.
+- NEVER parse prose from the body in Python code. No parse_page_summary(),
+  no parse_section_intros(), no extracting text between headings.
 """
 
 from __future__ import annotations
@@ -86,6 +99,10 @@ def _merge_existing(page: FigmaPage, existing_descs: dict[str, str], existing_fl
 
     existing_descs: {node_id: description} — merged from screen page + all component section .mds
     existing_flows: [(src, dst), ...] — from the screen page .md only
+
+    NOTE: page_summary and section.intro are LLM-generated prose and live only in the body.
+    They are intentionally NOT preserved here. The body is written by humans and LLMs only —
+    never by code parsing. Use the figma-enrich-page skill to update prose via LLM.
     """
     new_sections = []
     for section in page.sections:

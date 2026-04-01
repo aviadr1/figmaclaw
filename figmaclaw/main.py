@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import click
 
-from figmaclaw._build_info import __commit__, __commit_message__, __pr__, __version__
 from figmaclaw.commands.apply_webhook import apply_webhook_cmd
 from figmaclaw.commands.enrich import enrich_cmd
 from figmaclaw.commands.init import init_cmd
@@ -22,10 +21,11 @@ from figmaclaw.commands.workflows_cmd import workflows_group
 def _version_callback(ctx: click.Context, _param: click.Parameter, value: bool) -> None:
     if not value or ctx.resilient_parsing:
         return
-    short_sha = __commit__[:8] if __commit__ else "unknown"
-    pr_info = f" · PR #{__pr__}" if __pr__ else ""
-    click.echo(f"figmaclaw {__version__} ({short_sha}{pr_info})")
-    first_line = __commit_message__.split("\n")[0].strip() if __commit_message__ else ""
+    import figmaclaw._build_info as _bi  # lazy: keeps module-level names mockable in tests
+    short_sha = _bi.__commit__[:8] if _bi.__commit__ else "unknown"
+    pr_info = f" · PR #{_bi.__pr__}" if _bi.__pr__ else ""
+    click.echo(f"figmaclaw {_bi.__version__} ({short_sha}{pr_info})")
+    first_line = _bi.__commit_message__.split("\n")[0].strip() if _bi.__commit_message__ else ""
     if first_line:
         click.echo(f"  {first_line}")
     ctx.exit()

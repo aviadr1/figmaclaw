@@ -92,14 +92,26 @@ def test_parse_sections_extracts_frame_names_and_node_ids():
     assert "Login screen" in names
 
 
-def test_parse_sections_description_is_empty_frontmatter_is_source_of_truth():
-    """INVARIANT: parse_sections always returns empty descriptions — callers use frontmatter."""
+def test_parse_sections_exposes_no_description_frontmatter_is_source_of_truth():
+    """INVARIANT: ParsedFrame has only name and node_id — no description field.
+
+    Descriptions live in YAML frontmatter (parse_frontmatter), never in ParsedFrame.
+    This prevents callers from accidentally reading stale body text instead of
+    the authoritative frontmatter data.
+    """
     frame = FigmaFrame(node_id="11:1", name="Frame", description="a real description")
     section = FigmaSection(node_id="10:1", name="Sect", frames=[frame])
     md = render_page(_make_page(sections=[section]), _make_entry())
 
     sections = parse_sections(md)
-    assert all(f.description == "" for s in sections for f in s.frames)
+    for s in sections:
+        for f in s.frames:
+            assert hasattr(f, "name")
+            assert hasattr(f, "node_id")
+            assert not hasattr(f, "description"), (
+                "ParsedFrame must not expose a description attribute — "
+                "use parse_frontmatter() to read frame descriptions"
+            )
 
 
 def test_parse_sections_skips_screen_flow():

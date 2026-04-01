@@ -14,8 +14,16 @@ render_component_section() — for component library sections (figma/*/component
   - H1 header: {file} / {page} / {section}
   - Variants table: Variant | Node ID | Description
 
-Policy: all structured data needed by machines lives in the YAML frontmatter.
-        The table rows and prose are for human/AI reading only — never parse them.
+DESIGN CONTRACT — body vs frontmatter:
+  - Frontmatter = machine-readable source of truth. CI reads/writes this.
+    Use it to determine WHAT needs updating (which frames changed, new flows, etc).
+  - Body = human/LLM-readable prose: page summary, section intros, frame tables,
+    Mermaid charts. Updated ONLY by the figma-enrich-page skill via LLM.
+  - render_page() writes a skeleton body for new pages (placeholder descriptions).
+    For existing pages with LLM prose, body updates go through the skill, not here.
+  - NEVER parse prose from the body. No code should extract page_summary, section
+    intros, or any other prose from the markdown body. The LLM receives the whole
+    body as-is alongside new Figma data and rewrites it intelligently.
 
 Frontmatter format: top-level block YAML for scalar fields; flow style (single-line)
 for frames dict and flows list, using FlowDict/FlowList wrappers + _FrontmatterDumper.
@@ -81,6 +89,7 @@ def _build_frontmatter(
         Dumper=_FrontmatterDumper,
         default_flow_style=False,
         allow_unicode=True,
+        width=2**20,  # prevent PyYAML from wrapping long flow-style values
     ).rstrip()
     return f"---\n{body}\n---"
 

@@ -59,7 +59,8 @@ def _apply_frontmatter(md: str, descriptions: dict[str, str], flows: list[list[s
         fm_data["flows"] = _FlowList(effective_flows)
 
     new_fm_body = yaml.dump(
-        fm_data, Dumper=_FrontmatterDumper, default_flow_style=False, allow_unicode=True
+        fm_data, Dumper=_FrontmatterDumper, default_flow_style=False, allow_unicode=True,
+        width=2**20,  # prevent PyYAML from wrapping long flow-style values
     ).rstrip()
     # Replace frontmatter block: md = "---\n{fm}\n---\n{body}" — use partition to avoid regex
     _, sep, after_open = md.partition("---\n")
@@ -75,11 +76,17 @@ def _apply_frontmatter(md: str, descriptions: dict[str, str], flows: list[list[s
 
 def _apply_summary(md: str, summary: str) -> str:
     """Set or replace the page summary paragraph that follows the Figma link."""
-    replacement = r"\g<1>" + summary + "\n\n"
-    updated, n = _SUMMARY_RE.subn(replacement, md, count=1)
+    # Use a callable replacement — never string concatenation — so that
+    # backslash sequences in `summary` (e.g. \1, \g<1>) are treated as
+    # literal text, not regex backreferences.
+    def _replace(m: re.Match) -> str:
+        return m.group(1) + summary + "\n\n"
+
+    updated, n = _SUMMARY_RE.subn(_replace, md, count=1)
     if n == 0:
-        # Pattern didn't match — append summary after the Figma link line as fallback
-        pass
+        # Anchor line not found (unusual file structure) — leave body unchanged.
+        # Descriptions are already in frontmatter; summary can be set on next enrich.
+        return md
     return updated
 
 
@@ -165,5 +172,5 @@ def set_frames_cmd(
     click.echo(f"set-frames: wrote {n} description(s) to {rel}")
 
     if auto_commit:
-        if git_commit(repo_dir, [rel], f"sync: enrich {rel}"):
+        if git_commit(repo_dir, [rel], f"sync: set-frames {rel} with {n} description(s)"):
             click.echo(f"  committed: {rel}")
