@@ -1,8 +1,15 @@
-"""Async Figma REST API client."""
+"""Async Figma REST API client.
+
+Rate-limit pacing: Figma Tier 1 allows 15 req/min on Pro (Full seat).
+The client enforces a minimum interval between requests (default 4s =
+15 req/min) to avoid 429s proactively. If a 429 does occur, it respects
+the Retry-After header. Set rate_limit_rpm=0 to disable pacing.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 import httpx
@@ -12,14 +19,17 @@ class FigmaClient:
     """Async client for the Figma REST API.
 
     Uses X-Figma-Token header (not Authorization: Bearer).
+    Proactively paces requests to stay under Figma rate limits.
     Retries on 429 (rate limit) and 5xx errors with exponential backoff.
     """
 
     _base_url = "https://api.figma.com"
 
-    def __init__(self, api_key: str) -> None:
+    def __init__(self, api_key: str, *, rate_limit_rpm: int = 14) -> None:
         self._api_key = api_key
         self._client: httpx.AsyncClient | None = None
+        self._min_interval = 60.0 / rate_limit_rpm if rate_limit_rpm > 0 else 0.0
+        self._last_request_time: float = 0.0
 
     async def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -41,11 +51,21 @@ class FigmaClient:
     async def __aexit__(self, *args: Any) -> None:
         await self.close()
 
+    async def _pace(self) -> None:
+        """Sleep if needed to stay under the rate limit."""
+        if self._min_interval <= 0:
+            return
+        elapsed = time.monotonic() - self._last_request_time
+        if elapsed < self._min_interval:
+            await asyncio.sleep(self._min_interval - elapsed)
+        self._last_request_time = time.monotonic()
+
     async def _get(self, path: str, params: dict[str, str] | None = None) -> dict[str, Any]:
-        """GET request with retry on 429 / 5xx."""
+        """GET request with proactive pacing and retry on 429 / 5xx."""
         client = await self._ensure_client()
         url = f"{self._base_url}{path}"
         for attempt in range(5):
+            await self._pace()
             response = await client.get(url, params=params)
             if response.status_code == 429:
                 retry_after = int(response.headers.get("retry-after", "5"))
