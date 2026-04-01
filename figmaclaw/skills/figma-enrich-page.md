@@ -11,84 +11,101 @@ Enrich a figmaclaw `.md` file with descriptions for every frame, a page summary,
 - A page under `figma/*/pages/` has `(no description yet)` placeholders
 - You want to re-sync descriptions for a specific page without a full pull
 
-## Preferred approach — use the CLI
-
-Run `figmaclaw enrich` directly. It handles everything: fetches the page from Figma REST API, merges existing descriptions, writes the file back, and updates the manifest.
+## Preferred approach — use the CLI (figmaclaw installed)
 
 ```bash
-figmaclaw enrich figma/web-app/pages/<page-slug>.md
+figmaclaw enrich figma/web-app/pages/<page-slug>.md [--auto-commit]
 ```
 
-Options:
-- `--auto-commit` — git commit the result
+Fetches the current page structure from Figma, merges existing descriptions, rewrites the file, and updates the manifest. Does not call an LLM — use the manual steps below to generate descriptions.
 
 ### What it reads from Figma
-- `GET /v1/files/{file_key}?depth=1` — file name and version (for manifest update)
-- `GET /v1/files/{file_key}/nodes?ids={page_node_id}` — full page node tree (sections + frames)
+- `GET /v1/files/{file_key}?depth=1` — file name and version
+- `GET /v1/files/{file_key}/nodes?ids={page_node_id}` — full page node tree
 
-### What it writes
-- The `.md` file in-place — updated frontmatter (`frames`, `flows`) and body (descriptions, summary, Mermaid chart)
-- `.figma-sync/manifest.json` — stamps the new page hash so the next pull skips this page
+## Manual steps (figmaclaw installed, MCP unavailable — e.g. CI)
 
-## Fallback — manual steps (if figmaclaw is not installed)
+### 1 — Inspect the page
 
-### 1 — Read the existing .md to get file_key and the frame inventory
+```bash
+figmaclaw page-tree figma/<file>/<page>.md --json --missing-only
+```
 
-The frontmatter contains `file_key` and `page_node_id`. The table body already lists every frame with its node ID — figmaclaw wrote this skeleton on the last sync. **Do not call `get_metadata` or fetch page structure from Figma.** The inventory is already here.
+This prints every frame that needs a description. Exit code 1 = frames missing (normal); 0 = all done.
 
-Parse the table for all rows where Description is `(no description yet)` to get the pending node IDs.
+### 2 — Download screenshots
 
-### 2 — Enrich in batches of 8 using subagents
+```bash
+figmaclaw screenshots figma/<file>/<page>.md --pending
+```
 
-Process frames in batches of 8. For each batch, spawn a subagent:
+Downloads PNGs to `.figma-cache/screenshots/<file_key>/` for all frames without descriptions yet.
+Outputs a JSON manifest: `{file_key, screenshots: [{node_id, path}]}`.
 
-> "Here are 8 Figma frames from file `<file_key>`. Call `get_screenshot` for all 8 node IDs **in parallel** (single tool-use response):
-> `<node_id_1>`, `<node_id_2>`, ... `<node_id_8>`
->
-> For each frame, write a description of 1–3 sentences covering:
-> - What the screen shows and its current state
-> - Key UI elements visible (inputs, modals, CTAs, overlays, toggles, etc.)
-> - What makes it visually distinct from its siblings
->
-> Return only a JSON object: `{ "<node_id>": "<description>", ... }`"
+`--pending` skips frames that already have descriptions.
 
-After the subagent returns, **immediately write those descriptions into the `.md`** (Edit the table rows), then proceed to the next batch. Do not accumulate batches before writing.
+### 3 — Generate descriptions
 
-This keeps screenshots out of the main context — each subagent's images are discarded after it returns text.
+Read each PNG with the Read tool (Claude can see images). For each frame write a description of 1–3 sentences:
+- What the screen shows and its current state
+- Key UI elements visible (inputs, modals, CTAs, overlays, toggles, etc.)
+- What makes it visually distinct from its siblings
 
-### 3 — Infer screen flows
+Process in batches via subagents to keep screenshots out of the main context.
 
-Look for sequences implied by frame names and nesting:
-- `default` → `highlighted` (user interaction)
-- `enabled` → `options` (user opens settings)
-- Full-screen frames with overlay children (modal, hover, popup) are destinations from the base screen
+### 4 — Write descriptions
 
-### 4 — Write the enriched .md
+Pipe JSON to stdin — **do not use `--frames`** as descriptions may contain single quotes that break shell quoting:
 
-Update the file with:
-- Frontmatter: `frames` dict (node_id → description) and `flows` list
-- Body: page summary paragraph, section tables with descriptions filled in, Mermaid flowchart if flows exist
+```bash
+figmaclaw set-frames figma/<file>/<page>.md << 'EOF'
+{
+  "node_id_1": "Description text, can contain 'single quotes' freely.",
+  "node_id_2": "Another description."
+}
+EOF
+```
+
+`set-frames` merges new descriptions into the frontmatter `frames:` dict. Existing descriptions are preserved.
 
 ### 5 — Commit and push
 
 ```bash
-git add figma/web-app/pages/<page-slug>.md
-git commit -m "sync: enrich <page-name> with descriptions and flows"
+git add figma/<file>/<page>.md
+git commit -m "sync: enrich <page-name> with descriptions"
 git push
 ```
+
+## Fallback — manual steps (figmaclaw not installed, MCP available)
+
+### 1 — Read the existing .md for the frame inventory
+
+Frontmatter contains `file_key` and `page_node_id`. Body tables list every frame with its node ID.
+
+### 2 — Get screenshots via MCP in batches of 8
+
+For each batch, spawn a subagent:
+
+> "Here are 8 Figma frames from file `<file_key>`. Call `get_screenshot` for all 8 node IDs **in parallel**:
+> `<node_id_1>`, ... `<node_id_8>`
+>
+> Return only a JSON object: `{ "<node_id>": "<1–3 sentence description>", ... }`"
+
+### 3 — Write with set-frames via stdin
+
+See step 4 above — always use stdin heredoc, never `--frames`.
 
 ## What information you need from a page
 
 | What to fill | Source |
 |---|---|
-| Frame descriptions | Screenshots (or rendered image) per frame — use `get_screenshot` or `get_design_context` from Figma MCP |
+| Frame descriptions | Screenshots per frame — CLI: `figmaclaw screenshots` + Read tool; MCP: `get_screenshot` / `get_design_context` |
 | Page summary | Screenshots + understanding of the whole page |
-| Section intros | Frame names + metadata structure (often no screenshots needed) |
-| Flowchart edges | `reactions` field in the Figma API node tree (prototype connections) — fetched automatically by `figmaclaw enrich` |
+| Flowchart edges | `reactions` in Figma node tree — fetched automatically by `figmaclaw enrich` |
 
-**On frame names:** Even when names are descriptive (e.g., `captions / widget highlighted`), screenshots are still needed for useful descriptions. Names tell you the state variant but not what UI elements are present, how the layout differs from siblings, or whether the name accurately reflects what's rendered.
+**On frame names:** Screenshots are still needed even when names are descriptive. Names tell you the state variant but not layout, visible UI elements, or whether the name is accurate.
 
-**On flowcharts:** Screenshots don't tell you flows. The Figma API node tree includes a `reactions` field on each frame — these are the prototype arrows (click/hover interactions) connecting frames. That's the authoritative source. `figmaclaw enrich` extracts these automatically. If a page has no prototype reactions, no Mermaid block is generated — that's correct behavior, not a gap.
+**On flowcharts:** The Figma API `reactions` field is authoritative. `figmaclaw enrich` extracts these automatically. No reactions → no Mermaid block (correct behavior).
 
 ## Notes
 
