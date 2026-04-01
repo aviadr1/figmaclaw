@@ -100,6 +100,16 @@ figmaclaw screenshots <file_path> --pending
 Downloads PNGs to `.figma-cache/screenshots/<file_key>/` for frames without descriptions.
 Outputs a JSON manifest: `{file_key, screenshots: [{node_id, path}]}`.
 
+If `## Screen flows` is missing from the body (even when all frames are already described),
+download **all** screenshots instead:
+
+```bash
+figmaclaw screenshots <file_path>
+```
+
+You need to see the actual design to understand what connects to what — buttons, modals, step
+indicators, and CTAs show the flow. Do not guess from frame names.
+
 ### Step 5 — Generate descriptions via subagents
 
 Process in **batches of 8** — spawn a subagent per batch so screenshots leave the main context:
@@ -137,18 +147,18 @@ Read the current file (frontmatter now has all descriptions and flows). Then rew
 - **Section intros** — if missing, add one sentence after each `##` heading describing what that group of frames shows.
 - **Mermaid flowchart** — always include. If `## Screen flows` doesn't exist yet, append it at the end. Build the graph from:
   1. `flows:` frontmatter (authoritative Figma prototype reactions) — use these edges first
-  2. Infer remaining transitions from frame names and descriptions — screens have a logical order humans need to understand even without wired prototypes
+  2. **Look at the screenshots** — the visual design shows what leads where. Buttons, arrows, modal triggers, step indicators, and CTAs all tell you how screens connect. Do not guess from frame names alone.
 
 ```markdown
 ## Screen flows
 
 ```mermaid
 flowchart LR
-    A["<frame name>"] -->|<action inferred from context>| B["<next frame name>"]
+    A["<frame name>"] -->|<action inferred from design>| B["<next frame name>"]
 ` `` `
 ```
 
-  Use frame names from the body tables as node labels (not raw node IDs). Infer transition labels from frame names and descriptions (e.g. "user taps Go Live", "OTP verified", "form submitted").
+  Use frame names from the body tables as node labels (not raw node IDs). Label transitions with the actual user action visible in the design (e.g. "taps Go Live button", "submits OTP", "payment complete").
 
 - **Preserve existing prose** — if a page summary, section intros, or Mermaid block already exist
   and are still accurate, keep them. Only update what's wrong or missing.
@@ -208,7 +218,7 @@ See Step 7 above.
 | Frame descriptions | Screenshots — CLI: `figmaclaw screenshots` + Read tool; MCP: `get_screenshot` |
 | Page summary | Screenshots + overall understanding of the page |
 | Section intros | Screenshots + what each frame group has in common |
-| Mermaid flowchart | Always present. `flows:` frontmatter as authoritative edges; infer remaining transitions from frame names and descriptions |
+| Mermaid flowchart | Always present. `flows:` frontmatter as authoritative edges; look at screenshots to find additional transitions visible in the design |
 
 ## Notes
 
@@ -216,4 +226,4 @@ See Step 7 above.
 - The `reserach` section typo in some Figma files is real — preserve it as-is
 - Small frames (≤200px) inside sections are usually icon/component details — describe them, note they are components
 - If a section's table is empty after `figmaclaw enrich`, those frames had no node IDs in Figma — skip it
-- Always include `## Screen flows` — humans can't read frontmatter YAML. Infer the logical screen order from frame names and descriptions even when Figma has no prototype reactions.
+- Always include `## Screen flows` — humans can't read frontmatter YAML. Look at the screenshots to understand what connects to what. Buttons, arrows, step indicators, and CTAs in the design show the flow.
