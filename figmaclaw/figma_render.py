@@ -72,7 +72,7 @@ def _build_frontmatter(
     if section_node_id:
         fm["section_node_id"] = section_node_id
     if frame_descs:
-        fm["frames"] = dict(frame_descs)  # block-style YAML — readable for many/long values
+        fm["frames"] = _FlowDict(frame_descs)
     if flows:
         fm["flows"] = _FlowList([[src, dst] for src, dst in flows])
 
@@ -81,6 +81,7 @@ def _build_frontmatter(
         Dumper=_FrontmatterDumper,
         default_flow_style=False,
         allow_unicode=True,
+        width=2**20,  # prevent PyYAML from wrapping long flow-style values
     ).rstrip()
     return f"---\n{body}\n---"
 

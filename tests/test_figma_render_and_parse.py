@@ -217,7 +217,12 @@ def test_parse_frontmatter_returns_none_for_missing_frontmatter():
 
 
 def test_render_page_frontmatter_is_compact_flow_style():
-    """INVARIANT: frames and flows are single-line flow style in frontmatter, not multi-line block."""
+    """INVARIANT: frames and flows are single-line YAML flow style in frontmatter.
+
+    Both must appear on exactly one line each, using inline { } / [ ] notation.
+    This keeps the frontmatter compact and clearly machine-readable while the
+    body prose remains human-readable. PyYAML must not wrap long values.
+    """
     frames = [FigmaFrame(node_id="11:1", name="welcome", description="Welcome screen.")]
     section = FigmaSection(node_id="10:1", name="onboarding", frames=frames)
     page = _make_page(sections=[section], flows=[("11:1", "11:2")])
@@ -226,12 +231,37 @@ def test_render_page_frontmatter_is_compact_flow_style():
     lines = fm_block.strip().splitlines()
     frames_lines = [l for l in lines if l.startswith("frames:")]
     flows_lines = [l for l in lines if l.startswith("flows:")]
-    assert len(frames_lines) == 1, "frames must be on a single line"
-    assert len(flows_lines) == 1, "flows must be on a single line"
-    # Verify the frontmatter round-trips via yaml.safe_load
+    assert len(frames_lines) == 1, "frames must be on a single line (no multi-line block style)"
+    assert len(flows_lines) == 1, "flows must be on a single line (no multi-line block style)"
+    # Both must use inline flow-style notation (curly/square brackets)
+    assert "{" in frames_lines[0], "frames must use inline flow-style {}: not block indented YAML"
+    assert "[" in flows_lines[0], "flows must use inline flow-style []: not block indented YAML"
+    # Verify the frontmatter round-trips correctly via yaml.safe_load
     data = yaml.safe_load(fm_block)
     assert data["frames"]["11:1"] == "Welcome screen."
     assert data["flows"] == [["11:1", "11:2"]]
+
+
+def test_render_page_frontmatter_flow_style_no_wrapping():
+    """INVARIANT: frames stays on one line even with long descriptions containing apostrophes/colons.
+
+    PyYAML's default width=80 would wrap long flow-style values across multiple lines,
+    producing ugly and hard-to-diff frontmatter. width=2**20 prevents this.
+    """
+    long_desc = (
+        "Live stream prepare screen with the camera showing a man's face and the "
+        "topic field filled in as 'Design for AI': Shows recording-on and public-visibility "
+        "settings with a pink 'Go Live Now' button at the bottom."
+    )
+    frame = FigmaFrame(node_id="11:1", name="prepare", description=long_desc)
+    section = FigmaSection(node_id="10:1", name="Going live", frames=[frame])
+    md = render_page(_make_page(sections=[section]), _make_entry())
+    fm_block = md.split("---\n")[1]
+    frames_lines = [l for l in fm_block.strip().splitlines() if l.startswith("frames:")]
+    assert len(frames_lines) == 1, "frames must stay on one line regardless of description length"
+    # Round-trip must recover the exact description including apostrophes and colons
+    data = yaml.safe_load(fm_block)
+    assert data["frames"]["11:1"] == long_desc
 
 
 def test_render_page_frontmatter_no_page_hash():

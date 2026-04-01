@@ -84,8 +84,11 @@ def test_set_frames_writes_descriptions_to_frontmatter(tmp_path: Path) -> None:
 
 
 def test_set_frames_does_not_modify_table_body(tmp_path: Path) -> None:
-    """INVARIANT: set-frames writes frontmatter only — body table rows keep the original placeholder."""
-    page = _make_page()  # no descriptions → placeholder in table
+    """INVARIANT: set-frames writes frontmatter only — body table rows keep the original placeholder.
+
+    Body prose is regenerated on the next `figmaclaw enrich` or `figmaclaw pull`, not here.
+    """
+    page = _make_page()  # no descriptions → placeholder in all rows
     md = render_page(page, _make_entry())
     assert "(no description yet)" in md
     md_path = _write_md(tmp_path, md)
@@ -99,8 +102,14 @@ def test_set_frames_does_not_modify_table_body(tmp_path: Path) -> None:
     ])
 
     updated = md_path.read_text()
-    # Table row for 11:1 still has placeholder — body not touched
-    assert "(no description yet)" in updated
+    # The specific row for 11:1 must still have the placeholder — body untouched
+    assert "| welcome | `11:1` | (no description yet) |" in updated
+    # 11:2 also still has placeholder
+    assert "| permissions | `11:2` | (no description yet) |" in updated
+    # The description lives in frontmatter only
+    fm = parse_frontmatter(updated)
+    assert fm is not None
+    assert fm.frames["11:1"] == "Welcome screen."
 
 
 def test_set_frames_round_trip_via_parse_frontmatter(tmp_path: Path) -> None:
