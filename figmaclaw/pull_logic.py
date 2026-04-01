@@ -48,8 +48,6 @@ from figmaclaw.figma_hash import compute_page_hash
 from figmaclaw.figma_models import FigmaPage, FigmaSection, from_page_node
 from figmaclaw.figma_parse import parse_flows, parse_frame_descriptions
 from figmaclaw.figma_paths import component_path, page_path, slugify
-import frontmatter as _frontmatter
-
 from figmaclaw.figma_render import build_page_frontmatter, render_component_section, scaffold_page
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
 
@@ -98,12 +96,15 @@ def update_page_frontmatter(repo_root: Path, page: FigmaPage, entry: PageEntry) 
     out_path = repo_root / entry.md_path
     assert out_path.exists(), f"update_page_frontmatter requires existing file: {out_path}"
 
+    from figmaclaw.figma_parse import split_frontmatter
+
     md_text = out_path.read_text()
-    post = _frontmatter.loads(md_text)
-    body = post.content
+    parts = split_frontmatter(md_text)
+    assert parts is not None, f"Failed to parse frontmatter from {out_path}"
+    _, body = parts
 
     new_fm = build_page_frontmatter(page)
-    out_path.write_text(f"{new_fm}\n\n{body}\n")
+    out_path.write_text(f"{new_fm}\n{body}")
     return out_path
 
 

@@ -34,12 +34,10 @@ import os
 from pathlib import Path
 
 import click
-import frontmatter as _frontmatter
-
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_hash import compute_page_hash
 from figmaclaw.figma_models import from_page_node
-from figmaclaw.figma_parse import parse_flows, parse_frame_descriptions, parse_frontmatter
+from figmaclaw.figma_parse import parse_flows, parse_frame_descriptions, parse_frontmatter, split_frontmatter
 from figmaclaw.figma_paths import slugify
 from figmaclaw.figma_render import scaffold_page
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
@@ -163,9 +161,11 @@ async def _run(
 
     # --show-body: print existing body and exit (no write)
     if show_body:
-        post = _frontmatter.loads(md_text)
-        click.echo("\n--- EXISTING BODY (preserve/adapt this) ---\n")
-        click.echo(post.content)
+        parts = split_frontmatter(md_text)
+        if parts is not None:
+            _, body = parts
+            click.echo("\n--- EXISTING BODY (preserve/adapt this) ---\n")
+            click.echo(body)
 
     if show_scaffold or show_body:
         return

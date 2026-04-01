@@ -22,9 +22,11 @@ def split_frontmatter(md: str) -> tuple[str, str] | None:
 
     Returns None if the file has no valid ``---`` delimiters.
 
-    The frontmatter_block is the raw YAML string between the ``---`` markers
-    (without the markers themselves). The body is everything after the closing
-    ``---`` marker (with the leading newline stripped).
+    The frontmatter_block is the raw YAML between the ``---`` markers
+    (without the markers themselves). The body is everything after the
+    closing ``---\\n`` — returned verbatim, no stripping.
+
+    Reconstructing the file: ``f"---\\n{fm_block}\\n---\\n{body}"``
 
     This is the single shared implementation — use it instead of hand-rolling
     ``str.partition("---")`` in each command.
@@ -32,11 +34,9 @@ def split_frontmatter(md: str) -> tuple[str, str] | None:
     _, sep, after_open = md.partition("---\n")
     if not sep:
         return None
-    fm_body, sep2, body = after_open.partition("\n---")
+    fm_body, sep2, body = after_open.partition("\n---\n")
     if not sep2:
         return None
-    if body.startswith("\n"):
-        body = body[1:]
     return fm_body, body
 
 
