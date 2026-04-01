@@ -1,5 +1,5 @@
 ---
-description: Enrich a figmaclaw Figma page .md file with frame descriptions, page summary, and inferred screen flows.
+description: Enrich a figmaclaw Figma page .md file with frame descriptions, page summary, and screen flows from design inspection.
 ---
 
 # figma-enrich-page
@@ -8,7 +8,7 @@ Enrich a figmaclaw `.md` file with:
 - **Frame descriptions** — 1–3 sentence description for every frame
 - **Page summary** — 2–3 sentence prose overview of the whole page
 - **Section intros** — one sentence per section describing what that group shows
-- **Mermaid flowchart** — screen-flow diagram showing how screens connect (always present)
+- **Mermaid flowchart** — always present; built from `flows:` frontmatter (authoritative Figma reactions) and design inspection via screenshots
 
 **Format spec:** [`docs/figmaclaw-md-format.md`](https://github.com/aviadr1/figmaclaw/blob/main/docs/figmaclaw-md-format.md) — authoritative reference for frontmatter schema, body structure, and known limitations.
 
