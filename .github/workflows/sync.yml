@@ -53,12 +53,15 @@ jobs:
         if: ${{ inputs.figma_team_id != '' }}
         env:
           FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+          FIGMA_TEAM_ID: ${{ inputs.figma_team_id }}
+          SINCE: ${{ inputs.since }}
         run: |
-          figmaclaw list "${{ inputs.figma_team_id }}" --since "${{ inputs.since }}" --track-only | tee /tmp/figmaclaw-discover.txt || true
+          figmaclaw list "$FIGMA_TEAM_ID" --since "$SINCE" --track-only | tee /tmp/figmaclaw-discover.txt || true
           git add .figma-sync/
           if ! git diff --cached --quiet; then
-            NEWLY=$(grep '^NEWLY_TRACKED:' /tmp/figmaclaw-discover.txt | head -1 | sed 's/^NEWLY_TRACKED://')
-            git commit -m "sync: figmaclaw — tracking ${NEWLY:-?} new file(s)"
+            NEWLY="$(grep '^NEWLY_TRACKED:' /tmp/figmaclaw-discover.txt | head -1 | sed 's/^NEWLY_TRACKED://' | tr -d '\n\r')"
+            NEWLY="${NEWLY:-unknown}"
+            git commit -m "sync: figmaclaw — tracking ${NEWLY} new file(s)"
             git push
             git pull --no-rebase
           fi
@@ -67,9 +70,10 @@ jobs:
         env:
           FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          INPUT_FORCE: ${{ inputs.force }}
         run: |
           FORCE_FLAG=""
-          if [ "${{ inputs.force }}" = "true" ]; then
+          if [ "$INPUT_FORCE" = "true" ]; then
             FORCE_FLAG="--force"
           fi
 
@@ -87,11 +91,9 @@ jobs:
             git pull --no-rebase
             git add figma/ .figma-sync/
             if ! git diff --cached --quiet; then
-              COMMIT_MSG=$(grep '^COMMIT_MSG:' /tmp/figmaclaw-out.txt | head -1 | sed 's/^COMMIT_MSG://')
-              if [ -z "$COMMIT_MSG" ]; then
-                COMMIT_MSG="sync: figmaclaw — checkpoint batch $BATCH"
-              fi
-              git commit -m "$COMMIT_MSG"
+              COMMIT_MSG="$(grep '^COMMIT_MSG:' /tmp/figmaclaw-out.txt | head -1 | sed 's/^COMMIT_MSG://' | tr -d '\n\r')"
+              COMMIT_MSG="${COMMIT_MSG:-sync: figmaclaw — checkpoint batch $BATCH}"
+              git commit -m "${COMMIT_MSG}"
               git push
             fi
 

@@ -20,7 +20,6 @@ from __future__ import annotations
 import asyncio
 import datetime
 import os
-import subprocess
 from pathlib import Path
 
 import click
@@ -31,6 +30,7 @@ from figmaclaw.figma_models import from_page_node
 from figmaclaw.figma_parse import parse_flows, parse_frame_descriptions, parse_page_metadata
 from figmaclaw.figma_paths import slugify
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
+from figmaclaw.git_utils import git_commit
 from figmaclaw.pull_logic import _merge_existing, write_page
 
 
@@ -140,11 +140,5 @@ async def _run(api_key: str, repo_dir: Path, md_path: Path, auto_commit: bool) -
     click.echo(f"  manifest updated (hash={new_hash})")
 
     if auto_commit:
-        subprocess.run(["git", "-C", str(repo_dir), "add", md_rel, ".figma-sync/"], check=False)
-        diff = subprocess.run(["git", "-C", str(repo_dir), "diff", "--cached", "--quiet"], check=False)
-        if diff.returncode != 0:
-            subprocess.run(
-                ["git", "-C", str(repo_dir), "commit", "-m", f"sync: re-sync {file_name} / {page_name}"],
-                check=False,
-            )
+        if git_commit(repo_dir, [md_rel, ".figma-sync/"], f"sync: re-sync {file_name} / {page_name}"):
             click.echo(f"  committed: {file_name} / {page_name}")

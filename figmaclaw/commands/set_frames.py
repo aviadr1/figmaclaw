@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
 import sys
 from pathlib import Path
 
@@ -30,6 +29,7 @@ import click
 
 from figmaclaw.figma_parse import parse_frontmatter
 from figmaclaw.figma_render import _FlowDict, _FlowList, _FrontmatterDumper
+from figmaclaw.git_utils import git_commit
 
 _SUMMARY_RE = re.compile(
     r"(\[Open in Figma\]\([^)]+\)\n\n)"  # anchor line + blank
@@ -165,11 +165,5 @@ def set_frames_cmd(
     click.echo(f"set-frames: wrote {n} description(s) to {rel}")
 
     if auto_commit:
-        subprocess.run(["git", "-C", str(repo_dir), "add", rel], check=False)
-        diff = subprocess.run(["git", "-C", str(repo_dir), "diff", "--cached", "--quiet"], check=False)
-        if diff.returncode != 0:
-            subprocess.run(
-                ["git", "-C", str(repo_dir), "commit", "-m", f"sync: enrich {rel}"],
-                check=False,
-            )
+        if git_commit(repo_dir, [rel], f"sync: enrich {rel}"):
             click.echo(f"  committed: {rel}")

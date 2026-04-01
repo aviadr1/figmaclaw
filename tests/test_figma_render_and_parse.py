@@ -398,7 +398,7 @@ def test_render_component_section_stores_descriptions_in_frontmatter():
     fm = parse_frontmatter(md)
     assert fm is not None
     assert fm.frames["30:1"] == "Primary CTA button."
-    assert "30:2" not in fm.frames  # empty description not stored
+    assert fm.frames["30:2"] == ""  # all frames tracked in frontmatter; empty string until described
 
 
 def test_render_component_section_has_no_mermaid():

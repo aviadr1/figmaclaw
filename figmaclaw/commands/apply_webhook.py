@@ -12,7 +12,8 @@ import click
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_sync_state import FigmaSyncState
 from figmaclaw.pull_logic import pull_file
-from figmaclaw.commands.pull import _git_commit_page, _git_push
+from figmaclaw.commands.pull import _git_commit_page
+from figmaclaw.git_utils import git_push as _git_push
 
 
 class WebhookAuthError(Exception):

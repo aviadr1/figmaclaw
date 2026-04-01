@@ -12,6 +12,7 @@ import click
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_sync_state import FigmaSyncState
 from figmaclaw.figma_utils import parse_since
+from figmaclaw.git_utils import git_commit, git_push
 from figmaclaw.pull_logic import PullResult, pull_file
 
 
@@ -36,21 +37,11 @@ def pull_cmd(ctx: click.Context, file_key: str | None, force: bool, max_pages: i
 
 def _git_commit_page(repo_dir: Path, page_label: str) -> bool:
     """Stage figma/ and .figma-sync/, commit if anything changed. Returns True if committed."""
-    subprocess.run(["git", "-C", str(repo_dir), "add", "figma/", ".figma-sync/"], check=False)
-    diff = subprocess.run(["git", "-C", str(repo_dir), "diff", "--cached", "--quiet"], check=False)
-    if diff.returncode == 0:
-        return False  # nothing staged
-    msg = f"sync: figmaclaw — {page_label}"
-    subprocess.run(["git", "-C", str(repo_dir), "commit", "-m", msg], check=False)
-    return True
+    return git_commit(repo_dir, ["figma/", ".figma-sync/"], f"sync: figmaclaw — {page_label}")
 
 
 def _git_push(repo_dir: Path) -> None:
-    result = subprocess.run(["git", "-C", str(repo_dir), "push"], check=False)
-    if result.returncode != 0:
-        # Another push landed — pull and retry once
-        subprocess.run(["git", "-C", str(repo_dir), "pull", "--no-rebase"], check=False)
-        subprocess.run(["git", "-C", str(repo_dir), "push"], check=False)
+    git_push(repo_dir)
 
 
 async def _listing_prefilter(
