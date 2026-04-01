@@ -17,15 +17,26 @@ jobs:
         run: |
           python3 - <<'EOF'
           import json
+          import re
           from pathlib import Path
 
+          # pyproject.toml is the single source of truth for the version.
+          pyproject_path = Path("pyproject.toml")
           plugin_path = Path(".claude-plugin/plugin.json")
           marketplace_path = Path(".claude-plugin/marketplace.json")
 
-          plugin = json.loads(plugin_path.read_text())
-          major, minor, patch = plugin["version"].split(".")
+          pyproject = pyproject_path.read_text()
+          m = re.search(r'^version = "([^"]+)"', pyproject, re.MULTILINE)
+          if not m:
+              raise RuntimeError("Could not find version in pyproject.toml")
+          major, minor, patch = m.group(1).split(".")
           new_version = f"{major}.{minor}.{int(patch) + 1}"
 
+          pyproject_path.write_text(
+              re.sub(r'^(version = )"[^"]+"', f'\\1"{new_version}"', pyproject, flags=re.MULTILINE)
+          )
+
+          plugin = json.loads(plugin_path.read_text())
           plugin["version"] = new_version
           plugin_path.write_text(json.dumps(plugin, indent=2) + "\n")
 
@@ -42,5 +53,5 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add .claude-plugin/plugin.json .claude-plugin/marketplace.json
+          git add pyproject.toml .claude-plugin/plugin.json .claude-plugin/marketplace.json
           git diff --staged --quiet || git commit -m "chore: bump plugin version [skip ci]" && git push

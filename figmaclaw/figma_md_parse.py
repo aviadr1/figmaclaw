@@ -6,8 +6,11 @@ agents can inspect page structure without calling the Figma API.
 
 Parsing strategy: line-by-line scan, no regex soup.
   - Section headers: `## <name> (`<node_id>`)`
-  - Table rows:      `| <name> | `<node_id>` | <description> |`
+  - Table rows:      `| <name> | `<node_id>` | ... |`  (columns after node_id are ignored)
   - Separator rows and header rows are skipped.
+
+Frame descriptions are NOT extracted from the body — read them from YAML frontmatter
+via figma_parse.parse_frontmatter() which is the source of truth.
 
 The Quick Reference section (## Quick Reference) is intentionally skipped —
 it duplicates the per-section tables and would inflate the output.
@@ -20,10 +23,9 @@ from dataclasses import dataclass, field
 
 _SECTION_RE = re.compile(r"^## (.+?) \(`([^`]+)`\)\s*$")
 _ANY_H2_RE = re.compile(r"^## ")
-# 3-column row only: | name | `node_id` | description |
-# We reject 4-column rows (Quick Reference has a Section column) by anchoring to end-of-line.
-_FRAME_ROW_RE = re.compile(r"^\| ([^|]*) \| `([^`]+)` \| ([^|]*) \|\s*$")
-_PLACEHOLDER = "(no description yet)"
+# Match any table row that has a backtick-quoted node_id in the second column.
+# We only capture name and node_id; descriptions come from YAML frontmatter (source of truth).
+_FRAME_ROW_RE = re.compile(r"^\| ([^|]+) \| `([^`]+)` \|")
 _SKIP_SECTIONS = {"Quick Reference", "Screen Flow"}
 
 
@@ -71,8 +73,8 @@ def parse_sections(md: str) -> list[ParsedSection]:
         if current is None:
             continue
 
-        # Table header / separator
-        if line.startswith("| Screen ") or line.startswith("| Variant ") or line.startswith("|---") or line.startswith("|----"):
+        # Table separator row: marks start of data rows regardless of column names.
+        if line.startswith("|---") or line.startswith("| ---"):
             in_table = True
             continue
 
@@ -81,12 +83,12 @@ def parse_sections(md: str) -> list[ParsedSection]:
             if m2:
                 name_cell = m2.group(1).strip()
                 node_id_cell = m2.group(2).strip()
-                desc_cell = m2.group(3).strip()
-                description = "" if desc_cell == _PLACEHOLDER else desc_cell
+                # Description is intentionally left empty here; callers should
+                # read descriptions from YAML frontmatter (figma_parse.parse_frontmatter).
                 current.frames.append(ParsedFrame(
                     name=name_cell,
                     node_id=node_id_cell,
-                    description=description,
+                    description="",
                 ))
         elif in_table and not line.strip():
             in_table = False

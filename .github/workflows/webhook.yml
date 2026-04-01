@@ -42,6 +42,7 @@ jobs:
           FIGMA_WEBHOOK_SECRET: ${{ secrets.FIGMA_WEBHOOK_SECRET }}
           FIGMA_WEBHOOK_PAYLOAD: ${{ inputs.webhook_payload }}
         run: |
+          set -euo pipefail
           figmaclaw apply-webhook | tee /tmp/figmaclaw-out.txt
           COMMIT_MSG=$(grep '^COMMIT_MSG:' /tmp/figmaclaw-out.txt | head -1 | sed 's/^COMMIT_MSG://')
           echo "commit_msg=${COMMIT_MSG}" >> "$GITHUB_OUTPUT"

@@ -45,6 +45,10 @@ def page_tree_cmd(ctx: click.Context, md_path: Path, missing_only: bool, json_ou
         sys.exit(2)
 
     sections = parse_sections(md_text)
+    # Enrich frame descriptions from frontmatter (source of truth).
+    for section in sections:
+        for frame in section.frames:
+            frame.description = meta.frames.get(frame.node_id, "")
 
     total = sum(len(s.frames) for s in sections)
     missing = sum(1 for s in sections for f in s.frames if f.needs_description)
