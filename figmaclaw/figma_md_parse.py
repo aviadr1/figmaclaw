@@ -12,6 +12,9 @@ Parsing strategy: line-by-line scan, no regex soup.
 Frame descriptions are NOT extracted from the body — read them from YAML frontmatter
 via figma_parse.parse_frontmatter() which is the source of truth.
 
+NEVER parse prose from the body (page summary, section intros, Mermaid). Prose is
+read and written by humans and LLMs only — not by code.
+
 The Screen Flow section (## Screen Flow) is skipped — it contains a Mermaid diagram,
 not a frame table.
 """

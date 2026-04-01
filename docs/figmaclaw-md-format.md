@@ -9,9 +9,34 @@ Every Figma page is rendered as one `.md` file under `figma/{file-slug}/pages/` 
 | Layer | Who reads it | Who writes it | Authority |
 |---|---|---|---|
 | YAML frontmatter | CI/CD, figmaclaw CLI, agents | figmaclaw CLI only | **Machine-readable source of truth** |
-| Markdown body | Humans, AI agents reading prose | `figmaclaw enrich` / `figmaclaw pull` | Human-readable rendered view |
+| Markdown body | Humans, AI agents, LLMs | LLMs via `figma-enrich-page` skill | Human/LLM-written prose — never parsed by code |
 
-**The body is a rendered view of the frontmatter — never parse the body to extract node IDs, descriptions, or flows. Always read from frontmatter.**
+### The law: body is not parsed, ever
+
+The body is written by humans and LLMs. It contains:
+- **Page summary** — LLM-written paragraph describing what this Figma page covers
+- **Section intros** — LLM-written one-sentence intro per section
+- **Frame tables** — LLM-written per-frame descriptions in table form
+- **Mermaid flowchart** — generated from `flows` frontmatter
+
+**No Python code, no CLI command, no agent tool should ever parse prose from the body.** No `parse_page_summary()`. No `parse_section_intros()`. No extracting text between headings.
+
+### The correct update path
+
+To update a page that already has LLM-generated prose:
+1. Read the **existing `.md` body** — pass it verbatim to the LLM
+2. Use the **frontmatter** to know what changed: which frames are new, which have no description, what the current flows are
+3. Fetch **screenshots** for frames that need updating
+4. LLM receives: existing body + new frame descriptions/screenshots → rewrites the body, preserving page summary and section intros where still accurate
+5. Write the result back to disk
+
+This is what the `figma-enrich-page` skill implements. CI hooks must use this path — not `pull`/`enrich` alone.
+
+**The body is never generated from scratch on re-sync.** Only new pages (no existing body) get a skeleton body from `render_page()`.
+
+### What frontmatter is for (vs body)
+
+Use frontmatter to answer: "what needs updating?" — which frames exist, which are missing descriptions, what the prototype flows are. Do not parse the body for any of this. Frontmatter is the index; body is the prose.
 
 ---
 
