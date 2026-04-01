@@ -79,8 +79,9 @@ def _apply_summary(md: str, summary: str) -> str:
     replacement = r"\g<1>" + summary + "\n\n"
     updated, n = _SUMMARY_RE.subn(replacement, md, count=1)
     if n == 0:
-        # Pattern didn't match — append summary after the Figma link line as fallback
-        pass
+        # Anchor line not found (unusual file structure) — leave body unchanged.
+        # Descriptions are already in frontmatter; summary can be set on next enrich.
+        return md
     return updated
 
 
@@ -166,5 +167,5 @@ def set_frames_cmd(
     click.echo(f"set-frames: wrote {n} description(s) to {rel}")
 
     if auto_commit:
-        if git_commit(repo_dir, [rel], f"sync: enrich {rel}"):
+        if git_commit(repo_dir, [rel], f"sync: set-frames {rel} with {n} description(s)"):
             click.echo(f"  committed: {rel}")
