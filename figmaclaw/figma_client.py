@@ -64,14 +64,14 @@ class FigmaClient:
         """GET request with proactive pacing and retry on 429 / 5xx."""
         client = await self._ensure_client()
         url = f"{self._base_url}{path}"
-        for attempt in range(5):
+        for attempt in range(10):
             await self._pace()
             response = await client.get(url, params=params)
             if response.status_code == 429:
-                retry_after = int(response.headers.get("retry-after", "5"))
-                await asyncio.sleep(max(retry_after, 1))
+                retry_after = int(response.headers.get("retry-after", "10"))
+                await asyncio.sleep(max(retry_after, 5))
                 continue
-            if response.status_code >= 500 and attempt < 4:
+            if response.status_code >= 500 and attempt < 9:
                 await asyncio.sleep(2 * (attempt + 1))
                 continue
             response.raise_for_status()
