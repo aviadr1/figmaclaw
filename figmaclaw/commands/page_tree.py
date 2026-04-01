@@ -18,7 +18,7 @@ from pathlib import Path
 import click
 
 from figmaclaw.figma_md_parse import parse_sections
-from figmaclaw.figma_parse import parse_page_metadata
+from figmaclaw.figma_parse import parse_frontmatter
 
 
 @click.command("page-tree")
@@ -39,7 +39,7 @@ def page_tree_cmd(ctx: click.Context, md_path: Path, missing_only: bool, json_ou
         md_path = repo_dir / md_path
 
     md_text = md_path.read_text()
-    meta = parse_page_metadata(md_text)
+    meta = parse_frontmatter(md_text)
     if meta is None:
         click.echo(f"error: {md_path}: no figmaclaw frontmatter found", err=True)
         sys.exit(2)

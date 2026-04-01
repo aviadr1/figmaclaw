@@ -338,7 +338,7 @@ async def test_pull_file_preserves_component_descriptions_from_existing_md(tmp_p
     )
     comp_out = tmp_path / "figma" / "web-app" / "components" / "buttons-20-1.md"
     comp_out.parent.mkdir(parents=True, exist_ok=True)
-    comp_out.write_text(render_component_section(comp_section, page_stub, "0000000000000000"))
+    comp_out.write_text(render_component_section(comp_section, page_stub))
 
     # Now run pull — the existing description should be preserved
     state = FigmaSyncState(tmp_path)

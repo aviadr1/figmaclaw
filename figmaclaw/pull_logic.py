@@ -72,13 +72,12 @@ def write_component_section(
     repo_root: Path,
     section: FigmaSection,
     page: FigmaPage,
-    page_hash: str,
     md_rel_path: str,
 ) -> Path:
     """Render a single component library section to disk and return the absolute path written."""
     out_path = repo_root / md_rel_path
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(render_component_section(section, page, page_hash))
+    out_path.write_text(render_component_section(section, page))
     return out_path
 
 
@@ -288,7 +287,7 @@ async def pull_file(
                 sect_suffix = section.node_id.replace(":", "-")
                 sect_slug = f"{slugify(section.name)}-{sect_suffix}"
                 comp_rel = component_path(file_slug, sect_slug)
-                written = write_component_section(repo_root, section, page, new_hash, comp_rel)
+                written = write_component_section(repo_root, section, page, comp_rel)
                 written_component_rels.append(str(written.relative_to(repo_root)))
 
             if written_component_rels:

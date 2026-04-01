@@ -173,13 +173,11 @@ def render_page(page: FigmaPage, entry: PageEntry) -> str:
 def render_component_section(
     section: FigmaSection,
     page: FigmaPage,
-    page_hash: str,
 ) -> str:
     """Render a component library section to a standalone semantic markdown file.
 
     Output: figma/{file-slug}/components/{section-slug}.md
     Format: YAML frontmatter + title + variants table (no flows, no Mermaid).
-    page_hash is accepted for API compatibility but not written to the .md.
     """
     parts: list[str] = []
 

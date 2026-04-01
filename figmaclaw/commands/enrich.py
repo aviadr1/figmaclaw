@@ -27,7 +27,7 @@ import click
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_hash import compute_page_hash
 from figmaclaw.figma_models import from_page_node
-from figmaclaw.figma_parse import parse_flows, parse_frame_descriptions, parse_page_metadata
+from figmaclaw.figma_parse import parse_flows, parse_frame_descriptions, parse_frontmatter
 from figmaclaw.figma_paths import slugify
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
 from figmaclaw.git_utils import git_commit
@@ -62,7 +62,7 @@ async def _run(api_key: str, repo_dir: Path, md_path: Path, auto_commit: bool) -
         md_path = repo_dir / md_path
 
     md_text = md_path.read_text()
-    meta = parse_page_metadata(md_text)
+    meta = parse_frontmatter(md_text)
     if meta is None:
         raise click.UsageError(f"{md_path}: no figmaclaw frontmatter found — is this a figmaclaw .md file?")
 
