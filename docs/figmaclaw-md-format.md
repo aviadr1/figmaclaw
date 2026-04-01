@@ -137,7 +137,7 @@ flowchart LR
 - Section headers: `## {name} (\`{node_id}\`)` — the node ID in backticks inside parens is required for `figma_md_parse.parse_sections()` to parse it
 - Table columns: `| Screen | Node ID | Description |` for screen pages; `| Variant | Node ID | Description |` for component sections
 - Placeholder for missing descriptions: `(no description yet)` — defined in `figmaclaw/figma_render.py::PLACEHOLDER`
-- `## Screen Flow` section: only present when `flows` is non-empty; contains a Mermaid `flowchart LR` block
+- `## Screen flows` section: **always present**; contains a Mermaid `flowchart LR` block built from `flows:` frontmatter (authoritative Figma reactions) and design inspection via screenshots
 - Node IDs in Mermaid: prefixed with `n` and `:` replaced with `_` (e.g. `4713:6926` → `n4713_6926`)
 - No "Quick Reference" table — that section was removed
 
