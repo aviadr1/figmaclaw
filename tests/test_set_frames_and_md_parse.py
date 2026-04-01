@@ -1,8 +1,7 @@
 """Tests for set_frames.py and figma_md_parse.py.
 
 INVARIANTS:
-- set-frames round-trips descriptions containing pipe characters without corruption
-- set-frames updates both frontmatter and body table for standard descriptions
+- set-frames round-trips pipe descriptions correctly via frontmatter (_apply_frontmatter)
 - figma_md_parse.parse_sections extracts section/frame structure from body
 - figma_md_parse.parse_sections leaves description empty (frontmatter is source of truth)
 - figma_md_parse.parse_sections is robust to any column header name
@@ -15,7 +14,7 @@ import textwrap
 
 import pytest
 
-from figmaclaw.commands.set_frames import _apply_descriptions, _apply_frontmatter
+from figmaclaw.commands.set_frames import _apply_frontmatter
 from figmaclaw.figma_md_parse import parse_sections
 from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection
 from figmaclaw.figma_render import render_page
@@ -52,47 +51,6 @@ def _rendered_md_with_frame(node_id: str, name: str, description: str = "") -> s
     frame = FigmaFrame(node_id=node_id, name=name, description=description)
     section = FigmaSection(node_id="10:1", name="Onboarding", frames=[frame])
     return render_page(_make_page(sections=[section]), _make_entry())
-
-
-# --- _apply_descriptions: pipe characters in description ---
-
-def test_apply_descriptions_plain_description_updates_body():
-    """INVARIANT: A plain description (no pipes) is written into the correct table cell."""
-    md = _rendered_md_with_frame("11:1", "Welcome screen")
-    result = _apply_descriptions(md, {"11:1": "User lands here after install."})
-    assert "| Welcome screen | `11:1` | User lands here after install. |" in result
-
-
-def test_apply_descriptions_pipe_in_description_round_trips():
-    """INVARIANT: A description containing '|' is written and read back intact.
-
-    Previously the greedy (.*| ) group would consume part of the description,
-    leaving only the fragment after the last '|' in the cell.
-    """
-    md = _rendered_md_with_frame("11:1", "Welcome screen")
-    desc = "primary | secondary layout"
-    result = _apply_descriptions(md, {"11:1": desc})
-    assert f"| Welcome screen | `11:1` | {desc} |" in result
-
-
-def test_apply_descriptions_multiple_pipes_in_description():
-    """INVARIANT: Multiple pipes in a description all survive the update."""
-    md = _rendered_md_with_frame("11:1", "Picker")
-    desc = "a | b | c | d"
-    result = _apply_descriptions(md, {"11:1": desc})
-    assert f"| Picker | `11:1` | {desc} |" in result
-
-
-def test_apply_descriptions_does_not_alter_other_rows():
-    """INVARIANT: Rows for node IDs not in the update dict are left unchanged."""
-    frame_a = FigmaFrame(node_id="11:1", name="Frame A", description="")
-    frame_b = FigmaFrame(node_id="11:2", name="Frame B", description="existing desc")
-    section = FigmaSection(node_id="10:1", name="Sect", frames=[frame_a, frame_b])
-    md = render_page(_make_page(sections=[section]), _make_entry())
-
-    result = _apply_descriptions(md, {"11:1": "New for A"})
-    assert "| Frame A | `11:1` | New for A |" in result
-    assert "| Frame B | `11:2` | existing desc |" in result
 
 
 def test_apply_frontmatter_persists_pipe_description():
