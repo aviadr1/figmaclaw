@@ -72,7 +72,7 @@ def _build_frontmatter(
     if section_node_id:
         fm["section_node_id"] = section_node_id
     if frame_descs:
-        fm["frames"] = _FlowDict(frame_descs)
+        fm["frames"] = dict(frame_descs)  # block-style YAML — readable for many/long values
     if flows:
         fm["flows"] = _FlowList([[src, dst] for src, dst in flows])
 

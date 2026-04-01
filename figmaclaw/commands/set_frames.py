@@ -27,9 +27,16 @@ from pathlib import Path
 
 import click
 
+from figmaclaw.figma_md_parse import _FRAME_ROW_RE
 from figmaclaw.figma_parse import parse_frontmatter
-from figmaclaw.figma_render import _FlowDict, _FlowList, _FrontmatterDumper
+from figmaclaw.figma_render import _FlowList, _FrontmatterDumper
 from figmaclaw.git_utils import git_commit
+
+# Matches a full body table row; groups: (prefix_up_to_desc, node_id, description, trailing_pipe)
+_BODY_ROW_RE = re.compile(
+    r"^(\| [^|]+ \| `([^`]+)` \| )(.+?)( \|)\s*$",
+    re.MULTILINE,
+)
 
 _SUMMARY_RE = re.compile(
     r"(\[Open in Figma\]\([^)]+\)\n\n)"  # anchor line + blank
@@ -53,7 +60,7 @@ def _apply_frontmatter(md: str, descriptions: dict[str, str], flows: list[list[s
     if fm.section_node_id:
         fm_data["section_node_id"] = fm.section_node_id
     if merged_frames:
-        fm_data["frames"] = _FlowDict(merged_frames)
+        fm_data["frames"] = dict(merged_frames)  # block-style YAML — readable for many/long values
     effective_flows = flows if flows is not None else fm.flows
     if effective_flows:
         fm_data["flows"] = _FlowList(effective_flows)
@@ -71,6 +78,16 @@ def _apply_frontmatter(md: str, descriptions: dict[str, str], flows: list[list[s
     if body.startswith("\n"):
         body = body[1:]
     return f"---\n{new_fm_body}\n---\n{body}"
+
+
+def _update_body_rows(md: str, frames: dict[str, str]) -> str:
+    """Replace body table description cells for frames that now have descriptions."""
+    def replace_row(m: re.Match) -> str:
+        desc = frames.get(m.group(2))
+        if desc:
+            return f"{m.group(1)}{desc}{m.group(4)}"
+        return m.group(0)
+    return _BODY_ROW_RE.sub(replace_row, md)
 
 
 def _apply_summary(md: str, summary: str) -> str:
@@ -153,8 +170,15 @@ def set_frames_cmd(
 
     md_text = md_path.read_text()
 
+    # Merge new descriptions with any already in frontmatter so body rows
+    # reflect the full set of known descriptions, not just this call's batch.
+    fm_current = parse_frontmatter(md_text)
+    all_frames = dict(fm_current.frames) if fm_current else {}
+    all_frames.update(descriptions)
+
     # Apply updates
     md_text = _apply_frontmatter(md_text, descriptions, flows)
+    md_text = _update_body_rows(md_text, all_frames)
     if summary is not None:
         md_text = _apply_summary(md_text, summary)
 
