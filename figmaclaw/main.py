@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import click
 
-from figmaclaw import __version__
+from figmaclaw._build_info import __commit__, __commit_message__, __pr__, __version__
 from figmaclaw.commands.apply_webhook import apply_webhook_cmd
 from figmaclaw.commands.enrich import enrich_cmd
 from figmaclaw.commands.init import init_cmd
@@ -19,8 +19,23 @@ from figmaclaw.commands.skills_cmd import skills_group
 from figmaclaw.commands.workflows_cmd import workflows_group
 
 
+def _version_callback(ctx: click.Context, _param: click.Parameter, value: bool) -> None:
+    if not value or ctx.resilient_parsing:
+        return
+    short_sha = __commit__[:8] if __commit__ else "unknown"
+    pr_info = f" · PR #{__pr__}" if __pr__ else ""
+    click.echo(f"figmaclaw {__version__} ({short_sha}{pr_info})")
+    first_line = __commit_message__.split("\n")[0].strip() if __commit_message__ else ""
+    if first_line:
+        click.echo(f"  {first_line}")
+    ctx.exit()
+
+
 @click.group()
-@click.version_option(version=__version__, package_name="figmaclaw")
+@click.option(
+    "--version", is_flag=True, is_eager=True, expose_value=False,
+    callback=_version_callback, help="Show version and exit.",
+)
 @click.option("--json", "json_mode", is_flag=True, help="Output strict JSON for agents.")
 @click.option("--verbose", "-v", count=True, help="Increase verbosity.")
 @click.option("--quiet", "-q", count=True, help="Suppress non-essential output.")

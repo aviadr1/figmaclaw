@@ -12,32 +12,27 @@ Parsing strategy: line-by-line scan, no regex soup.
 Frame descriptions are NOT extracted from the body — read them from YAML frontmatter
 via figma_parse.parse_frontmatter() which is the source of truth.
 
-The Quick Reference section (## Quick Reference) is intentionally skipped —
-it duplicates the per-section tables and would inflate the output.
+The Screen Flow section (## Screen Flow) is skipped — it contains a Mermaid diagram,
+not a frame table.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field  # field used by ParsedSection
 
 _SECTION_RE = re.compile(r"^## (.+?) \(`([^`]+)`\)\s*$")
 _ANY_H2_RE = re.compile(r"^## ")
 # Match any table row that has a backtick-quoted node_id in the second column.
 # We only capture name and node_id; descriptions come from YAML frontmatter (source of truth).
 _FRAME_ROW_RE = re.compile(r"^\| ([^|]+) \| `([^`]+)` \|")
-_SKIP_SECTIONS = {"Quick Reference", "Screen Flow"}
+_SKIP_SECTIONS = {"Screen Flow"}
 
 
 @dataclass
 class ParsedFrame:
     name: str
     node_id: str
-    description: str  # empty string when placeholder
-
-    @property
-    def needs_description(self) -> bool:
-        return not self.description
 
 
 @dataclass
@@ -50,7 +45,7 @@ class ParsedSection:
 def parse_sections(md: str) -> list[ParsedSection]:
     """Extract sections and their frames from a figmaclaw page .md body.
 
-    Returns sections in document order, skipping Quick Reference and Screen Flow.
+    Returns sections in document order, skipping Screen Flow (Mermaid diagram section).
     Component library files (with a 'Variants' section) are handled identically.
     """
     sections: list[ParsedSection] = []
@@ -81,14 +76,9 @@ def parse_sections(md: str) -> list[ParsedSection]:
         if in_table and line.startswith("|"):
             m2 = _FRAME_ROW_RE.match(line)
             if m2:
-                name_cell = m2.group(1).strip()
-                node_id_cell = m2.group(2).strip()
-                # Description is intentionally left empty here; callers should
-                # read descriptions from YAML frontmatter (figma_parse.parse_frontmatter).
                 current.frames.append(ParsedFrame(
-                    name=name_cell,
-                    node_id=node_id_cell,
-                    description="",
+                    name=m2.group(1).strip(),
+                    node_id=m2.group(2).strip(),
                 ))
         elif in_table and not line.strip():
             in_table = False

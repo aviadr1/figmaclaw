@@ -18,7 +18,7 @@ from pathlib import Path
 import click
 
 from figmaclaw.figma_md_parse import parse_sections
-from figmaclaw.figma_parse import parse_page_metadata
+from figmaclaw.figma_parse import parse_frontmatter
 
 
 @click.command("page-tree")
@@ -39,19 +39,16 @@ def page_tree_cmd(ctx: click.Context, md_path: Path, missing_only: bool, json_ou
         md_path = repo_dir / md_path
 
     md_text = md_path.read_text()
-    meta = parse_page_metadata(md_text)
+    meta = parse_frontmatter(md_text)
     if meta is None:
         click.echo(f"error: {md_path}: no figmaclaw frontmatter found", err=True)
         sys.exit(2)
 
     sections = parse_sections(md_text)
-    # Enrich frame descriptions from frontmatter (source of truth).
-    for section in sections:
-        for frame in section.frames:
-            frame.description = meta.frames.get(frame.node_id, "")
+    frames_dict = meta.frames  # {node_id: description} from frontmatter
 
     total = sum(len(s.frames) for s in sections)
-    missing = sum(1 for s in sections for f in s.frames if f.needs_description)
+    missing = sum(1 for s in sections for f in s.frames if not frames_dict.get(f.node_id))
 
     if json_output:
         output = {
@@ -68,15 +65,15 @@ def page_tree_cmd(ctx: click.Context, md_path: Path, missing_only: bool, json_ou
                         {
                             "name": f.name,
                             "node_id": f.node_id,
-                            "description": f.description or None,
-                            "needs_description": f.needs_description,
+                            "description": frames_dict.get(f.node_id) or None,
+                            "needs_description": not frames_dict.get(f.node_id),
                         }
                         for f in s.frames
-                        if not missing_only or f.needs_description
+                        if not missing_only or not frames_dict.get(f.node_id)
                     ],
                 }
                 for s in sections
-                if not missing_only or any(f.needs_description for f in s.frames)
+                if not missing_only or any(not frames_dict.get(f.node_id) for f in s.frames)
             ],
         }
         click.echo(json.dumps(output, indent=2))
@@ -87,13 +84,14 @@ def page_tree_cmd(ctx: click.Context, md_path: Path, missing_only: bool, json_ou
         click.echo(f"  {total} frame(s) total, {missing} need description(s)")
         click.echo("")
         for section in sections:
-            section_frames = [f for f in section.frames if not missing_only or f.needs_description]
+            section_frames = [f for f in section.frames if not missing_only or not frames_dict.get(f.node_id)]
             if not section_frames:
                 continue
             click.echo(f"  [{section.name}]  ({section.node_id})")
             for frame in section_frames:
-                status = "✗" if frame.needs_description else "✓"
-                desc_preview = frame.description[:60] + "…" if len(frame.description) > 60 else frame.description
+                desc = frames_dict.get(frame.node_id, "")
+                status = "✗" if not desc else "✓"
+                desc_preview = desc[:60] + "…" if len(desc) > 60 else desc
                 desc_str = f"  {desc_preview}" if desc_preview else ""
                 click.echo(f"    {status} {frame.node_id}  {frame.name}{desc_str}")
         click.echo("")

@@ -102,15 +102,16 @@ def test_parse_sections_description_is_empty_frontmatter_is_source_of_truth():
     assert all(f.description == "" for s in sections for f in s.frames)
 
 
-def test_parse_sections_skips_quick_reference():
-    """INVARIANT: The Quick Reference section is not included in parse_sections output."""
+def test_parse_sections_skips_screen_flow():
+    """INVARIANT: The Screen Flow section is not included in parse_sections output."""
     frame = FigmaFrame(node_id="11:1", name="Frame", description="")
     section = FigmaSection(node_id="10:1", name="Onboarding", frames=[frame])
-    md = render_page(_make_page(sections=[section]), _make_entry())
+    page = _make_page(sections=[section], flows=[("11:1", "11:2")])
+    md = render_page(page, _make_entry())
 
     sections = parse_sections(md)
     names = [s.name for s in sections]
-    assert "Quick Reference" not in names
+    assert "Screen Flow" not in names
 
 
 def test_parse_sections_robust_to_any_column_header_name():

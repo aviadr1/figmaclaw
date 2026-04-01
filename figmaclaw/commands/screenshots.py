@@ -22,6 +22,7 @@ from typing import Any
 import click
 
 from figmaclaw.figma_client import FigmaClient
+from figmaclaw.figma_md_parse import parse_sections
 from figmaclaw.figma_parse import parse_frontmatter
 from figmaclaw.figma_paths import screenshot_cache_path
 
@@ -66,10 +67,16 @@ async def _run(api_key: str, repo_dir: Path, md_path: Path, pending_only: bool) 
         raise click.UsageError(f"{md_path}: no figmaclaw frontmatter — is this a figmaclaw .md file?")
 
     file_key = fm.file_key
+
+    # Node IDs come from the body (parse_sections) — covers pages where fm.frames
+    # is empty because no descriptions have been written yet.
+    all_body_ids = [f.node_id for s in parse_sections(md_text) for f in s.frames]
+
     if pending_only:
-        node_ids = [nid for nid, desc in fm.frames.items() if not desc]
+        # Pending = in the body but not yet described in frontmatter.
+        node_ids = [nid for nid in all_body_ids if not fm.frames.get(nid)]
     else:
-        node_ids = list(fm.frames.keys())
+        node_ids = all_body_ids
 
     if not node_ids:
         return {"file_key": file_key, "screenshots": []}

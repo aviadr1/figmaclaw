@@ -7,7 +7,6 @@ render_page() — for screen pages (figma/*/pages/*.md)
   - H1 header, Figma deep link, optional page summary paragraph
   - Per-section: optional intro sentence + table (Screen | Node ID | Description)
   - Mermaid flowchart from prototype reactions + LLM-inferred flows
-  - Quick Reference table
   - Component library sections are omitted — they get their own files
 
 render_component_section() — for component library sections (figma/*/components/*.md)
@@ -29,7 +28,8 @@ import yaml
 from figmaclaw.figma_models import FigmaPage, FigmaSection
 from figmaclaw.figma_sync_state import PageEntry
 
-_PLACEHOLDER = "(no description yet)"
+# NOTE: skill docs (figma-enrich-page.md) reference this string — update them if changed.
+PLACEHOLDER = "(no description yet)"
 
 
 # --- Flow-style YAML helpers ---
@@ -122,7 +122,11 @@ def render_page(page: FigmaPage, entry: PageEntry) -> str:
         parts.append(page.page_summary)
         parts.append("")
 
-    # Per-section: optional intro + table
+    # Per-section: optional intro + table.
+    # NOTE: figma_md_parse._SECTION_RE and _FRAME_ROW_RE are coupled to this format:
+    #   section header: "## {name} (`{node_id}`)"
+    #   frame row:      "| {name} | `{node_id}` | {desc} |"
+    # Keep those patterns in sync if either format changes.
     for section in screen_sections:
         parts.append(f"## {section.name} (`{section.node_id}`)")
         parts.append("")
@@ -132,7 +136,7 @@ def render_page(page: FigmaPage, entry: PageEntry) -> str:
         parts.append("| Screen | Node ID | Description |")
         parts.append("|--------|---------|-------------|")
         for frame in section.frames:
-            desc = frame.description if frame.description else _PLACEHOLDER
+            desc = frame.description if frame.description else PLACEHOLDER
             parts.append(f"| {frame.name} | `{frame.node_id}` | {desc} |")
         parts.append("")
 
@@ -156,30 +160,17 @@ def render_page(page: FigmaPage, entry: PageEntry) -> str:
         parts.append("```")
         parts.append("")
 
-    # Quick Reference
-    parts.append("## Quick Reference")
-    parts.append("")
-    parts.append("| Screen | Node ID | Section | Description |")
-    parts.append("|--------|---------|---------|-------------|")
-    for section in screen_sections:
-        for frame in section.frames:
-            desc = frame.description if frame.description else _PLACEHOLDER
-            parts.append(f"| {frame.name} | `{frame.node_id}` | {section.name} | {desc} |")
-    parts.append("")
-
     return "\n".join(parts)
 
 
 def render_component_section(
     section: FigmaSection,
     page: FigmaPage,
-    page_hash: str,
 ) -> str:
     """Render a component library section to a standalone semantic markdown file.
 
     Output: figma/{file-slug}/components/{section-slug}.md
     Format: YAML frontmatter + title + variants table (no flows, no Mermaid).
-    page_hash is accepted for API compatibility but not written to the .md.
     """
     parts: list[str] = []
 
@@ -215,7 +206,7 @@ def render_component_section(
     parts.append("| Variant | Node ID | Description |")
     parts.append("|---------|---------|-------------|")
     for frame in section.frames:
-        desc = frame.description if frame.description else _PLACEHOLDER
+        desc = frame.description if frame.description else PLACEHOLDER
         parts.append(f"| {frame.name} | `{frame.node_id}` | {desc} |")
     parts.append("")
 
