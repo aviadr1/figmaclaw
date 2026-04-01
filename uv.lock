@@ -86,7 +86,7 @@ wheels = [
 
 [[package]]
 name = "figmaclaw"
-version = "0.1.10"
+version = "0.1.13"
 source = { editable = "." }
 dependencies = [
     { name = "click" },

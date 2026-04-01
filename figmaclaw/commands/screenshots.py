@@ -13,9 +13,11 @@ get_screenshot via MCP.
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 import click
 
@@ -26,6 +28,7 @@ from figmaclaw.figma_paths import screenshot_cache_path
 
 _FIGMA_IMAGE_BATCH = 50
 _MAX_CONCURRENT_DOWNLOADS = 10
+_DOWNLOAD_LOCK_FILENAME = ".figma-downloads.lock"
 
 
 @click.command("screenshots")
@@ -78,20 +81,36 @@ async def _run(api_key: str, repo_dir: Path, md_path: Path, pending_only: bool) 
     if not node_ids:
         return {"file_key": file_key, "screenshots": []}
 
-    async with FigmaClient(api_key) as client:
-        all_urls: dict[str, str | None] = {}
-        for i in range(0, len(node_ids), _FIGMA_IMAGE_BATCH):
-            batch = node_ids[i : i + _FIGMA_IMAGE_BATCH]
-            urls = await client.get_image_urls(file_key, batch)
-            all_urls.update(urls)
+    lock_path = repo_dir / ".figma-cache" / _DOWNLOAD_LOCK_FILENAME
 
-        semaphore = asyncio.Semaphore(_MAX_CONCURRENT_DOWNLOADS)
-        tasks = [
-            _download_one(client, semaphore, repo_dir, file_key, node_id, url)
-            for node_id, url in all_urls.items()
-            if url is not None
-        ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+    def _acquire() -> Any:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        f = open(lock_path, "w")  # noqa: SIM115
+        fcntl.flock(f, fcntl.LOCK_EX)
+        return f
+
+    def _release(f: Any) -> None:
+        fcntl.flock(f, fcntl.LOCK_UN)
+        f.close()
+
+    lock_fd = await asyncio.to_thread(_acquire)
+    try:
+        async with FigmaClient(api_key) as client:
+            all_urls: dict[str, str | None] = {}
+            for i in range(0, len(node_ids), _FIGMA_IMAGE_BATCH):
+                batch = node_ids[i : i + _FIGMA_IMAGE_BATCH]
+                urls = await client.get_image_urls(file_key, batch)
+                all_urls.update(urls)
+
+            semaphore = asyncio.Semaphore(_MAX_CONCURRENT_DOWNLOADS)
+            tasks = [
+                _download_one(client, semaphore, repo_dir, file_key, node_id, url)
+                for node_id, url in all_urls.items()
+                if url is not None
+            ]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+    finally:
+        await asyncio.to_thread(_release, lock_fd)
 
     screenshots = [r for r in results if isinstance(r, dict)]
     return {"file_key": file_key, "screenshots": screenshots}
