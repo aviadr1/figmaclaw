@@ -4,61 +4,107 @@ description: Enrich a figmaclaw Figma page .md file with frame descriptions, pag
 
 # figma-enrich-page
 
-Enrich a figmaclaw `.md` file with descriptions for every frame, a page summary, and inferred screen flow edges.
+Enrich a figmaclaw `.md` file with:
+- **Frame descriptions** — 1–3 sentence description for every frame
+- **Page summary** — 2–3 sentence prose overview of the whole page
+- **Mermaid flowchart** — screen-flow diagram derived from prototype reactions (only if flows exist)
 
-## When to use
+## Expected output
 
-- A page under `figma/*/pages/` has `(no description yet)` placeholders
-- You want to re-sync descriptions for a specific page without a full pull
+A fully-enriched file looks like this:
 
-## Preferred approach — use the CLI (figmaclaw installed)
+```markdown
+---
+file_key: abc123
+frames: {'node1': 'Description of frame 1.', 'node2': 'Description of frame 2.'}
+flows: [['node1', 'node2']]
+page_node_id: '1234:5678'
+---
 
-```bash
-figmaclaw enrich figma/web-app/pages/<page-slug>.md [--auto-commit]
+# File Name / Page Name
+
+[Open in Figma](https://www.figma.com/design/abc123?node-id=1234-5678)
+
+This page covers the onboarding flow across three steps: email entry, OTP verification,
+and profile completion. Each section shows both the default and error states for each step.
+
+## Section name (`section_node_id`)
+
+| Screen | Node ID | Description |
+|--------|---------|-------------|
+| screen name | `node1` | Description of frame 1. |
+| screen name | `node2` | Description of frame 2. |
+
+## Screen flows
+
+```mermaid
+flowchart LR
+    A["screen name"] -->|user taps CTA| B["next screen"]
+` `` `
 ```
 
-Fetches the current page structure from Figma, merges existing descriptions, rewrites the file, and updates the manifest. Does not call an LLM — use the manual steps below to generate descriptions.
+Key rules:
+- Page summary goes **immediately after the `[Open in Figma]` link**, before the first `##` heading
+- Mermaid block goes **at the very end** of the file under a `## Screen flows` heading
+- If no `flows:` in frontmatter → omit `## Screen flows` entirely
+- **Never** add a page summary or Mermaid block if one already exists — preserve existing prose
 
-### What it reads from Figma
-- `GET /v1/files/{file_key}?depth=1` — file name and version
-- `GET /v1/files/{file_key}/nodes?ids={page_node_id}` — full page node tree
+## Workflow (figmaclaw CLI available — e.g. CI)
 
-## Manual steps (figmaclaw installed, MCP unavailable — e.g. CI)
-
-### 1 — Inspect the page
-
-```bash
-figmaclaw page-tree figma/<file>/<page>.md --json --missing-only
-```
-
-This prints every frame that needs a description. Exit code 1 = frames missing (normal); 0 = all done.
-
-### 2 — Download screenshots
+### Step 1 — Re-sync structure from Figma
 
 ```bash
-figmaclaw screenshots figma/<file>/<page>.md --pending
+figmaclaw enrich <file_path>
 ```
 
-Downloads PNGs to `.figma-cache/screenshots/<file_key>/` for all frames without descriptions yet.
-Outputs a JSON manifest: `{file_key, screenshots: [{node_id, path}]}`.
+This fetches the latest page structure from Figma, rebuilds the sections/frames table in the body,
+and extracts prototype `reactions` into the `flows:` frontmatter field.
+**Does NOT generate descriptions** — that's what the next steps are for.
+Preserves existing frame descriptions.
+
+### Step 2 — Check what's missing
+
+```bash
+figmaclaw page-tree <file_path> --json --missing-only
+```
+
+Exit code 1 = frames missing (normal at this point); 0 = all done, skip to Step 6.
+
+### Step 3 — Download screenshots
+
+```bash
+figmaclaw screenshots <file_path> --pending
+```
+
+Downloads PNGs to `.figma-cache/screenshots/<file_key>/` for frames without descriptions.
+Prints a JSON manifest: `{file_key, screenshots: [{node_id, path}]}`.
 
 `--pending` skips frames that already have descriptions.
 
-### 3 — Generate descriptions
+### Step 4 — Generate descriptions via subagents
 
-Read each PNG with the Read tool (Claude can see images). For each frame write a description of 1–3 sentences:
-- What the screen shows and its current state
-- Key UI elements visible (inputs, modals, CTAs, overlays, toggles, etc.)
-- What makes it visually distinct from its siblings
+Process frames in **batches of 8** using subagents so screenshots leave the main context after each batch.
 
-Process in batches via subagents to keep screenshots out of the main context.
+For each batch, spawn a subagent:
 
-### 4 — Write descriptions
+> "Here are N Figma frames. Read each PNG with the Read tool:
+> `<path_1>` (node_id: `<node_id_1>`), ...
+>
+> For each frame write a description of 1–3 sentences:
+> - What the screen shows and its current state
+> - Key UI elements visible (inputs, modals, CTAs, overlays, toggles, etc.)
+> - What makes it visually distinct from its siblings
+>
+> Return only a JSON object: `{ "<node_id>": "<description>", ... }`"
 
-Pipe JSON to stdin — **do not use `--frames`** as descriptions may contain single quotes that break shell quoting:
+While reading screenshots, also note the overall purpose and flow of the page — you'll need this for the page summary in Step 6.
+
+### Step 5 — Write descriptions
+
+Pipe JSON to stdin — **never use `--frames`** (descriptions may contain single quotes):
 
 ```bash
-figmaclaw set-frames figma/<file>/<page>.md << 'EOF'
+figmaclaw set-frames <file_path> << 'EOF'
 {
   "node_id_1": "Description text, can contain 'single quotes' freely.",
   "node_id_2": "Another description."
@@ -66,17 +112,51 @@ figmaclaw set-frames figma/<file>/<page>.md << 'EOF'
 EOF
 ```
 
-`set-frames` merges new descriptions into the frontmatter `frames:` dict. Existing descriptions are preserved.
+`set-frames` merges descriptions into the frontmatter `frames:` dict. Existing descriptions are preserved.
 
-### 5 — Commit and push
+### Step 6 — Write page summary and Mermaid flowchart
+
+Read the current file. Then:
+
+**Page summary** — if there is no prose paragraph between the `[Open in Figma]` link and the first `##` heading, add one:
+- 2–3 sentences describing what the page covers overall
+- What the key user flows or design decisions are
+- What differentiates the main sections or frame groups
+- Insert it immediately after the `[Open in Figma]` line (add a blank line before and after)
+
+**Mermaid flowchart** — read the `flows:` frontmatter field:
+- If `flows:` is present and non-empty, and there is no `## Screen flows` section yet, append to the end of the file:
+
+```markdown
+## Screen flows
+
+```mermaid
+flowchart LR
+    A["<frame name from frames table>"] -->|<action inferred from context>| B["<next frame name>"]
+```
+` `` `
+
+- Use frame names from the body tables (not raw node IDs) as node labels
+- Infer transition labels from frame names and descriptions (e.g. "user taps Go Live", "OTP verified")
+- If `flows:` is absent or empty → omit `## Screen flows` entirely
+
+### Step 7 — Verify
 
 ```bash
-git add figma/<file>/<page>.md
-git commit -m "sync: enrich <page-name> with descriptions"
-git push
+figmaclaw page-tree <file_path> --json
 ```
 
-## Fallback — manual steps (figmaclaw not installed, MCP available)
+Confirm `missing_descriptions` is 0.
+
+### Step 8 — Commit and push
+
+```bash
+git add <file_path> .figma-sync/
+git commit -m "sync: enrich <page-name> with frame descriptions"
+git push || (git pull --no-rebase && git push)
+```
+
+## Fallback (figmaclaw not installed, MCP available)
 
 ### 1 — Read the existing .md for the frame inventory
 
@@ -93,22 +173,16 @@ For each batch, spawn a subagent:
 
 ### 3 — Write with set-frames via stdin
 
-See step 4 above — always use stdin heredoc, never `--frames`.
+See Step 5 above — always use stdin heredoc, never `--frames`.
 
-## What information you need from a page
+### 4 — Write page summary and Mermaid
 
-| What to fill | Source |
-|---|---|
-| Frame descriptions | Screenshots per frame — CLI: `figmaclaw screenshots` + Read tool; MCP: `get_screenshot` / `get_design_context` |
-| Page summary | Screenshots + understanding of the whole page |
-| Flowchart edges | `reactions` in Figma node tree — fetched automatically by `figmaclaw enrich` |
-
-**On frame names:** Screenshots are still needed even when names are descriptive. Names tell you the state variant but not layout, visible UI elements, or whether the name is accurate.
-
-**On flowcharts:** The Figma API `reactions` field is authoritative. `figmaclaw enrich` extracts these automatically. No reactions → no Mermaid block (correct behavior).
+See Step 6 above.
 
 ## Notes
 
-- The `reserach` section typo in some Figma files is real — preserve it as-is so the node_id mapping stays correct
-- Small frames (≤200px) inside sections are usually icon/component details, not full screens
-- If the page has no flows at all, omit the `flows` key and the Mermaid block entirely
+- **Never parse the body prose** for node IDs, descriptions, or flows — always read frontmatter
+- **Preserve existing prose** — if a page summary or section intro already exists, don't replace it
+- The `reserach` section typo in some Figma files is real — preserve it as-is
+- Small frames (≤200px) inside sections are usually icon/component details — still describe them, but note they are components
+- If a section's table is empty after `figmaclaw enrich`, it means those frames had no node IDs in Figma — skip it
