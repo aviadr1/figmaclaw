@@ -6,6 +6,8 @@ description: Enrich a figmaclaw Figma page .md file with frame descriptions, pag
 
 Enrich a figmaclaw `.md` file with descriptions for every frame, a page summary, and inferred screen flow edges.
 
+**Format spec:** [`docs/figmaclaw-md-format.md`](../../../docs/figmaclaw-md-format.md) — read this first if you are unsure about frontmatter fields, body structure, what is authoritative, or known limitations.
+
 ## When to use
 
 - A page under `figma/*/pages/` has `(no description yet)` placeholders

@@ -76,8 +76,13 @@ def _apply_frontmatter(md: str, descriptions: dict[str, str], flows: list[list[s
 
 def _apply_summary(md: str, summary: str) -> str:
     """Set or replace the page summary paragraph that follows the Figma link."""
-    replacement = r"\g<1>" + summary + "\n\n"
-    updated, n = _SUMMARY_RE.subn(replacement, md, count=1)
+    # Use a callable replacement — never string concatenation — so that
+    # backslash sequences in `summary` (e.g. \1, \g<1>) are treated as
+    # literal text, not regex backreferences.
+    def _replace(m: re.Match) -> str:
+        return m.group(1) + summary + "\n\n"
+
+    updated, n = _SUMMARY_RE.subn(_replace, md, count=1)
     if n == 0:
         # Anchor line not found (unusual file structure) — leave body unchanged.
         # Descriptions are already in frontmatter; summary can be set on next enrich.
