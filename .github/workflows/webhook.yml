@@ -14,8 +14,8 @@ on:
     secrets:
       FIGMA_API_KEY:
         required: true
-      ANTHROPIC_API_KEY:
-        required: true
+      # ANTHROPIC_API_KEY is intentionally absent — figmaclaw apply-webhook has zero LLM dependency.
+      # LLM enrichment is done by the caller's enrich job via claude-run.yaml.
       FIGMA_WEBHOOK_SECRET:
         required: false
 
@@ -38,7 +38,6 @@ jobs:
         continue-on-error: true  # timeout/quota errors still save partial progress
         env:
           FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           FIGMA_WEBHOOK_SECRET: ${{ secrets.FIGMA_WEBHOOK_SECRET }}
           FIGMA_WEBHOOK_PAYLOAD: ${{ inputs.webhook_payload }}
         run: |
