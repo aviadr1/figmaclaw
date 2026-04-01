@@ -7,7 +7,7 @@
     {
       "name": "figmaclaw",
       "description": "Figma \u2192 git semantic design memory for AI agents",
-      "version": "0.1.21",
+      "version": "0.1.22",
       "source": "./"
     }
   ]
