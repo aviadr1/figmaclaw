@@ -8,112 +8,48 @@ Enrich a figmaclaw `.md` file with:
 - **Frame descriptions** — 1–3 sentence description for every frame
 - **Page summary** — 2–3 sentence prose overview of the whole page
 - **Section intros** — one sentence per section describing what that group shows
-- **Mermaid flowchart** — always present; built from `flows:` frontmatter (authoritative Figma reactions) and design inspection via screenshots
+- **Mermaid flowchart** — built from `flows:` frontmatter and design inspection via screenshots
 
-**Format spec:** [`docs/figmaclaw-md-format.md`](https://github.com/aviadr1/figmaclaw/blob/main/docs/figmaclaw-md-format.md) — authoritative reference for frontmatter schema, body structure, and known limitations.
+**Format spec:** [`docs/figmaclaw-md-format.md`](https://github.com/aviadr1/figmaclaw/blob/main/docs/figmaclaw-md-format.md)
 
 ## Design contract
 
-**Frontmatter = machine-readable source of truth.** CI reads and writes this. Use it to know WHAT needs updating — which frames exist, which have descriptions, what the flows are.
+**Frontmatter = machine-readable metadata.** Tracks what exists (`frames:` as ID list), how screens connect (`flows:`), and whether the body is stale (`enriched_hash`). No descriptions in frontmatter.
 
-**Body = human/LLM prose only.** Never parsed by code. The correct update path is always:
-1. Read the **existing** `.md` file verbatim (body included)
-2. Fetch **new Figma data** via frontmatter (screenshots, updated structure)
-3. Pass **both** to the LLM: existing body + new data
-4. LLM rewrites the body — preserving existing prose where still accurate, adding what's missing
+**Body = human/LLM prose only.** Page summary, section intros, description tables, Mermaid charts. Never parsed by code. Only written by LLM via `write-body`.
 
-## Expected output
+## Workflow
 
-```markdown
----
-file_key: abc123
-frames: {'node1': 'Description of frame 1.', 'node2': 'Description of frame 2.'}
-flows: [['node1', 'node2']]
-page_node_id: '1234:5678'
----
+### Step 1 — Check what needs enrichment
 
-# File Name / Page Name
-
-[Open in Figma](https://www.figma.com/design/abc123?node-id=1234-5678)
-
-This page covers the onboarding flow across three steps: email entry, OTP verification,
-and profile completion. Each section shows both the default and error states for each step.
-
-## Section name (`section_node_id`)
-
-The default and error states for email entry.
-
-| Screen | Node ID | Description |
-|--------|---------|-------------|
-| screen name | `node1` | Description of frame 1. |
-| screen name | `node2` | Description of frame 2. |
-
-## Screen flows
-
-```mermaid
-flowchart LR
-    A["screen name"] -->|user taps Continue| B["next screen"]
-` `` `
+```bash
+figmaclaw page-tree <file_path> --json
 ```
 
-Body placement rules:
-- **Page summary** — immediately after the `[Open in Figma]` link, before the first `##`
-- **Section intro** — one sentence immediately after each `##` heading, before the table
-- **Mermaid block** — always present, at the very end of the file under `## Screen flows`
+Check `needs_enrichment` in the JSON output. If false, skip this file.
 
-## Workflow (figmaclaw CLI available — e.g. CI)
-
-### Step 1 — Read the existing file
+### Step 2 — Read the existing file
 
 ```bash
 cat <file_path>
 ```
 
-Note the full body verbatim — you will pass it to the LLM in Step 7. Identify from frontmatter:
-- Which frames have no description yet (empty string or missing from `frames:`)
-- Whether `flows:` is present and non-empty
-- Total frame count
+Note the full body verbatim — you will preserve and adapt it.
 
-### Step 2 — Re-sync structure from Figma
-
-```bash
-figmaclaw sync <file_path>
-```
-
-Fetches the latest page structure and updates ONLY the frontmatter (frames, flows).
-The LLM-authored body is never overwritten. **Does NOT generate descriptions.** Preserves existing ones.
-
-Use `--scaffold` to print the scaffold template (structural hint when the page changed significantly).
-Use `--show-body` to print the existing body (so the LLM can preserve/adapt it).
-
-### Step 3 — Check what's missing
-
-```bash
-figmaclaw page-tree <file_path> --json --missing-only
-```
-
-Exit code 1 = frames missing (normal at this point). Exit code 0 = all described, skip to Step 7.
-
-### Step 4 — Download screenshots
+### Step 3 — Download screenshots
 
 ```bash
 figmaclaw screenshots <file_path> --pending
 ```
 
 Downloads PNGs to `.figma-cache/screenshots/<file_key>/` for frames without descriptions.
-Outputs a JSON manifest: `{file_key, screenshots: [{node_id, path}]}`.
-
-If `## Screen flows` is missing from the body (even when all frames are already described),
-download **all** screenshots instead:
+If `## Screen flows` is missing from the body, download **all** screenshots:
 
 ```bash
 figmaclaw screenshots <file_path>
 ```
 
-You need to see the actual design to understand what connects to what — buttons, modals, step
-indicators, and CTAs show the flow. Do not guess from frame names.
-
-### Step 5 — Generate descriptions via subagents
+### Step 4 — Generate descriptions via subagents
 
 Process in **batches of 8** — spawn a subagent per batch so screenshots leave the main context:
 
@@ -127,47 +63,60 @@ Process in **batches of 8** — spawn a subagent per batch so screenshots leave 
 >
 > Return only a JSON object: `{ "<node_id>": "<description>", ... }`"
 
-While viewing screenshots, also form an understanding of the overall page — you'll need it for Step 7.
+### Step 5 — Write the body
 
-### Step 6 — Write descriptions to frontmatter
-
-Pipe JSON to stdin — **never use `--frames`** (descriptions may contain single quotes):
+Use `figmaclaw write-body` to write the complete body:
 
 ```bash
-figmaclaw set-frames <file_path> << 'EOF'
-{
-  "node_id_1": "Description text, can contain 'single quotes' freely.",
-  "node_id_2": "Another description."
-}
-EOF
-```
+figmaclaw write-body <file_path> <<'EOF'
 
-### Step 7 — Rewrite the body
+# {file_name} / {page_name}
 
-Read the current file (frontmatter now has all descriptions and flows). Then rewrite the body:
+[Open in Figma]({figma_url})
 
-- **Page summary** — if missing or placeholder, write 2–3 sentences: what this page covers, its purpose, what differentiates the main sections. Insert after `[Open in Figma]` link, before first `##`.
-- **Section intros** — if missing, add one sentence after each `##` heading describing what that group of frames shows.
-- **Mermaid flowchart** — always include. If `## Screen flows` doesn't exist yet, append it at the end. Build the graph from:
-  1. `flows:` frontmatter (authoritative Figma prototype reactions) — use these edges first
-  2. **Look at the screenshots** — the visual design shows what leads where. Buttons, arrows, modal triggers, step indicators, and CTAs all tell you how screens connect. Do not guess from frame names alone.
+{2-3 sentence page summary}
 
-```markdown
+## {Section Name} (`{section_node_id}`)
+
+{1-sentence section intro}
+
+| Screen | Node ID | Description |
+|--------|---------|-------------|
+| {frame_name} | `{node_id}` | {description from step 4} |
+
 ## Screen flows
 
 ```mermaid
 flowchart LR
-    A["<frame name>"] -->|<action inferred from design>| B["<next frame name>"]
-` `` `
+    A["screen"] -->|action from design| B["next screen"]
+` ``
+EOF
 ```
 
-  Use frame names from the body tables as node labels (not raw node IDs). Label transitions with the actual user action visible in the design (e.g. "taps Go Live button", "submits OTP", "payment complete").
+Body placement rules:
+- **Page summary** — immediately after the `[Open in Figma]` link, before the first `##`
+- **Section intro** — one sentence immediately after each `##` heading, before the table
+- **Mermaid block** — always present, at the very end under `## Screen flows`
 
-- **Preserve existing prose** — if a page summary, section intros, or Mermaid block already exist
-  and are still accurate, keep them. Only update what's wrong or missing.
+Look at screenshots for transitions — buttons, CTAs, step indicators, modals show the flow. Don't guess from frame names alone.
 
-Use the Edit tool to make targeted changes to the file (don't rewrite the entire file from scratch
-unless it was previously empty).
+**Preserve existing prose** — if a page summary, section intros, or Mermaid block already exist and are still accurate, keep them.
+
+### Step 6 — Set flows (if inferred)
+
+If you identified flows from screenshots that aren't already in frontmatter:
+
+```bash
+figmaclaw set-flows <file_path> --flows '[["src_id", "dst_id"], ...]'
+```
+
+### Step 7 — Mark as enriched
+
+```bash
+figmaclaw mark-enriched <file_path>
+```
+
+This snapshots the current page hash and frame hashes into frontmatter, so the system knows the body is up-to-date.
 
 ### Step 8 — Verify
 
@@ -175,58 +124,20 @@ unless it was previously empty).
 figmaclaw page-tree <file_path> --json
 ```
 
-Confirm `missing_descriptions` is 0.
+Check `needs_enrichment` is false.
 
 ### Step 9 — Commit and push
 
 ```bash
-git add <file_path> .figma-sync/
+git add <file_path> .figma-cache/ .figma-sync/
 git commit -m "sync: describe <page-name> frames"
 git push || (git pull --no-rebase && git push)
 ```
-
-## Workflow (MCP available — no CLI)
-
-### 1 — Read the existing file
-
-Use the Read tool. Note the full body and frontmatter.
-
-### 2 — Get screenshots via MCP in batches of 8
-
-For each batch, spawn a subagent:
-
-> "Here are 8 Figma frames from file `<file_key>`. Call `get_screenshot` for all 8 node IDs **in parallel**:
-> `<node_id_1>`, ... `<node_id_8>`
->
-> Return only a JSON object: `{ "<node_id>": "<1–3 sentence description>", ... }`"
-
-### 3 — Write descriptions to frontmatter
-
-```bash
-figmaclaw set-frames <file_path> << 'EOF'
-{ ... }
-EOF
-```
-
-Always use stdin heredoc — never `--frames`.
-
-### 4 — Rewrite the body
-
-See Step 7 above.
-
-## What to fill and where to get it
-
-| What | Source |
-|---|---|
-| Frame descriptions | Screenshots — CLI: `figmaclaw screenshots` + Read tool; MCP: `get_screenshot` |
-| Page summary | Screenshots + overall understanding of the page |
-| Section intros | Screenshots + what each frame group has in common |
-| Mermaid flowchart | Always present. `flows:` frontmatter as authoritative edges; look at screenshots to find additional transitions visible in the design |
 
 ## Notes
 
 - **Never parse body prose** for node IDs, descriptions, or flows — always read frontmatter
 - The `reserach` section typo in some Figma files is real — preserve it as-is
 - Small frames (≤200px) inside sections are usually icon/component details — describe them, note they are components
-- If a section's table is empty after `figmaclaw sync`, those frames had no node IDs in Figma — skip it
-- Always include `## Screen flows` — humans can't read frontmatter YAML. Look at the screenshots to understand what connects to what. Buttons, arrows, step indicators, and CTAs in the design show the flow.
+- Always include `## Screen flows` — look at screenshots to find transitions visible in the design
+- **No `set-frames`** — descriptions live in the body, not frontmatter. Use `write-body` instead.
