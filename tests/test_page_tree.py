@@ -108,8 +108,8 @@ def test_page_tree_json_includes_all_frames(tmp_path: Path) -> None:
     assert node_ids == {"11:1", "11:2"}
 
 
-def test_page_tree_exit_code_1_when_missing_descriptions(tmp_path: Path) -> None:
-    """INVARIANT: page-tree exits with code 1 when any frame lacks a description."""
+def test_page_tree_exit_0_with_placeholders(tmp_path: Path) -> None:
+    """INVARIANT: page-tree always exits 0 on success. Placeholder count is in JSON, not exit code."""
     md_path = _write_md(tmp_path, _make_page(with_descriptions=False))
     runner = CliRunner()
     result = runner.invoke(cli, [
@@ -117,13 +117,14 @@ def test_page_tree_exit_code_1_when_missing_descriptions(tmp_path: Path) -> None
         "page-tree", str(md_path), "--json",
     ])
 
-    assert result.exit_code == 1
+    assert result.exit_code == 0
     data = json.loads(result.output)
     assert data["missing_descriptions"] == 2
+    assert data["needs_enrichment"] is True
 
 
-def test_page_tree_exit_code_0_when_all_described(tmp_path: Path) -> None:
-    """INVARIANT: page-tree exits with code 0 when all frames have descriptions."""
+def test_page_tree_exit_0_when_all_described(tmp_path: Path) -> None:
+    """INVARIANT: page-tree exits 0 with zero missing descriptions when all frames described."""
     md_path = _write_md(tmp_path, _make_page(with_descriptions=True))
     runner = CliRunner()
     result = runner.invoke(cli, [
@@ -136,10 +137,10 @@ def test_page_tree_exit_code_0_when_all_described(tmp_path: Path) -> None:
     assert data["missing_descriptions"] == 0
 
 
-def test_page_tree_missing_only_excludes_described_frames(tmp_path: Path) -> None:
-    """INVARIANT: --missing-only filters to frames that need descriptions only."""
+def test_page_tree_shows_needs_enrichment_for_unenriched_page(tmp_path: Path) -> None:
+    """INVARIANT: page-tree JSON shows needs_enrichment=true when page has no enriched_hash."""
     frames = [
-        FigmaFrame(node_id="11:1", name="welcome", description="Already described."),
+        FigmaFrame(node_id="11:1", name="welcome", description=""),
         FigmaFrame(node_id="11:2", name="permissions", description=""),
     ]
     section = FigmaSection(node_id="10:1", name="onboarding", frames=frames)
@@ -160,13 +161,12 @@ def test_page_tree_missing_only_excludes_described_frames(tmp_path: Path) -> Non
     runner = CliRunner()
     result = runner.invoke(cli, [
         "--repo-dir", str(tmp_path),
-        "page-tree", str(md_path), "--json", "--missing-only",
+        "page-tree", str(md_path), "--json",
     ])
 
+    assert result.exit_code == 0
     data = json.loads(result.output)
-    all_frame_ids = {f["node_id"] for s in data["sections"] for f in s["frames"]}
-    assert "11:2" in all_frame_ids
-    assert "11:1" not in all_frame_ids
+    assert data["needs_enrichment"] is True  # no enriched_hash = needs enrichment
 
 
 def test_page_tree_exit_code_2_for_non_figmaclaw_file(tmp_path: Path) -> None:

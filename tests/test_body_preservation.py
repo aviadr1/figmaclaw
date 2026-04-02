@@ -234,10 +234,10 @@ async def test_bp2_pull_preserves_body_byte_for_byte(tmp_path: Path) -> None:
     )
 
 
-# BP-3: set-frames on existing file preserves body byte-for-byte
+# BP-3: set-frames --flows on existing file preserves body byte-for-byte
 
-def test_bp3_set_frames_preserves_body_byte_for_byte(tmp_path: Path) -> None:
-    """BP-3: set-frames updates only frontmatter — body is byte-for-byte identical."""
+def test_bp3_set_frames_flows_preserves_body_byte_for_byte(tmp_path: Path) -> None:
+    """BP-3: set-frames --flows updates only frontmatter — body is byte-for-byte identical."""
     md_path, original_body = _write_enriched_md(tmp_path)
 
     runner = CliRunner()
@@ -245,13 +245,14 @@ def test_bp3_set_frames_preserves_body_byte_for_byte(tmp_path: Path) -> None:
         "--repo-dir", str(tmp_path),
         "set-frames",
         str(md_path),
-        "--frames", json.dumps({"11:1": "Updated welcome.", "11:2": "Updated permissions."}),
+        "--frames", json.dumps({}),
+        "--flows", json.dumps([["11:1", "11:2"]]),
     ])
     assert result.exit_code == 0, result.output
 
     post = _frontmatter.loads(md_path.read_text())
     assert post.content == original_body, (
-        "BP-3 VIOLATED: set-frames modified the body.\n"
+        "BP-3 VIOLATED: set-frames --flows modified the body.\n"
         f"Expected body:\n{original_body}\n\nActual body:\n{post.content}"
     )
 
@@ -409,8 +410,8 @@ async def test_fm1_descriptions_survive_sync(tmp_path: Path) -> None:
 
     fm = parse_frontmatter(md_path.read_text())
     assert fm is not None
-    assert fm.frames.get("11:1") == "Welcome screen.", "FM-1: description for 11:1 lost after sync"
-    assert fm.frames.get("11:2") == "Camera access prompt.", "FM-1: description for 11:2 lost after sync"
+    assert "11:1" in fm.frames, "FM-1: frame ID 11:1 lost after sync"
+    assert "11:2" in fm.frames, "FM-1: frame ID 11:2 lost after sync"
 
 
 # FM-2: existing flows survive sync
@@ -454,7 +455,7 @@ async def test_fm3_new_frames_appear_after_sync(tmp_path: Path) -> None:
     assert fm is not None
     assert "11:3" in fm.frames, "FM-3: new frame 11:3 missing from frontmatter after sync"
     # Existing descriptions must also survive
-    assert fm.frames.get("11:1") == "Welcome screen.", "FM-3: existing description lost"
+    assert "11:1" in fm.frames, "FM-3: existing frame ID lost"
 
 
 # FM-4: frontmatter is valid FigmaPageFrontmatter after sync
@@ -550,8 +551,8 @@ async def test_body_survives_repeated_sync(tmp_path: Path) -> None:
 # Bonus: body survives sync + set-frames interleaved
 
 @pytest.mark.asyncio
-async def test_body_survives_sync_then_set_frames_cycle(tmp_path: Path) -> None:
-    """Body survives a realistic workflow: sync → set-frames → sync → set-frames."""
+async def test_body_survives_sync_then_set_flows_cycle(tmp_path: Path) -> None:
+    """Body survives a realistic workflow: sync → set-frames --flows → sync → set-frames --flows."""
     md_path, original_body = _write_enriched_md(tmp_path)
     _setup_state(tmp_path)
 
@@ -565,21 +566,22 @@ async def test_body_survives_sync_then_set_frames_cycle(tmp_path: Path) -> None:
             MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
             await sync_module._run("fake-api-key", tmp_path, md_path, auto_commit=False)
 
-        # set-frames
+        # set-frames --flows (no descriptions)
         runner.invoke(cli, [
             "--repo-dir", str(tmp_path),
             "set-frames", str(md_path),
-            "--frames", json.dumps({"11:1": f"Updated welcome v{i}.", "11:2": f"Updated perms v{i}."}),
+            "--frames", json.dumps({}),
+            "--flows", json.dumps([["11:1", "11:2"]]),
         ])
 
     post = _frontmatter.loads(md_path.read_text())
     assert post.content == original_body, (
-        f"Body degraded after sync/set-frames cycles.\n"
+        f"Body degraded after sync/set-flows cycles.\n"
         f"Expected:\n{original_body}\n\nActual:\n{post.content}"
     )
 
-    # Frontmatter should have the latest descriptions
+    # Frontmatter should have frame IDs as list
     fm = parse_frontmatter(md_path.read_text())
     assert fm is not None
-    assert fm.frames["11:1"] == "Updated welcome v2."
-    assert fm.frames["11:2"] == "Updated perms v2."
+    assert isinstance(fm.frames, list)
+    assert "11:1" in fm.frames

@@ -112,7 +112,7 @@ def test_bp6_replace_body_preserves_frontmatter_byte_for_byte(tmp_path: Path) ->
     fm = parse_frontmatter(updated_md)
     assert fm is not None
     assert fm.file_key == "abc123"
-    assert fm.frames["11:1"] == "Welcome screen."
+    assert "11:1" in fm.frames
     assert [tuple(e) for e in fm.flows] == [("11:1", "11:2")]
 
 

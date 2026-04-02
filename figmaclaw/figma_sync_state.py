@@ -26,6 +26,7 @@ class PageEntry(BaseModel):
     page_hash: str
     last_refreshed_at: str
     component_md_paths: list[str] = Field(default_factory=list)
+    frame_hashes: dict[str, str] = Field(default_factory=dict)  # {node_id: content_hash}
 
 
 class FileEntry(BaseModel):

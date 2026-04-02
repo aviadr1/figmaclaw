@@ -116,9 +116,9 @@ async def test_sync_updates_manifest_hash(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_sync_preserves_existing_descriptions(tmp_path: Path) -> None:
-    """INVARIANT: sync restores existing frame descriptions into the re-synced frontmatter."""
-    page = _make_page()  # has "Welcome screen." on 11:1
+async def test_sync_frontmatter_has_frame_ids(tmp_path: Path) -> None:
+    """INVARIANT: sync puts frame IDs (not descriptions) in frontmatter."""
+    page = _make_page()
     entry = _make_entry("figma/abc123/pages/onboarding.md")
     md = scaffold_page(page, entry)
     md_path = tmp_path / "page.md"
@@ -142,7 +142,9 @@ async def test_sync_preserves_existing_descriptions(tmp_path: Path) -> None:
 
     fm = parse_frontmatter(md_path.read_text())
     assert fm is not None
-    assert fm.frames.get("11:1") == "Welcome screen."
+    assert isinstance(fm.frames, list)
+    assert "11:1" in fm.frames
+    assert "11:2" in fm.frames
 
 
 @pytest.mark.asyncio

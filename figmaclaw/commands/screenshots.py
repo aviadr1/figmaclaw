@@ -73,8 +73,15 @@ async def _run(api_key: str, repo_dir: Path, md_path: Path, pending_only: bool) 
     all_body_ids = [f.node_id for s in parse_sections(md_text) for f in s.frames]
 
     if pending_only:
-        # Pending = in the body but not yet described in frontmatter.
-        node_ids = [nid for nid in all_body_ids if not fm.frames.get(nid)]
+        # Pending = frames whose body table row has the "(no description yet)" placeholder.
+        pending_ids: set[str] = set()
+        for line in md_text.splitlines():
+            if "| (no description yet) |" in line:
+                import re
+                m = re.search(r"`([^`]+)`", line)
+                if m:
+                    pending_ids.add(m.group(1))
+        node_ids = [nid for nid in all_body_ids if nid in pending_ids]
     else:
         node_ids = all_body_ids
 

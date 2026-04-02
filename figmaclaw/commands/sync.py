@@ -35,9 +35,9 @@ from pathlib import Path
 
 import click
 from figmaclaw.figma_client import FigmaClient
-from figmaclaw.figma_hash import compute_page_hash
+from figmaclaw.figma_hash import compute_frame_hashes, compute_page_hash
 from figmaclaw.figma_models import from_page_node
-from figmaclaw.figma_parse import parse_flows, parse_frame_descriptions, parse_frontmatter, split_frontmatter
+from figmaclaw.figma_parse import parse_flows, parse_frontmatter, split_frontmatter
 from figmaclaw.figma_paths import slugify
 from figmaclaw.figma_render import scaffold_page
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
@@ -122,9 +122,8 @@ async def _run(
     page = from_page_node(page_node, file_key=file_key, file_name=file_name)
     page = page.model_copy(update={"page_slug": page_slug, "version": api_version, "last_modified": api_last_modified})
 
-    existing_descs = parse_frame_descriptions(md_text)
     existing_flows = parse_flows(md_text)
-    page = _merge_existing(page, existing_descs, existing_flows)
+    page = _merge_existing(page, existing_flows)
 
     screen_sections = [s for s in page.sections if not s.is_component_library]
     if not screen_sections:
@@ -133,6 +132,9 @@ async def _run(
 
     screen_page = page.model_copy(update={"sections": screen_sections})
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    # Compute per-frame content hashes
+    frame_hashes = compute_frame_hashes(page_node)
 
     manifest_file = state.manifest.files.get(file_key)
     existing_page_entry = None
@@ -152,6 +154,7 @@ async def _run(
         page_hash=new_hash,
         last_refreshed_at=now,
         component_md_paths=component_md_paths,
+        frame_hashes=frame_hashes,
     )
 
     # --scaffold: print scaffold template and exit (no write)

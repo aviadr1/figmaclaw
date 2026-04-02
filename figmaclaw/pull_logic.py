@@ -44,9 +44,9 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from figmaclaw.figma_client import FigmaClient
-from figmaclaw.figma_hash import compute_page_hash
+from figmaclaw.figma_hash import compute_frame_hashes, compute_page_hash
 from figmaclaw.figma_models import FigmaPage, FigmaSection, from_page_node
-from figmaclaw.figma_parse import parse_flows, parse_frame_descriptions
+from figmaclaw.figma_parse import parse_flows, parse_frontmatter
 from figmaclaw.figma_paths import component_path, page_path, slugify
 from figmaclaw.figma_render import build_page_frontmatter, render_component_section, scaffold_page
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
@@ -103,7 +103,18 @@ def update_page_frontmatter(repo_root: Path, page: FigmaPage, entry: PageEntry) 
     assert parts is not None, f"Failed to parse frontmatter from {out_path}"
     _, body = parts
 
-    new_fm = build_page_frontmatter(page)
+    # Preserve enrichment state from existing frontmatter
+    existing_fm = parse_frontmatter(md_text)
+    enriched_hash = existing_fm.enriched_hash if existing_fm else None
+    enriched_at = existing_fm.enriched_at if existing_fm else None
+    enriched_frame_hashes = existing_fm.enriched_frame_hashes if existing_fm else None
+
+    new_fm = build_page_frontmatter(
+        page,
+        enriched_hash=enriched_hash,
+        enriched_at=enriched_at,
+        enriched_frame_hashes=enriched_frame_hashes or None,
+    )
     out_path.write_text(f"{new_fm}\n{body}")
     return out_path
 
@@ -121,24 +132,14 @@ def write_component_section(
     return out_path
 
 
-def _merge_existing(page: FigmaPage, existing_descs: dict[str, str], existing_flows: list[tuple[str, str]]) -> FigmaPage:
-    """Return a copy of the page with descriptions and flows restored from existing .md files.
+def _merge_existing(page: FigmaPage, existing_flows: list[tuple[str, str]]) -> FigmaPage:
+    """Return a copy of the page with flows restored from existing .md files.
 
-    existing_descs: {node_id: description} — merged from screen page + all component section .mds
     existing_flows: [(src, dst), ...] — from the screen page .md only
 
-    NOTE: page_summary and section.intro are LLM-generated prose and live only in the body.
-    They are intentionally NOT preserved here. The body is written by humans and LLMs only —
-    never by code parsing. Use the figma-enrich-page skill to update prose via LLM.
+    Descriptions are NOT merged — they live in the body, not frontmatter.
+    The body is preserved byte-for-byte by update_page_frontmatter().
     """
-    new_sections = []
-    for section in page.sections:
-        new_frames = []
-        for frame in section.frames:
-            desc = frame.description or existing_descs.get(frame.node_id, "")
-            new_frames.append(frame.model_copy(update={"description": desc}))
-        new_sections.append(section.model_copy(update={"frames": new_frames}))
-
     existing_flow_set = set(page.flows)
     merged_flows = list(page.flows)
     for edge in existing_flows:
@@ -146,7 +147,7 @@ def _merge_existing(page: FigmaPage, existing_descs: dict[str, str], existing_fl
             merged_flows.append(edge)
             existing_flow_set.add(edge)
 
-    return page.model_copy(update={"sections": new_sections, "flows": merged_flows})
+    return page.model_copy(update={"flows": merged_flows})
 
 
 async def pull_file(
@@ -285,26 +286,19 @@ async def pull_file(
             page = from_page_node(page_node, file_key=file_key, file_name=file_name)
             page = page.model_copy(update={"page_slug": page_slug, "version": api_version, "last_modified": api_last_modified})
 
-            # Level 3: preserve existing descriptions from all existing .mds
-            all_existing_descs: dict[str, str] = {}
+            # Merge flows from existing .md (descriptions live in body, not frontmatter)
             existing_flows: list[tuple[str, str]] = []
 
             screen_md_rel = page_path(file_slug, page_slug)
             screen_md = repo_root / screen_md_rel
             if screen_md.exists():
                 md_text = screen_md.read_text()
-                all_existing_descs.update(parse_frame_descriptions(md_text))
                 existing_flows = parse_flows(md_text)
 
-            for section in page.sections:
-                if section.is_component_library:
-                    sect_suffix = section.node_id.replace(":", "-")
-                    sect_slug = f"{slugify(section.name)}-{sect_suffix}"
-                    comp_md = repo_root / component_path(file_slug, sect_slug)
-                    if comp_md.exists():
-                        all_existing_descs.update(parse_frame_descriptions(comp_md.read_text()))
+            page = _merge_existing(page, existing_flows)
 
-            page = _merge_existing(page, all_existing_descs, existing_flows)
+            # Compute per-frame content hashes for surgical enrichment
+            frame_hashes = compute_frame_hashes(page_node)
 
             screen_sections = [s for s in page.sections if not s.is_component_library]
             component_sections = [s for s in page.sections if s.is_component_library]
@@ -318,6 +312,7 @@ async def pull_file(
                     md_path=screen_md_rel,
                     page_hash=new_hash,
                     last_refreshed_at=now,
+                    frame_hashes=frame_hashes,
                 )
                 if screen_md.exists():
                     written = update_page_frontmatter(repo_root, screen_page, screen_entry)
@@ -358,6 +353,7 @@ async def pull_file(
             page_hash=new_hash,
             last_refreshed_at=now,
             component_md_paths=written_component_rels,
+            frame_hashes=frame_hashes,
         )
         state.set_page_entry(file_key, page_node_id, entry)
         state.save()

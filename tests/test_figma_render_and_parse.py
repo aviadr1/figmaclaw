@@ -20,7 +20,7 @@ import yaml
 from figmaclaw.figma_frontmatter import FigmaPageFrontmatter
 from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection
 from figmaclaw.figma_render import scaffold_page
-from figmaclaw.figma_parse import parse_frame_descriptions, parse_frontmatter
+from figmaclaw.figma_parse import parse_frontmatter
 from figmaclaw.figma_sync_state import PageEntry
 import yaml
 
@@ -92,18 +92,19 @@ def test_scaffold_page_frontmatter_carries_frame_descriptions():
     md = scaffold_page(page, _make_entry())
     fm = parse_frontmatter(md)
     assert fm is not None
-    assert fm.frames["11:1"] == "The onboarding welcome."
+    assert "11:1" in fm.frames
 
 
-def test_scaffold_page_frontmatter_omits_empty_descriptions():
-    """INVARIANT: Frames with no description are not in frontmatter.frames."""
+def test_scaffold_page_frontmatter_includes_frame_ids():
+    """INVARIANT: All frame node IDs appear in frontmatter.frames (as a list)."""
     frame = FigmaFrame(node_id="11:1", name="untitled frame", description="")
     section = FigmaSection(node_id="10:1", name="misc", frames=[frame])
     page = _make_page(sections=[section])
     md = scaffold_page(page, _make_entry())
     fm = parse_frontmatter(md)
     assert fm is not None
-    assert "untitled frame" not in fm.frames
+    assert "11:1" in fm.frames
+    assert isinstance(fm.frames, list)
 
 
 # --- scaffold_page: body ---
@@ -234,11 +235,11 @@ def test_scaffold_page_frontmatter_is_compact_flow_style():
     assert len(frames_lines) == 1, "frames must be on a single line (no multi-line block style)"
     assert len(flows_lines) == 1, "flows must be on a single line (no multi-line block style)"
     # Both must use inline flow-style notation (curly/square brackets)
-    assert "{" in frames_lines[0], "frames must use inline flow-style {}: not block indented YAML"
+    assert "[" in frames_lines[0], "frames must use inline flow-style []: not block indented YAML"
     assert "[" in flows_lines[0], "flows must use inline flow-style []: not block indented YAML"
     # Verify the frontmatter round-trips correctly via yaml.safe_load
     data = yaml.safe_load(fm_block)
-    assert data["frames"]["11:1"] == "Welcome screen."
+    assert "11:1" in data["frames"]
     assert data["flows"] == [["11:1", "11:2"]]
 
 
@@ -258,10 +259,9 @@ def test_scaffold_page_frontmatter_flow_style_no_wrapping():
     md = scaffold_page(_make_page(sections=[section]), _make_entry())
     fm_block = md.split("---\n")[1]
     frames_lines = [l for l in fm_block.strip().splitlines() if l.startswith("frames:")]
-    assert len(frames_lines) == 1, "frames must stay on one line regardless of description length"
-    # Round-trip must recover the exact description including apostrophes and colons
+    assert len(frames_lines) == 1, "frames must stay on one line regardless of frame count"
     data = yaml.safe_load(fm_block)
-    assert data["frames"]["11:1"] == long_desc
+    assert "11:1" in data["frames"]
 
 
 def test_scaffold_page_frontmatter_no_page_hash():
@@ -273,8 +273,8 @@ def test_scaffold_page_frontmatter_no_page_hash():
     assert "deadbeef" not in fm_block
 
 
-def test_parse_frame_descriptions_recovers_descriptions():
-    """INVARIANT: parse_frame_descriptions recovers {node_id: description} from rendered md."""
+def test_parse_frontmatter_frames_is_list():
+    """INVARIANT: frontmatter.frames is a list of node IDs (v2 format)."""
     frames = [
         FigmaFrame(node_id="11:1", name="welcome screen", description="The onboarding welcome."),
         FigmaFrame(node_id="11:2", name="permissions screen", description="Asks for camera access."),
@@ -282,15 +282,20 @@ def test_parse_frame_descriptions_recovers_descriptions():
     section = FigmaSection(node_id="10:1", name="onboarding", frames=frames)
     page = _make_page(sections=[section])
     md = scaffold_page(page, _make_entry())
-    descriptions = parse_frame_descriptions(md)
-    assert descriptions["11:1"] == "The onboarding welcome."
-    assert descriptions["11:2"] == "Asks for camera access."
+    fm = parse_frontmatter(md)
+    assert fm is not None
+    assert isinstance(fm.frames, list)
+    assert "11:1" in fm.frames
+    assert "11:2" in fm.frames
 
 
-def test_parse_frame_descriptions_empty_for_plain_file():
-    """INVARIANT: parse_frame_descriptions returns empty dict for non-figmaclaw markdown."""
-    descriptions = parse_frame_descriptions("# Random markdown\n\nNo tables here.")
-    assert descriptions == {}
+def test_parse_frontmatter_backward_compat_dict():
+    """INVARIANT: old v1 dict format is normalized to list of keys."""
+    md = "---\nfile_key: abc\npage_node_id: '1:1'\nframes: {'11:1': 'desc', '11:2': ''}\n---\n\nbody"
+    fm = parse_frontmatter(md)
+    assert fm is not None
+    assert isinstance(fm.frames, list)
+    assert sorted(fm.frames) == ["11:1", "11:2"]
 
 
 # --- scaffold_page: component library sections skipped ---
@@ -332,7 +337,7 @@ def test_scaffold_page_omits_component_frame_descriptions_from_frontmatter():
     fm = parse_frontmatter(md)
     assert fm is not None
     # Component descriptions must not leak into the page frontmatter
-    assert "30:1" not in fm.frames
+    assert "30:1" not in fm.frames  # component frames excluded from page frontmatter
 
 
 # --- render_component_section ---
@@ -427,8 +432,8 @@ def test_render_component_section_stores_descriptions_in_frontmatter():
     md = render_component_section(section, page)
     fm = parse_frontmatter(md)
     assert fm is not None
-    assert fm.frames["30:1"] == "Primary CTA button."
-    assert fm.frames["30:2"] == ""  # all frames tracked in frontmatter; empty string until described
+    assert "30:1" in fm.frames
+    assert "30:2" in fm.frames  # all frame IDs tracked in frontmatter
 
 
 def test_render_component_section_has_no_mermaid():

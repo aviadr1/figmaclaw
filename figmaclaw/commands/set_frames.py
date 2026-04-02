@@ -38,24 +38,37 @@ _SUMMARY_RE = re.compile(
 
 
 def _apply_frontmatter(md: str, descriptions: dict[str, str], flows: list[list[str]] | None) -> str:
-    """Merge descriptions (and optionally flows) into the YAML frontmatter block."""
+    """Merge flows (and optionally frame IDs from descriptions keys) into the YAML frontmatter block.
+
+    Note: descriptions values are ignored in v2 (descriptions live in body only).
+    The description keys are merged into the frames list for backward compat.
+    """
     import yaml
 
     fm = parse_frontmatter(md)
     if fm is None:
         return md  # nothing to update
 
-    merged_frames = dict(fm.frames)
-    merged_frames.update(descriptions)
+    # frames is now a list of IDs — merge any new IDs from descriptions keys
+    frame_set = set(fm.frames)
+    frame_set.update(descriptions.keys())
+    merged_frames = sorted(frame_set)
 
     fm_data: dict = {"file_key": fm.file_key, "page_node_id": fm.page_node_id}
     if fm.section_node_id:
         fm_data["section_node_id"] = fm.section_node_id
     if merged_frames:
-        fm_data["frames"] = _FlowDict(merged_frames)
+        fm_data["frames"] = _FlowList(merged_frames)
     effective_flows = flows if flows is not None else fm.flows
     if effective_flows:
         fm_data["flows"] = _FlowList(effective_flows)
+    # Preserve enrichment state
+    if fm.enriched_hash is not None:
+        fm_data["enriched_hash"] = fm.enriched_hash
+    if fm.enriched_at is not None:
+        fm_data["enriched_at"] = fm.enriched_at
+    if fm.enriched_frame_hashes:
+        fm_data["enriched_frame_hashes"] = _FlowDict(fm.enriched_frame_hashes)
 
     new_fm_body = yaml.dump(
         fm_data, Dumper=_FrontmatterDumper, default_flow_style=False, allow_unicode=True,

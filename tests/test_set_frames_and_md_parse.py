@@ -1,11 +1,9 @@
-"""Tests for set_frames.py and figma_md_parse.py.
+"""Tests for figma_md_parse.py.
 
 INVARIANTS:
-- set-frames round-trips pipe descriptions correctly via frontmatter (_apply_frontmatter)
 - figma_md_parse.parse_sections extracts section/frame structure from body
-- figma_md_parse.parse_sections leaves description empty (frontmatter is source of truth)
+- figma_md_parse.parse_sections leaves description empty (body is source of truth)
 - figma_md_parse.parse_sections is robust to any column header name
-- page-tree uses frontmatter for description/missing counts, not body text
 """
 
 from __future__ import annotations
@@ -14,7 +12,6 @@ import textwrap
 
 import pytest
 
-from figmaclaw.commands.set_frames import _apply_frontmatter
 from figmaclaw.figma_md_parse import parse_sections
 from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection
 from figmaclaw.figma_render import scaffold_page
@@ -51,16 +48,6 @@ def _rendered_md_with_frame(node_id: str, name: str, description: str = "") -> s
     frame = FigmaFrame(node_id=node_id, name=name, description=description)
     section = FigmaSection(node_id="10:1", name="Onboarding", frames=[frame])
     return scaffold_page(_make_page(sections=[section]), _make_entry())
-
-
-def test_apply_frontmatter_persists_pipe_description():
-    """INVARIANT: A description with pipes is stored verbatim in the YAML frontmatter."""
-    md = _rendered_md_with_frame("11:1", "Frame")
-    desc = "left | right split"
-    updated = _apply_frontmatter(md, {"11:1": desc}, flows=None)
-    fm = parse_frontmatter(updated)
-    assert fm is not None
-    assert fm.frames["11:1"] == desc
 
 
 # --- parse_sections: structure extraction ---

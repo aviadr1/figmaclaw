@@ -60,16 +60,6 @@ def parse_frontmatter(md: str) -> FigmaPageFrontmatter | None:
     return None
 
 
-def parse_frame_descriptions(md: str) -> dict[str, str]:
-    """Extract {node_id: description} from the frontmatter.
-
-    Returns empty dict if the file has no figmaclaw frontmatter.
-    Keys are node IDs (e.g. "10635:89503"), not frame names.
-    """
-    fm = parse_frontmatter(md)
-    return fm.frames if fm else {}
-
-
 def parse_flows(md: str) -> list[tuple[str, str]]:
     """Extract flow edges from the frontmatter as [(src_node_id, dst_node_id), ...].
 

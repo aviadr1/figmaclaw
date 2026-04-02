@@ -77,17 +77,27 @@ def _build_frontmatter(
     file_key: str,
     page_node_id: str,
     section_node_id: str | None,
-    frame_descs: dict[str, str],
+    frame_ids: list[str],
     flows: list[tuple[str, str]],
+    *,
+    enriched_hash: str | None = None,
+    enriched_at: str | None = None,
+    enriched_frame_hashes: dict[str, str] | None = None,
 ) -> str:
     """Render compact YAML frontmatter block (between --- markers)."""
     fm: dict = {"file_key": file_key, "page_node_id": page_node_id}
     if section_node_id:
         fm["section_node_id"] = section_node_id
-    if frame_descs:
-        fm["frames"] = _FlowDict(frame_descs)
+    if frame_ids:
+        fm["frames"] = _FlowList(frame_ids)
     if flows:
         fm["flows"] = _FlowList([[src, dst] for src, dst in flows])
+    if enriched_hash is not None:
+        fm["enriched_hash"] = enriched_hash
+    if enriched_at is not None:
+        fm["enriched_at"] = enriched_at
+    if enriched_frame_hashes:
+        fm["enriched_frame_hashes"] = _FlowDict(enriched_frame_hashes)
 
     body = yaml.dump(
         fm,
@@ -99,24 +109,33 @@ def _build_frontmatter(
     return f"---\n{body}\n---"
 
 
-def build_page_frontmatter(page: FigmaPage) -> str:
+def build_page_frontmatter(
+    page: FigmaPage,
+    *,
+    enriched_hash: str | None = None,
+    enriched_at: str | None = None,
+    enriched_frame_hashes: dict[str, str] | None = None,
+) -> str:
     """Build the YAML frontmatter block for a screen page from a FigmaPage model.
 
     Returns the full frontmatter string including ``---`` delimiters. Used by
     update_page_frontmatter() to replace frontmatter without touching the body.
     """
     screen_sections = [s for s in page.sections if not s.is_component_library]
-    frame_descs: dict[str, str] = {
-        frame.node_id: frame.description
+    frame_ids: list[str] = [
+        frame.node_id
         for section in screen_sections
         for frame in section.frames
-    }
+    ]
     return _build_frontmatter(
         file_key=page.file_key,
         page_node_id=page.page_node_id,
         section_node_id=None,
-        frame_descs=frame_descs,
+        frame_ids=frame_ids,
         flows=page.flows,
+        enriched_hash=enriched_hash,
+        enriched_at=enriched_at,
+        enriched_frame_hashes=enriched_frame_hashes,
     )
 
 
@@ -215,16 +234,13 @@ def render_component_section(
     """
     parts: list[str] = []
 
-    frame_descs: dict[str, str] = {
-        f.node_id: f.description
-        for f in section.frames
-    }
+    frame_ids: list[str] = [f.node_id for f in section.frames]
 
     parts.append(_build_frontmatter(
         file_key=page.file_key,
         page_node_id=page.page_node_id,
         section_node_id=section.node_id,
-        frame_descs=frame_descs,
+        frame_ids=frame_ids,
         flows=[],
     ))
     parts.append("")

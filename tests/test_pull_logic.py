@@ -317,30 +317,8 @@ async def test_pull_file_manifest_records_component_paths(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_pull_file_preserves_component_descriptions_from_existing_md(tmp_path: Path):
-    """INVARIANT: pull_file reads existing component .md descriptions before overwriting."""
-    from figmaclaw.figma_models import FigmaSection, FigmaFrame
-    from figmaclaw.figma_render import render_component_section
-
-    # Pre-write a component .md with existing descriptions
-    comp_section = FigmaSection(
-        node_id="20:1",
-        name="buttons",
-        frames=[
-            FigmaFrame(node_id="30:1", name="Button / Primary", description="Primary CTA."),
-        ],
-        is_component_library=True,
-    )
-    page_stub = FigmaPage(
-        file_key="abc123", file_name="Web App", page_node_id="7741:45837",
-        page_name="Components", page_slug="components-7741-45837",
-        figma_url="", sections=[comp_section], flows=[], version="v1", last_modified="",
-    )
-    comp_out = tmp_path / "figma" / "web-app" / "components" / "buttons-20-1.md"
-    comp_out.parent.mkdir(parents=True, exist_ok=True)
-    comp_out.write_text(render_component_section(comp_section, page_stub))
-
-    # Now run pull — the existing description should be preserved
+async def test_pull_file_writes_component_section_with_frame_ids(tmp_path: Path):
+    """INVARIANT: pull_file writes component .md with frame IDs in frontmatter."""
     state = FigmaSyncState(tmp_path)
     state.load()
     state.add_tracked_file("abc123", "Web App")
@@ -353,8 +331,13 @@ async def test_pull_file_preserves_component_descriptions_from_existing_md(tmp_p
 
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
+    comp_out = tmp_path / "figma" / "web-app" / "components" / "buttons-20-1.md"
     content = comp_out.read_text()
-    assert "Primary CTA." in content
+    from figmaclaw.figma_parse import parse_frontmatter
+    fm = parse_frontmatter(content)
+    assert fm is not None
+    assert isinstance(fm.frames, list)
+    assert "30:1" in fm.frames
 
 
 @pytest.mark.asyncio
