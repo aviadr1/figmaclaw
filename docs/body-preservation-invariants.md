@@ -90,18 +90,21 @@ sync/pull → file exists?
 | `write_new_page()` | Calls `scaffold_page()` and writes to disk | New files only |
 | `update_page_frontmatter()` | Replaces YAML frontmatter, preserves body byte-for-byte | Existing files only |
 | `build_page_frontmatter()` | Builds frontmatter string from `FigmaPage` model | Used by `update_page_frontmatter()` |
-| `replace_body()` | Replaces body only, preserves frontmatter | LLM body updates only |
+| `write_body()` | Writes body only, preserves frontmatter | LLM body updates only |
 
 ### The LLM update path
 
 The LLM must **always** see the existing body. It receives three inputs:
 
-1. **Existing body** — verbatim, via `python-frontmatter` or `--show-body`
+1. **Existing body** — verbatim, via `split_frontmatter()` or `--show-body`
 2. **Updated frontmatter** — from `sync`, shows current frame/flow structure
 3. **Scaffold (optional)** — via `--scaffold`, structural hint with placeholders
 
-The LLM rewrites the body preserving existing prose. The `replace-body` command
-writes the result back without touching frontmatter.
+The LLM rewrites the body preserving existing prose. The `write-body` command
+writes the result back without touching frontmatter. Then `mark-enriched`
+snapshots the current hashes so the system knows the body is up to date.
+
+See [`frontmatter-v2-plan.md`](frontmatter-v2-plan.md) for the full enrichment flow and design rationale.
 
 ## What NOT to do
 

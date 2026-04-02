@@ -151,43 +151,44 @@ flowchart LR
 
 ## Command responsibilities
 
-| Command | Reads | Writes | Body touched? |
-|---|---|---|---|
-| `figmaclaw sync` | Figma API + existing frontmatter | Frontmatter only (existing files) / scaffold (new files) | **Never** for existing files. New files get scaffold with LLM placeholders. |
-| `figmaclaw pull` | Figma API + existing frontmatter | Frontmatter only (existing files) / scaffold (new files) | **Never** for existing files. Same as `sync` but bulk. |
-| `figmaclaw set-frames` | Existing frontmatter | `frames:` in frontmatter only | **Never** |
-| `figmaclaw replace-body` | Existing frontmatter + new body from stdin/flag | Body only | **Yes** — replaces body, preserves frontmatter byte-for-byte |
-| `figmaclaw page-tree` | Frontmatter + body structure | Nothing | Read-only |
-| `figmaclaw screenshots` | Frontmatter + body structure | PNG files in `.figma-cache/` | No |
+> **Frontmatter v2 design and rationale:** [`docs/frontmatter-v2-plan.md`](frontmatter-v2-plan.md)
+> **Body preservation invariants:** [`docs/body-preservation-invariants.md`](body-preservation-invariants.md)
+
+| Command | What it does | Reads | Writes | Touches body? |
+|---|---|---|---|---|
+| `sync` | Fetch structure from Figma | Figma API | Frontmatter (`frames`, `flows`) + manifest | NEVER |
+| `pull` | Bulk sync all tracked files | Figma API | Same as sync | NEVER |
+| `write-body` | LLM writes page prose | stdin/flag | Body only, preserves frontmatter | YES |
+| `mark-enriched` | Snapshot hashes as enriched | Manifest hashes | Frontmatter `enriched_*` | NO |
+| `mark-stale` | Force re-enrichment | — | Clears frontmatter `enriched_*` | NO |
+| `inspect` | Check structure + staleness | Frontmatter + body + manifest | Nothing | NO (read-only) |
+| `set-flows` | LLM writes inferred flows | `--flows` JSON | Frontmatter `flows` only | NO |
+| `screenshots` | Download frame PNGs | Manifest hash diff | `.figma-cache/` PNGs | NO |
 
 ### Why code never touches the body
 
 The body is LLM-authored prose — page summary, section intros, Mermaid charts, filled description tables. Producing it costs Figma screenshots + LLM inference + human review. No CLI command regenerates it.
 
-- `set-frames` writes frontmatter only. The LLM reads descriptions from frontmatter.
-- `sync` and `pull` update frontmatter only for existing files.
-- `replace-body` is the LLM's tool for writing the body back after rewriting it.
-- The `figma-enrich-page` skill orchestrates the full flow: screenshots → describe → set-frames → LLM rewrites body → replace-body.
+- `sync` and `pull` update frontmatter only for existing files. Body is byte-for-byte preserved.
+- `write-body` is the LLM's tool for writing prose. It preserves frontmatter.
+- `mark-enriched` snapshots current hashes so the system knows the body is up to date.
+- The enrichment flow: `inspect → screenshots --stale → LLM → write-body → mark-enriched`.
 
-See [`docs/body-preservation-invariants.md`](body-preservation-invariants.md) for the tested invariants.
+### Enrichment detection
+
+`inspect --needs-enrichment --json` compares frontmatter `enriched_*` fields against
+manifest current hashes. Reports new/modified/removed frames in JSON output. Always
+exit 0 on success — enrichment status is in the JSON, never in the exit code.
+
+See [`docs/frontmatter-v2-plan.md`](frontmatter-v2-plan.md) for the full decision tree and design rationale.
 
 ---
-
-## Known limitations (bugs)
-
-### set-frames reports success even when frontmatter parse fails
-
-**Status:** Bug — tracked as ENG-XXXX
-
-If the `.md` file has malformed YAML frontmatter, `parse_frontmatter()` returns `None` silently and `set-frames` writes the unchanged file back, printing "wrote N description(s)" even though nothing was merged.
-
-**Workaround:** Validate the file with `figmaclaw page-tree` before and after `set-frames`.
 
 ---
 
 ## Parsing the format
 
-### Reading frame descriptions
+### Reading frame IDs
 
 ```python
 from figmaclaw.figma_parse import parse_frontmatter
@@ -196,7 +197,8 @@ fm = parse_frontmatter(md_text)
 if fm is None:
     # No figmaclaw frontmatter or malformed YAML
     ...
-descriptions = fm.frames  # dict[str, str]: {node_id: description}
+frame_ids = fm.frames  # list[str]: node IDs of all frames on this page
+# Descriptions live in the body tables, not in frontmatter.
 ```
 
 ### Reading page structure (node IDs, section names)
