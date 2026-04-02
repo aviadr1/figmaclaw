@@ -70,7 +70,7 @@ def test_replace_body_writes_new_body(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(cli, [
         "--repo-dir", str(tmp_path),
-        "replace-body",
+        "write-body",
         str(md_path),
         "--body", new_body,
     ])
@@ -93,7 +93,7 @@ def test_bp6_replace_body_preserves_frontmatter_byte_for_byte(tmp_path: Path) ->
     runner = CliRunner()
     result = runner.invoke(cli, [
         "--repo-dir", str(tmp_path),
-        "replace-body",
+        "write-body",
         str(md_path),
         "--body", new_body,
     ])
@@ -124,7 +124,7 @@ def test_replace_body_via_stdin(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(cli, [
         "--repo-dir", str(tmp_path),
-        "replace-body",
+        "write-body",
         str(md_path),
     ], input=new_body)
     assert result.exit_code == 0, result.output
@@ -142,7 +142,7 @@ def test_replace_body_via_file(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(cli, [
         "--repo-dir", str(tmp_path),
-        "replace-body",
+        "write-body",
         str(md_path),
         "--body", str(body_file),
     ])
@@ -160,7 +160,7 @@ def test_replace_body_fails_for_non_figmaclaw_file(tmp_path: Path) -> None:
     runner = CliRunner()
     result = runner.invoke(cli, [
         "--repo-dir", str(tmp_path),
-        "replace-body",
+        "write-body",
         str(md_path),
         "--body", "new body",
     ])
@@ -178,7 +178,7 @@ def test_replace_body_survives_repeated_calls(tmp_path: Path) -> None:
     for i in range(5):
         result = runner.invoke(cli, [
             "--repo-dir", str(tmp_path),
-            "replace-body",
+            "write-body",
             str(md_path),
             "--body", f"Body version {i}.\n",
         ])

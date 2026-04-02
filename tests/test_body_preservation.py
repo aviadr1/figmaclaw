@@ -41,7 +41,7 @@ import pytest
 from click.testing import CliRunner
 
 from figmaclaw.commands import sync as sync_module
-from figmaclaw.commands.set_frames import _apply_frontmatter
+from figmaclaw.commands.set_flows import _apply_flows
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_frontmatter import FigmaPageFrontmatter
 from figmaclaw.figma_hash import compute_page_hash
@@ -236,23 +236,22 @@ async def test_bp2_pull_preserves_body_byte_for_byte(tmp_path: Path) -> None:
 
 # BP-3: set-frames --flows on existing file preserves body byte-for-byte
 
-def test_bp3_set_frames_flows_preserves_body_byte_for_byte(tmp_path: Path) -> None:
-    """BP-3: set-frames --flows updates only frontmatter — body is byte-for-byte identical."""
+def test_bp3_set_flows_preserves_body_byte_for_byte(tmp_path: Path) -> None:
+    """BP-3: set-flows updates only frontmatter — body is byte-for-byte identical."""
     md_path, original_body = _write_enriched_md(tmp_path)
 
     runner = CliRunner()
     result = runner.invoke(cli, [
         "--repo-dir", str(tmp_path),
-        "set-frames",
+        "set-flows",
         str(md_path),
-        "--frames", json.dumps({}),
         "--flows", json.dumps([["11:1", "11:2"]]),
     ])
     assert result.exit_code == 0, result.output
 
     post = _frontmatter.loads(md_path.read_text())
     assert post.content == original_body, (
-        "BP-3 VIOLATED: set-frames --flows modified the body.\n"
+        "BP-3 VIOLATED: set-flows modified the body.\n"
         f"Expected body:\n{original_body}\n\nActual body:\n{post.content}"
     )
 
@@ -566,11 +565,10 @@ async def test_body_survives_sync_then_set_flows_cycle(tmp_path: Path) -> None:
             MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
             await sync_module._run("fake-api-key", tmp_path, md_path, auto_commit=False)
 
-        # set-frames --flows (no descriptions)
+        # set-flows
         runner.invoke(cli, [
             "--repo-dir", str(tmp_path),
-            "set-frames", str(md_path),
-            "--frames", json.dumps({}),
+            "set-flows", str(md_path),
             "--flows", json.dumps([["11:1", "11:2"]]),
         ])
 
