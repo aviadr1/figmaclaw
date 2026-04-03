@@ -131,7 +131,7 @@ jobs:
             exit 0
           fi
 
-          figmaclaw page-tree "$TARGET" --json | python3 -c "
+          figmaclaw inspect "$TARGET" --json | python3 -c "
           import json, sys
           data = json.load(sys.stdin)
           total   = data.get('total_frames', 0)

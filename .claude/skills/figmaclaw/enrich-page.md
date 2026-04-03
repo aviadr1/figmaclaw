@@ -12,10 +12,10 @@ Enrich one or more figmaclaw `.md` files with frame descriptions.
 
 ```bash
 # 1. Check what needs work
-figmaclaw page-tree <md-path> --json  # check needs_enrichment field
+figmaclaw inspect <md-path> --json  # check needs_enrichment field
 
 # 2. Download screenshots
-figmaclaw screenshots <md-path> --pending
+figmaclaw screenshots <md-path> --stale
 
 # 3. LLM generates descriptions from screenshots
 
@@ -31,7 +31,7 @@ figmaclaw set-flows <md-path> --flows '[["src", "dst"], ...]'
 figmaclaw mark-enriched <md-path>
 
 # 7. Verify
-figmaclaw page-tree <md-path> --json  # needs_enrichment should be false
+figmaclaw inspect <md-path> --json  # needs_enrichment should be false
 
 # 8. Commit
 git add <md-path> .figma-cache/ .figma-sync/

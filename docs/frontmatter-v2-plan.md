@@ -463,7 +463,7 @@ isolation prevent Python from finding the scripts.
 ### What must NOT change in figmaclaw
 
 - `pull_logic.py` — correct as-is (writes frontmatter + skeleton body; no LLM)
-- `screenshots.py`, `set_flows.py`, `page_tree.py` — correct CI tools
+- `screenshots.py`, `set_flows.py`, `inspect.py` — correct CI tools
 - No `figma_llm.py` — figmaclaw has zero LLM dependency
 - No `anthropic` in `pyproject.toml`
 - `enrich.py` — fine for structural re-sync (no LLM)
@@ -507,20 +507,12 @@ max_files: 0
 10. ~~**`commands/mark_stale.py`**~~ ✅
 11. ~~**`main.py`** — v2 commands registered~~ ✅
 
-### figmaclaw repo — remaining:
+### figmaclaw repo — done (2026-04-03, v2 migration):
 
-12. **`commands/page_tree.py`** → **`commands/inspect.py`** — Rename command from
-    `page-tree` to `inspect`. The `--needs-enrichment` logic exists in JSON output
-    but the command name hasn't been updated. Add explicit `--needs-enrichment` CLI
-    flag (currently only in `--json` output). Always exit 0; exit 2 for errors only.
-
-13. **`commands/screenshots.py`** — Add `--stale` flag: reads manifest `frame_hashes`
-    vs frontmatter `enriched_frame_hashes`, only downloads new + modified frames.
-    Currently has `--pending` which checks for missing descriptions (v1 approach).
-
-14. Tests updated for new commands / renamed commands.
-
-15. Docs updated (CLAUDE.md, format spec, invariants).
+12. ~~**`commands/page_tree.py`** → **`commands/inspect.py`** — Renamed command, added `--needs-enrichment` flag~~ ✅
+13. ~~**`commands/screenshots.py`** — Added `--stale` flag with hash-based frame filtering~~ ✅
+14. ~~Tests renamed and updated (`test_inspect.py`, `test_write_body.py`, stale comments fixed)~~ ✅
+15. ~~Docs updated (format spec, invariants, body-preservation, TODO.md)~~ ✅
 
 ### figmaclaw repo — done (2026-04-03):
 
@@ -539,26 +531,17 @@ max_files: 0
 25. ~~**`scripts/claude_run.py`** — syntax error fixed (orphaned `except` block). File kept as fallback for local `claude-run.yaml` manual dispatch~~ ✅
 26. ~~**AGENTS.md** — ecosystem ownership documented~~ ✅
 
-### linear-git repo — remaining:
+### linear-git repo — done (2026-04-03, v2 migration):
 
-27. **Migration script**: convert any remaining `frames: {dict}` → `frames: [list]`
-    in existing `.md` files. (Backward-compat validator handles this at runtime, but
-    files should be normalized.)
+27. ~~**All figma data files** already use v2 list format (zero dict-format files remain)~~ ✅
+28. ~~**Remove local tooling copies** — deleted `scripts/claude_run.py`, `.github/stream-formatter.py`, `prompts/figma-batch-enrich.md`, `.github/workflows/claude-run.yaml`~~ ✅
+29. ~~**AGENTS.md** — updated for v2 frontmatter format~~ ✅
 
-28. **Remove local tooling copies** — once upstream CLI is proven stable, delete
-    `scripts/claude_run.py`, `.github/stream-formatter.py`, `prompts/figma-batch-enrich.md`,
-    and `.github/workflows/claude-run.yaml` from linear-git. These are now upstream.
+### figmaclaw repo — done (2026-04-03, v2 migration):
 
-### figmaclaw repo — remaining:
+30. ~~**`commands/page_tree.py`** → **`commands/inspect.py`** — Renamed, added `--needs-enrichment` flag~~ ✅
+31. ~~**`commands/screenshots.py`** — Added `--stale` flag~~ ✅
+32. ~~**CI prompt** (`prompts/figma-batch-enrich.md`) — Updated to use `inspect` and `screenshots --stale`~~ ✅
+33. ~~All skills and workflow references updated~~ ✅
 
-29. **`commands/page_tree.py`** → **`commands/inspect.py`** — Rename command from
-    `page-tree` to `inspect`. Add explicit `--needs-enrichment` CLI flag.
-
-30. **`commands/screenshots.py`** — Add `--stale` flag: reads manifest `frame_hashes`
-    vs frontmatter `enriched_frame_hashes`, only downloads new + modified frames.
-
-31. **CI prompt** (`prompts/figma-batch-enrich.md`) — Update step 1 to use `inspect`
-    instead of `page-tree`, step 2 to use `screenshots --stale` instead of
-    `--pending` (after those changes land).
-
-32. Commit, push, trigger CI, verify end-to-end.
+**All v2 migration items are complete. No remaining work.**

@@ -12,7 +12,7 @@ from figmaclaw.commands.init import init_cmd
 from figmaclaw.commands.list_files import list_cmd
 from figmaclaw.commands.mark_enriched import mark_enriched_cmd
 from figmaclaw.commands.mark_stale import mark_stale_cmd
-from figmaclaw.commands.page_tree import page_tree_cmd
+from figmaclaw.commands.inspect import inspect_cmd
 from figmaclaw.commands.pull import pull_cmd
 from figmaclaw.commands.self_cmd import self_group
 from figmaclaw.commands.screenshots import screenshots_cmd
@@ -66,7 +66,7 @@ cli.add_command(init_cmd)
 cli.add_command(list_cmd)
 cli.add_command(mark_enriched_cmd)
 cli.add_command(mark_stale_cmd)
-cli.add_command(page_tree_cmd)
+cli.add_command(inspect_cmd)
 cli.add_command(pull_cmd)
 cli.add_command(screenshots_cmd)
 cli.add_command(self_group)

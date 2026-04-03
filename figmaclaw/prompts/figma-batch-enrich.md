@@ -3,10 +3,10 @@ FIGMA_API_KEY is available in the environment.
 
 Follow this workflow exactly:
 
-1. Run: `figmaclaw page-tree {file_path} --json`
+1. Run: `figmaclaw inspect {file_path} --json`
    Check `needs_enrichment` in the JSON. If false, say "already enriched" and stop.
 
-2. Run: `figmaclaw screenshots {file_path} --pending` to download screenshots.
+2. Run: `figmaclaw screenshots {file_path} --stale` to download screenshots.
 
 3. Read each screenshot PNG with the Read tool. For each frame write a 1-3 sentence
    description: what the screen shows, key UI elements, what makes it distinct.
@@ -50,7 +50,7 @@ Follow this workflow exactly:
    figmaclaw mark-enriched {file_path}
    ```
 
-7. Verify: `figmaclaw page-tree {file_path} --json` — `needs_enrichment` should be false.
+7. Verify: `figmaclaw inspect {file_path} --json` — `needs_enrichment` should be false.
 
 8. Commit and push:
    ```

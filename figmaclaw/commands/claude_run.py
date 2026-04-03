@@ -24,9 +24,6 @@ from pathlib import Path
 
 import click
 
-MAX_FRAMES_PER_FILE = 80  # skip files with more frames than this — they timeout CI
-
-
 # ---------------------------------------------------------------------------
 # File discovery helpers (no Figma API calls — pure file reads)
 # ---------------------------------------------------------------------------
@@ -88,8 +85,19 @@ def collect_files(
     glob_pattern: str,
     changed_only: bool,
     needs_enrichment: bool = False,
+    min_frames: int = 0,
+    max_frames: int = 0,
 ) -> list[Path]:
-    """Discover files to process, optionally filtering by enrichment status."""
+    """Discover files to process, optionally filtering by enrichment status.
+
+    When *needs_enrichment* is True, files are filtered by ``enriched_hash``
+    and optionally by frame count (*min_frames* / *max_frames*).  This enables
+    two-pass CI enrichment:
+
+    * **Bulk pass** (``--max-frames 80``): many small pages per run.
+    * **Large-page pass** (``--min-frames 81 --max-files 1``): one large page
+      gets the full CI timeout.
+    """
     if target.is_file():
         return [target]
     if changed_only:
@@ -99,25 +107,30 @@ def collect_files(
     if needs_enrichment:
         before = len(files)
         enrichable: list[tuple[Path, int]] = []
+        skipped_small = 0
         skipped_big = 0
         for f in files:
             needs_it, frame_count = enrichment_info(f)
             if not needs_it:
                 continue
-            if frame_count > MAX_FRAMES_PER_FILE:
+            if min_frames > 0 and frame_count < min_frames:
+                skipped_small += 1
+                continue
+            if max_frames > 0 and frame_count > max_frames:
                 skipped_big += 1
-                click.echo(
-                    f"[claude-run] skip {f} ({frame_count} frames > {MAX_FRAMES_PER_FILE} max)",
-                    err=True,
-                )
                 continue
             enrichable.append((f, frame_count))
         # Sort smallest first — enrich many small files before hitting big ones
         enrichable.sort(key=lambda x: x[1])
         files = [f for f, _ in enrichable]
         msg = f"[claude-run] {len(files)}/{before} files need enrichment"
+        parts = []
+        if skipped_small:
+            parts.append(f"{skipped_small} below {min_frames} frames")
         if skipped_big:
-            msg += f" ({skipped_big} skipped: >{MAX_FRAMES_PER_FILE} frames)"
+            parts.append(f"{skipped_big} above {max_frames} frames")
+        if parts:
+            msg += f" ({', '.join(parts)})"
         click.echo(msg, err=True)
     else:
         click.echo(f"[claude-run] {len(files)} files to process", err=True)
@@ -236,6 +249,14 @@ def default_prompt_path() -> Path:
     help="Filter to files needing enrichment (missing enriched_hash).",
 )
 @click.option(
+    "--min-frames", type=int, default=0,
+    help="Only process files with at least N frames (use with --needs-enrichment).",
+)
+@click.option(
+    "--max-frames", type=int, default=0,
+    help="Only process files with at most N frames (use with --needs-enrichment). 0 = no limit.",
+)
+@click.option(
     "--max-files", type=int, default=0,
     help="Limit to N files (0 = unlimited).",
 )
@@ -255,6 +276,8 @@ def claude_run_cmd(
     glob_pattern: str,
     changed_only: bool,
     needs_enrichment: bool,
+    min_frames: int,
+    max_frames: int,
     max_files: int,
     dry_run: bool,
     skip_permissions: bool,
@@ -279,7 +302,10 @@ def claude_run_cmd(
     else:
         template = default_prompt_path().read_text()
 
-    files = collect_files(target, glob_pattern, changed_only, needs_enrichment)
+    files = collect_files(
+        target, glob_pattern, changed_only, needs_enrichment,
+        min_frames=min_frames, max_frames=max_frames,
+    )
     if max_files > 0 and len(files) > max_files:
         click.echo(f"[claude-run] limiting to {max_files}/{len(files)} files", err=True)
         files = files[:max_files]

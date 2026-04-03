@@ -8,8 +8,8 @@ overwritten — only frontmatter changes.
 If the file does not exist yet, writes a new scaffold with LLM placeholders.
 
 This is a pure structure re-sync — it does NOT call an LLM.  To generate or
-refresh descriptions, use the figma-enrich-page skill (which calls page-tree
-then set-frames after generating descriptions via the agent).
+refresh descriptions, use the figma-enrich-page skill (which calls inspect
+to check staleness, then generates descriptions via the agent).
 
 Optional flags:
   --scaffold   Print the scaffold template (with LLM placeholders) to stdout
@@ -64,7 +64,7 @@ def sync_cmd(ctx: click.Context, md_path: Path, auto_commit: bool, show_scaffold
     Use --scaffold to print the scaffold template (structural hint for the LLM).
     Use --show-body to print the existing body (so the LLM can preserve it).
 
-    To also generate descriptions, use:  figmaclaw page-tree + figmaclaw set-frames
+    To also generate descriptions, use:  figmaclaw inspect + figma-enrich-page skill
     """
     repo_dir = Path(ctx.obj["repo_dir"])
     api_key = os.environ.get("FIGMA_API_KEY", "")

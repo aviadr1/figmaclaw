@@ -1,10 +1,10 @@
-"""Tests for commands/replace_body.py.
+"""Tests for commands/write_body.py.
 
 INVARIANTS:
-- replace-body writes new body content below the frontmatter
-- replace-body preserves frontmatter byte-for-byte (BP-6)
-- replace-body fails for a file with no figmaclaw frontmatter
-- replace-body accepts body from --body flag or stdin
+- write-body writes new body content below the frontmatter
+- write-body preserves frontmatter byte-for-byte (BP-6)
+- write-body fails for a file with no figmaclaw frontmatter
+- write-body accepts body from --body flag or stdin
 """
 
 from __future__ import annotations
@@ -62,8 +62,8 @@ def _write_md(tmp_path: Path) -> Path:
     return md_path
 
 
-def test_replace_body_writes_new_body(tmp_path: Path) -> None:
-    """INVARIANT: replace-body replaces the body below frontmatter with new content."""
+def test_write_body_writes_new_body(tmp_path: Path) -> None:
+    """INVARIANT: write-body replaces the body below frontmatter with new content."""
     md_path = _write_md(tmp_path)
     new_body = "# New Title\n\nThis is the new body written by the LLM.\n"
 
@@ -80,8 +80,8 @@ def test_replace_body_writes_new_body(tmp_path: Path) -> None:
     assert "This is the new body written by the LLM." in post.content
 
 
-def test_bp6_replace_body_preserves_frontmatter_byte_for_byte(tmp_path: Path) -> None:
-    """BP-6: replace-body preserves frontmatter byte-for-byte."""
+def test_bp6_write_body_preserves_frontmatter_byte_for_byte(tmp_path: Path) -> None:
+    """BP-6: write-body preserves frontmatter byte-for-byte."""
     md_path = _write_md(tmp_path)
     original_md = md_path.read_text()
 
@@ -104,7 +104,7 @@ def test_bp6_replace_body_preserves_frontmatter_byte_for_byte(tmp_path: Path) ->
     updated_fm_body, _, _ = after_open2.partition("\n---")
 
     assert updated_fm_body == original_fm_body, (
-        "BP-6 VIOLATED: replace-body modified the frontmatter.\n"
+        "BP-6 VIOLATED: write-body modified the frontmatter.\n"
         f"Expected:\n{original_fm_body}\n\nActual:\n{updated_fm_body}"
     )
 
@@ -116,8 +116,8 @@ def test_bp6_replace_body_preserves_frontmatter_byte_for_byte(tmp_path: Path) ->
     assert [tuple(e) for e in fm.flows] == [("11:1", "11:2")]
 
 
-def test_replace_body_via_stdin(tmp_path: Path) -> None:
-    """INVARIANT: replace-body reads body from stdin when --body is not given."""
+def test_write_body_via_stdin(tmp_path: Path) -> None:
+    """INVARIANT: write-body reads body from stdin when --body is not given."""
     md_path = _write_md(tmp_path)
     new_body = "Body from stdin.\n"
 
@@ -133,8 +133,8 @@ def test_replace_body_via_stdin(tmp_path: Path) -> None:
     assert "Body from stdin." in post.content
 
 
-def test_replace_body_via_file(tmp_path: Path) -> None:
-    """INVARIANT: replace-body reads body from a file path when --body points to one."""
+def test_write_body_via_file(tmp_path: Path) -> None:
+    """INVARIANT: write-body reads body from a file path when --body points to one."""
     md_path = _write_md(tmp_path)
     body_file = tmp_path / "new_body.md"
     body_file.write_text("# LLM Output\n\nBody loaded from file.\n")
@@ -152,8 +152,8 @@ def test_replace_body_via_file(tmp_path: Path) -> None:
     assert "Body loaded from file." in post.content
 
 
-def test_replace_body_fails_for_non_figmaclaw_file(tmp_path: Path) -> None:
-    """INVARIANT: replace-body fails for files without figmaclaw frontmatter."""
+def test_write_body_fails_for_non_figmaclaw_file(tmp_path: Path) -> None:
+    """INVARIANT: write-body fails for files without figmaclaw frontmatter."""
     md_path = tmp_path / "plain.md"
     md_path.write_text("# Just markdown\n\nNo frontmatter.\n")
 
@@ -167,8 +167,8 @@ def test_replace_body_fails_for_non_figmaclaw_file(tmp_path: Path) -> None:
     assert result.exit_code != 0
 
 
-def test_replace_body_survives_repeated_calls(tmp_path: Path) -> None:
-    """INVARIANT: frontmatter survives multiple replace-body calls without degradation."""
+def test_write_body_survives_repeated_calls(tmp_path: Path) -> None:
+    """INVARIANT: frontmatter survives multiple write-body calls without degradation."""
     md_path = _write_md(tmp_path)
     original_md = md_path.read_text()
     _, _, after_open = original_md.partition("---\n")
@@ -188,5 +188,5 @@ def test_replace_body_survives_repeated_calls(tmp_path: Path) -> None:
     _, _, after_open2 = updated_md.partition("---\n")
     updated_fm_body, _, _ = after_open2.partition("\n---")
 
-    assert updated_fm_body == original_fm_body, "Frontmatter degraded after repeated replace-body calls"
+    assert updated_fm_body == original_fm_body, "Frontmatter degraded after repeated write-body calls"
     assert "Body version 4." in updated_md

@@ -5,7 +5,7 @@ INVARIANTS:
 - Each successful download appears in the manifest with node_id and local path
 - A failed download does not abort the batch — other successful downloads are returned
 - screenshots returns an empty list when there are no frames in the .md file
-- screenshots with --pending-only downloads only frames without descriptions
+- screenshots with --pending downloads only frames without descriptions
 """
 
 from __future__ import annotations
@@ -78,7 +78,7 @@ async def test_screenshots_returns_manifest_with_file_key(tmp_path: Path) -> Non
         MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        result = await screenshots_module._run("fake-key", tmp_path, md_path, pending_only=False)
+        result = await screenshots_module._run("fake-key", tmp_path, md_path, pending_only=False, stale_only=False)
 
     assert result["file_key"] == "abc123"
     assert "screenshots" in result
@@ -100,7 +100,7 @@ async def test_screenshots_successful_downloads_in_manifest(tmp_path: Path) -> N
         MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        result = await screenshots_module._run("fake-key", tmp_path, md_path, pending_only=False)
+        result = await screenshots_module._run("fake-key", tmp_path, md_path, pending_only=False, stale_only=False)
 
     node_ids = {s["node_id"] for s in result["screenshots"]}
     assert node_ids == {"11:1", "11:2"}
@@ -135,7 +135,7 @@ async def test_screenshots_failed_download_does_not_abort_batch(tmp_path: Path) 
         MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        result = await screenshots_module._run("fake-key", tmp_path, md_path, pending_only=False)
+        result = await screenshots_module._run("fake-key", tmp_path, md_path, pending_only=False, stale_only=False)
 
     # All 3 downloads were attempted
     assert call_count == 3
@@ -170,14 +170,14 @@ async def test_screenshots_empty_when_no_frames(tmp_path: Path) -> None:
         MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        result = await screenshots_module._run("fake-key", tmp_path, md_path, pending_only=False)
+        result = await screenshots_module._run("fake-key", tmp_path, md_path, pending_only=False, stale_only=False)
 
     assert result["screenshots"] == []
 
 
 @pytest.mark.asyncio
 async def test_screenshots_pending_only_skips_described_frames(tmp_path: Path) -> None:
-    """INVARIANT: --pending-only downloads only frames whose frontmatter description is empty."""
+    """INVARIANT: --pending downloads only frames whose frontmatter description is empty."""
     frames = [
         FigmaFrame(node_id="11:1", name="welcome", description="Already described."),
         FigmaFrame(node_id="11:2", name="permissions", description=""),
@@ -205,7 +205,7 @@ async def test_screenshots_pending_only_skips_described_frames(tmp_path: Path) -
         MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        result = await screenshots_module._run("fake-key", tmp_path, md_path, pending_only=True)
+        result = await screenshots_module._run("fake-key", tmp_path, md_path, pending_only=True, stale_only=False)
 
     # Only the undescribed frame was requested
     mock_client.get_image_urls.assert_called_once_with("abc123", ["11:2"])

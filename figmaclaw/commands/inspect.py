@@ -1,4 +1,4 @@
-"""figmaclaw page-tree — inspect a figmaclaw .md file without calling the Figma API.
+"""figmaclaw inspect — inspect a figmaclaw .md file without calling the Figma API.
 
 Outputs a compact, agent-friendly view of:
   - file_key and page_node_id (for direct Figma navigation if needed)
@@ -6,7 +6,7 @@ Outputs a compact, agent-friendly view of:
   - Which frames have descriptions and which still need them
   - Summary counts
 
-Use this before running set-frames to know exactly what descriptions to generate.
+Use this to check enrichment state before running the enrichment skill.
 """
 
 from __future__ import annotations
@@ -21,18 +21,22 @@ from figmaclaw.figma_md_parse import parse_sections
 from figmaclaw.figma_parse import parse_frontmatter
 
 
-@click.command("page-tree")
+@click.command("inspect")
 @click.argument("md_path", type=click.Path(exists=True, path_type=Path))
-@click.option("--missing-only", is_flag=True, help="Show only frames that need descriptions.")
+@click.option(
+    "--needs-enrichment", "needs_enrichment_only", is_flag=True,
+    help="Show only frames/pages that need enrichment.",
+)
 @click.option("--json", "json_output", is_flag=True, help="Output structured JSON.")
 @click.pass_context
-def page_tree_cmd(ctx: click.Context, md_path: Path, missing_only: bool, json_output: bool) -> None:
-    """Inspect a figmaclaw page .md — show sections, frames, and description status.
+def inspect_cmd(
+    ctx: click.Context, md_path: Path, needs_enrichment_only: bool, json_output: bool,
+) -> None:
+    """Inspect a figmaclaw page .md — show sections, frames, and enrichment status.
 
     MD_PATH is the path to a figmaclaw-rendered page .md file. No Figma API call is made.
 
     Exit code 2 if the file has no figmaclaw frontmatter.
-    Exit code 1 if there are frames with missing descriptions (useful for scripting).
     """
     repo_dir = Path(ctx.obj["repo_dir"])
     if not md_path.is_absolute():
@@ -60,7 +64,11 @@ def page_tree_cmd(ctx: click.Context, md_path: Path, missing_only: bool, json_ou
 
     if json_output:
         output = {
-            "md_path": str(md_path.relative_to(repo_dir) if md_path.is_relative_to(repo_dir) else md_path),
+            "md_path": str(
+                md_path.relative_to(repo_dir)
+                if md_path.is_relative_to(repo_dir)
+                else md_path
+            ),
             "file_key": meta.file_key,
             "page_node_id": meta.page_node_id,
             "total_frames": total,

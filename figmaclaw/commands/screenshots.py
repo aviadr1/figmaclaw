@@ -37,8 +37,14 @@ _DOWNLOAD_LOCK_FILENAME = ".figma-downloads.lock"
     "--pending", "pending_only", is_flag=True, default=False,
     help="Only download frames that have no description yet.",
 )
+@click.option(
+    "--stale", "stale_only", is_flag=True, default=False,
+    help="Only download frames whose content hash changed since last enrichment.",
+)
 @click.pass_context
-def screenshots_cmd(ctx: click.Context, md_path: Path, pending_only: bool) -> None:
+def screenshots_cmd(
+    ctx: click.Context, md_path: Path, pending_only: bool, stale_only: bool,
+) -> None:
     """Download frame screenshots for a figmaclaw .md file to local cache.
 
     Saves PNGs to .figma-cache/screenshots/{file_key}/ (gitignored).
@@ -53,18 +59,22 @@ def screenshots_cmd(ctx: click.Context, md_path: Path, pending_only: bool) -> No
     if not api_key:
         raise click.UsageError("FIGMA_API_KEY environment variable is not set.")
 
-    result = asyncio.run(_run(api_key, repo_dir, md_path, pending_only))
+    result = asyncio.run(_run(api_key, repo_dir, md_path, pending_only, stale_only))
     click.echo(json.dumps(result, indent=2))
 
 
-async def _run(api_key: str, repo_dir: Path, md_path: Path, pending_only: bool) -> dict:
+async def _run(
+    api_key: str, repo_dir: Path, md_path: Path, pending_only: bool, stale_only: bool,
+) -> dict:
     if not md_path.is_absolute():
         md_path = repo_dir / md_path
 
     md_text = md_path.read_text()
     fm = parse_frontmatter(md_text)
     if fm is None:
-        raise click.UsageError(f"{md_path}: no figmaclaw frontmatter — is this a figmaclaw .md file?")
+        raise click.UsageError(
+            f"{md_path}: no figmaclaw frontmatter — is this a figmaclaw .md file?"
+        )
 
     file_key = fm.file_key
 
@@ -72,7 +82,33 @@ async def _run(api_key: str, repo_dir: Path, md_path: Path, pending_only: bool) 
     # is empty because no descriptions have been written yet.
     all_body_ids = [f.node_id for s in parse_sections(md_text) for f in s.frames]
 
-    if pending_only:
+    if stale_only:
+        # Stale = frames whose content hash changed since last enrichment.
+        # Compare manifest frame_hashes (current) vs frontmatter
+        # enriched_frame_hashes (at last enrichment).
+        from figmaclaw.figma_sync_state import FigmaSyncState
+
+        state = FigmaSyncState(repo_dir)
+        state.load()
+        stale_ids: set[str] = set()
+        manifest_file = state.manifest.files.get(file_key)
+        if manifest_file:
+            page_entry = manifest_file.pages.get(fm.page_node_id)
+            if page_entry:
+                current_hashes = page_entry.frame_hashes
+                enriched_hashes = fm.enriched_frame_hashes or {}
+                for nid, h in current_hashes.items():
+                    if nid not in enriched_hashes or enriched_hashes[nid] != h:
+                        stale_ids.add(nid)
+                # Also include frames with no hash at all (new frames)
+                for nid in all_body_ids:
+                    if nid not in enriched_hashes:
+                        stale_ids.add(nid)
+        else:
+            # No manifest entry — all frames are stale
+            stale_ids = set(all_body_ids)
+        node_ids = [nid for nid in all_body_ids if nid in stale_ids]
+    elif pending_only:
         # Pending = frames whose body table row has the "(no description yet)" placeholder.
         pending_ids: set[str] = set()
         for line in md_text.splitlines():

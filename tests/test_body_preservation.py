@@ -10,7 +10,7 @@ review). Losing it silently is unacceptable. These invariants are law.
 INVARIANTS — body preservation:
 BP-1: sync on an existing file preserves the body byte-for-byte
 BP-2: pull_file on an existing file preserves the body byte-for-byte
-BP-3: set-frames on an existing file preserves the body byte-for-byte
+BP-3: set-flows on an existing file preserves the body byte-for-byte
 BP-4: update_page_frontmatter preserves the body byte-for-byte
 BP-5: scaffold_page is never called on existing files by sync or pull
 
@@ -234,7 +234,7 @@ async def test_bp2_pull_preserves_body_byte_for_byte(tmp_path: Path) -> None:
     )
 
 
-# BP-3: set-frames --flows on existing file preserves body byte-for-byte
+# BP-3: set-flows on existing file preserves body byte-for-byte
 
 def test_bp3_set_flows_preserves_body_byte_for_byte(tmp_path: Path) -> None:
     """BP-3: set-flows updates only frontmatter — body is byte-for-byte identical."""
@@ -547,11 +547,11 @@ async def test_body_survives_repeated_sync(tmp_path: Path) -> None:
     )
 
 
-# Bonus: body survives sync + set-frames interleaved
+# Bonus: body survives sync + set-flows interleaved
 
 @pytest.mark.asyncio
 async def test_body_survives_sync_then_set_flows_cycle(tmp_path: Path) -> None:
-    """Body survives a realistic workflow: sync → set-frames --flows → sync → set-frames --flows."""
+    """Body survives a realistic workflow: sync → set-flows → sync → set-flows."""
     md_path, original_body = _write_enriched_md(tmp_path)
     _setup_state(tmp_path)
 

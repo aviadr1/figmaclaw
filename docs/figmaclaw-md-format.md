@@ -50,8 +50,11 @@ All frontmatter is YAML between `---` markers at the top of the file.
 ---
 file_key: 7az6PPiHUQumhxtV935xuD
 page_node_id: 4554:17865
-frames: {4713:6926: 'Prepare screen showing camera preview and Go Live button.', 4713:7191: 'Countdown screen showing LIVE IN 3.'}
+frames: ['4713:6926', '4713:7191']
 flows: [["4713:6926", "4713:7191"], ["4713:7191", "4713:7445"]]
+enriched_hash: b39103d8ad45cd38
+enriched_at: '2026-04-01T12:00:00Z'
+enriched_frame_hashes: {'4713:6926': 'a3f2b7c1', '4713:7191': 'e4d9f8a2'}
 ---
 ```
 
@@ -59,8 +62,11 @@ flows: [["4713:6926", "4713:7191"], ["4713:7191", "4713:7445"]]
 |---|---|---|---|
 | `file_key` | string | yes | Figma file key — used for all API calls |
 | `page_node_id` | string | yes | Figma CANVAS node ID for this page |
-| `frames` | flow-style mapping | no | `{node_id: description}` — authoritative frame descriptions |
+| `frames` | flow-style sequence | no | `[node_id, ...]` — list of frame node IDs (descriptions live in body) |
 | `flows` | flow-style sequence | no | `[[src_id, dst_id], ...]` — prototype navigation edges |
+| `enriched_hash` | string | no | Page hash at time of last enrichment (null = never enriched) |
+| `enriched_at` | string | no | ISO timestamp of last enrichment |
+| `enriched_frame_hashes` | flow-style mapping | no | Per-frame content hashes at last enrichment |
 
 ### Component library section (`.../components/*.md`)
 
@@ -72,19 +78,20 @@ Same as above plus:
 
 ### Format invariants — frontmatter
 
-- `frames` **must** be a single-line YAML flow mapping: `frames: {key: value, ...}` — NOT block-indented YAML
+- `frames` **must** be a single-line YAML flow sequence: `frames: ['id1', 'id2', ...]` — NOT block-indented YAML
 - `flows` **must** be a single-line YAML flow sequence: `flows: [["a", "b"], ...]`
 - PyYAML requires `width=2**20` in `yaml.dump` to prevent wrapping long values — without it, descriptions with apostrophes or colons break into ugly multi-line flow style
 - `page_hash` is **NOT** stored in `.md` files — it lives only in `.figma-sync/manifest.json`
-- Empty descriptions are **not written** to frontmatter — a missing key means no description yet (equivalent to `(no description yet)` in the body)
-- Node IDs containing `:` (e.g. `4713:6926`) are valid YAML map keys — no quoting needed
+- `frames` list contains node IDs only — descriptions live in the body, not frontmatter
+- Node IDs containing `:` (e.g. `4713:6926`) are valid YAML values — quoted in lists
 
 ### Editing frontmatter
 
-- **Do:** Use `figmaclaw set-frames` to merge descriptions into `frames:`
-- **Do:** Edit `frames:` directly in the file if needed
-- **Don't:** Edit other frontmatter fields manually — they are managed by figmaclaw
+- **Do:** Use `figmaclaw set-flows` to update flows in frontmatter
+- **Do:** Use `figmaclaw mark-enriched` to snapshot enrichment state after writing body
+- **Don't:** Edit `enriched_*` fields manually — they are managed by `mark-enriched`
 - **Don't:** Add `page_hash` or any legacy `figmaclaw:` nested block
+- **Don't:** Put descriptions in frontmatter — they belong in the body only
 
 ---
 
@@ -143,9 +150,9 @@ flowchart LR
 
 ### What the body is NOT
 
-- The body description column in the table is a **display copy** of `frames[node_id]` from frontmatter. It is not the source of truth.
-- Agents and tooling **must never parse the description column** to get frame descriptions — read `frames` from frontmatter.
-- Section intros and page summary are **only in the body** — they are not stored in frontmatter. See known limitations below.
+- The body description column is **LLM-authored prose** — it is not stored in frontmatter. Frontmatter `frames` is just a list of node IDs.
+- Agents and tooling **must never parse the description column** for structured data — use frontmatter for node IDs and enrichment state.
+- Section intros and page summary are **only in the body** — they are not stored in frontmatter.
 
 ---
 
@@ -214,16 +221,19 @@ for section in sections:
         # frame.description does NOT exist — read from fm.frames instead
 ```
 
-### Writing descriptions
+### Enrichment flow
+
+Descriptions live in the body only. The enrichment workflow:
 
 ```bash
-# Always use stdin heredoc — never --frames for multi-value JSON with apostrophes
-figmaclaw set-frames figma/<file>/pages/<page>.md << 'EOF'
-{
-  "4713:6926": "Prepare screen showing camera preview and a pink Go Live button.",
-  "4713:7191": "Countdown screen showing 'LIVE IN 3' in large gradient text."
-}
+figmaclaw inspect <file> --json              # check needs_enrichment
+figmaclaw screenshots <file> --stale         # download only changed frames
+# LLM reads screenshots, writes descriptions
+figmaclaw write-body <file> <<'EOF'          # write prose body
+... page summary, section intros, frame tables, Mermaid ...
 EOF
+figmaclaw set-flows <file> --flows '[...]'   # set inferred flows
+figmaclaw mark-enriched <file>               # snapshot hashes
 ```
 
 ---
