@@ -432,7 +432,16 @@ def claude_run_cmd(
     failed = 0
 
     for i, file_path in enumerate(files, 1):
-        _, frame_count = enrichment_info(file_path)
+        # Pull latest to avoid re-enriching files another run already handled.
+        # Each Claude invocation pushes after commit, so concurrent/sequential
+        # runs may have enriched files since our initial checkout.
+        subprocess.run(["git", "pull", "--no-rebase"], capture_output=True)
+
+        # Re-check after pull — file may now have enriched_hash
+        needs_it, frame_count = enrichment_info(file_path)
+        if not needs_it:
+            click.echo(f"[claude-run] [{i}/{total}] skip (already enriched): {file_path}", err=True)
+            continue
 
         if section_mode and frame_count > SECTION_THRESHOLD:
             # Section-by-section enrichment for large pages
