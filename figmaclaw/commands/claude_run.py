@@ -32,8 +32,7 @@ import click
 
 from figmaclaw.figma_md_parse import section_line_ranges
 
-SECTION_THRESHOLD = 80  # files with more frames than this use section-mode
-LARGE_SECTION_THRESHOLD = 60  # sections with more frames than this use frame-level mode
+SECTION_THRESHOLD = 80  # pages/sections above this use incremental mode
 
 
 # ---------------------------------------------------------------------------
@@ -465,7 +464,7 @@ def claude_run_cmd(
                     name = str(section["name"])
                     pending = int(section["pending_frames"])
 
-                    if pending > LARGE_SECTION_THRESHOLD:
+                    if pending > SECTION_THRESHOLD:
                         # Large sections: frame-level mode (write-descriptions).
                         # Calls Claude repeatedly, ~40 frames per invocation.
                         # Each call processes pending frames and commits.
