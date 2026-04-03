@@ -58,7 +58,7 @@ on:
         required: false
 
 concurrency:
-  group: claude-run-${{ github.ref }}-${{ inputs.target }}
+  group: claude-run-${{ github.ref }}-${{ inputs.target }}-${{ inputs.section_mode && 'sections' || 'bulk' }}
   cancel-in-progress: true
 
 jobs:
