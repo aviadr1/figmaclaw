@@ -26,6 +26,7 @@ import importlib.resources
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import click
@@ -33,6 +34,25 @@ import click
 from figmaclaw.figma_md_parse import section_line_ranges
 
 SECTION_THRESHOLD = 80  # pages/sections above this use incremental mode
+ENRICHMENT_LOG = ".figma-sync/enrichment-log.csv"
+
+
+def _log_enrichment(
+    repo_dir: Path, file_path: Path, mode: str,
+    frames: int, duration_s: float, success: bool,
+    section_name: str = "",
+) -> None:
+    """Append one row to the enrichment log for empirical analysis."""
+    log_path = repo_dir / ENRICHMENT_LOG
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    if not log_path.exists():
+        log_path.write_text("timestamp,file,mode,frames,duration_s,success,section\n")
+    from datetime import datetime, timezone
+    ts = datetime.now(timezone.utc).isoformat()
+    rel = str(file_path.relative_to(repo_dir)) if file_path.is_relative_to(repo_dir) else str(file_path)
+    row = f"{ts},{rel},{mode},{frames},{duration_s:.0f},{success},{section_name}\n"
+    with open(log_path, "a") as f:
+        f.write(row)
 
 
 # ---------------------------------------------------------------------------
@@ -466,8 +486,7 @@ def claude_run_cmd(
 
                     if pending > SECTION_THRESHOLD:
                         # Large sections: frame-level mode (write-descriptions).
-                        # Calls Claude repeatedly, ~40 frames per invocation.
-                        # Each call processes pending frames and commits.
+                        # Calls Claude repeatedly, up to 80 frames per invocation.
                         # Loop until no pending frames remain in this section.
                         chunk_num = 0
                         while pending > 0:
@@ -477,6 +496,7 @@ def claude_run_cmd(
                                 f"chunk {chunk_num}: {name} ({node_id}, {pending} pending)",
                                 err=True,
                             )
+                            t0 = time.monotonic()
                             prompt = build_prompt(
                                 frames_template, file_path, [file_path],
                                 section_node_id=node_id, section_name=name,
@@ -485,14 +505,21 @@ def claude_run_cmd(
                                 prompt=prompt, model=model, max_turns=max_turns,
                                 skip_permissions=skip_permissions, extra_flags=[],
                             )
-                            if rc != 0:
+                            dur = time.monotonic() - t0
+                            ok = rc == 0
+                            _log_enrichment(repo_dir, file_path, "frames", pending, dur, ok, name)
+                            if not ok:
                                 click.echo(
-                                    f"[claude-run] [{i}/{total}] frames FAILED (exit {rc}): "
+                                    f"[claude-run] [{i}/{total}] frames FAILED (exit {rc}, {dur:.0f}s): "
                                     f"{name} in {file_path}",
                                     err=True,
                                 )
                                 failed += 1
                                 break
+                            click.echo(
+                                f"[claude-run] [{i}/{total}] frames OK ({dur:.0f}s): {name}",
+                                err=True,
+                            )
                             succeeded += 1
 
                             # Re-check pending count after this chunk
@@ -513,6 +540,7 @@ def claude_run_cmd(
                             f"{name} ({node_id}, {pending} pending)",
                             err=True,
                         )
+                        t0 = time.monotonic()
                         prompt = build_prompt(
                             sec_template, file_path, [file_path],
                             section_node_id=node_id, section_name=name,
@@ -521,14 +549,22 @@ def claude_run_cmd(
                             prompt=prompt, model=model, max_turns=max_turns,
                             skip_permissions=skip_permissions, extra_flags=[],
                         )
-                        if rc != 0:
+                        dur = time.monotonic() - t0
+                        ok = rc == 0
+                        _log_enrichment(repo_dir, file_path, "section", pending, dur, ok, name)
+                        if not ok:
                             click.echo(
-                                f"[claude-run] [{i}/{total}] section FAILED (exit {rc}): "
+                                f"[claude-run] [{i}/{total}] section FAILED (exit {rc}, {dur:.0f}s): "
                                 f"{name} in {file_path}",
                                 err=True,
                             )
                             failed += 1
                             break  # stop this file, resume next CI run
+                        click.echo(
+                            f"[claude-run] [{i}/{total}] section OK ({dur:.0f}s, {pending} frames): "
+                            f"{name}",
+                            err=True,
+                        )
                         succeeded += 1
 
             # Check if all sections done → finalize
@@ -557,17 +593,21 @@ def claude_run_cmd(
                     succeeded += 1
         else:
             # Standard whole-page enrichment
-            click.echo(f"[claude-run] [{i}/{total}] enriching: {file_path}", err=True)
+            click.echo(f"[claude-run] [{i}/{total}] enriching: {file_path} ({frame_count} frames)", err=True)
+            t0 = time.monotonic()
             prompt = build_prompt(template, file_path, [file_path])
             rc = _run_claude(
                 prompt=prompt, model=model, max_turns=max_turns,
                 skip_permissions=skip_permissions, extra_flags=[],
             )
-            if rc != 0:
-                click.echo(f"[claude-run] [{i}/{total}] FAILED (exit {rc}): {file_path}", err=True)
+            dur = time.monotonic() - t0
+            ok = rc == 0
+            _log_enrichment(repo_dir, file_path, "whole-page", frame_count, dur, ok)
+            if not ok:
+                click.echo(f"[claude-run] [{i}/{total}] FAILED (exit {rc}, {dur:.0f}s): {file_path}", err=True)
                 failed += 1
             else:
-                click.echo(f"[claude-run] [{i}/{total}] OK: {file_path}", err=True)
+                click.echo(f"[claude-run] [{i}/{total}] OK ({dur:.0f}s, {frame_count} frames): {file_path}", err=True)
                 succeeded += 1
 
     click.echo(f"[claude-run] Done: {succeeded} succeeded, {failed} failed out of {total}", err=True)
