@@ -81,7 +81,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install figmaclaw (includes claude_run.py and prompts)
-        run: pip install uv && uv tool install 'git+https://github.com/aviadr1/figmaclaw'
+        run: pip install 'figmaclaw @ git+https://github.com/aviadr1/figmaclaw'
 
       - name: Configure git (for any write-back commits)
         run: |
