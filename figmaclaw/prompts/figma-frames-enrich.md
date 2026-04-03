@@ -12,7 +12,9 @@ Follow this workflow exactly:
 
 2. Read each screenshot PNG with the Read tool. For each frame write a 1-3 sentence
    description: what the screen shows, key UI elements, what makes it distinct.
-   Process in a SINGLE batch (all pending frames in this invocation).
+   Process up to 40 screenshots in this invocation. If there are more than 40,
+   describe the first 40 and stop — you will be called again for the remainder.
+   Use subagent batches of 8 to keep context clean.
 
 3. Update the frame descriptions:
    ```
