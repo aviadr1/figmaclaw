@@ -1,5 +1,10 @@
 # Frontmatter v2: frames as index, not store
 
+> **Status:** Partially implemented. Frontmatter schema, v2 commands, and CI enrichment
+> pipeline are all landed and working. Remaining work is listed under "Changes needed."
+> This plan supersedes the "figmaclaw — LLM enrichment in CI/CD" Linear document
+> (2026-04-01), which is now fully implemented and should be deleted.
+
 ## The problem
 
 `frames:` in frontmatter currently stores `{node_id: description}`. Descriptions
@@ -366,48 +371,194 @@ This is rare and handled manually (`mark-stale`).
 | `write-body` | write | LLM is authoring prose — natural verb for content creation |
 | `mark-enriched` | mark | Sets a flag/state — "mark as done" |
 | `mark-stale` | mark | Sets a flag/state — "mark as needing redo" |
-| `inspect` | inspect | Examines state without changing anything — read-only |
+| `inspect` (currently `page-tree`) | inspect | Examines state without changing anything — read-only |
 | `set-flows` | set | Writes a specific field value — "set flows to X" |
 | `screenshots` | (noun) | Downloads artifacts — the noun is the thing you get |
 
+## CI enrichment pipeline (implemented)
+
+These invariants were established during the CI enrichment work and must be preserved.
+
+### Design law
+
+- figmaclaw is a **pure data-fetch tool** — zero LLM dependency. No `anthropic` SDK,
+  no `figma_llm.py`, no LLM model parameters.
+- LLM enrichment runs via **Claude Code CLI** (`claude -p`) using `CLAUDE_CODE_OAUTH_TOKEN`
+  — NOT `ANTHROPIC_API_KEY`, NOT the `anthropic` Python SDK.
+- The enrichment skill (`figma-enrich-page`) lives in the figmaclaw package and is
+  auto-installed at CI runtime. Consumer repos (linear-git) never contain skill files.
+
+### Architecture
+
+```
+Trigger (Figma webhook or hourly cron)
+  ↓
+figmaclaw pull / apply-webhook          (reusable workflow in figmaclaw repo)
+  → fetches Figma API
+  → updates frontmatter (frames, flows)
+  → writes skeleton body for NEW pages only
+  → auto-commit per changed page
+  → uses: FIGMA_API_KEY only
+  ↓
+claude-run                              (reusable workflow in figmaclaw repo)
+  → claude_run.py finds changed files (git diff or needs_enrichment filter)
+  → for each file, runs figma-enrich-page skill:
+      1. page-tree --json             → check needs_enrichment
+      2. screenshots --pending        → download PNGs for undescribed frames
+      3. LLM reads screenshots, writes descriptions
+      4. write-body                   → write prose body (preserves frontmatter)
+      5. set-flows                    → write inferred flows to frontmatter
+      6. mark-enriched               → snapshot hashes to frontmatter
+      7. git commit + push per file
+  → uses: CLAUDE_CODE_OAUTH_TOKEN, FIGMA_API_KEY
+```
+
+### CI workflow structure (in consumer repos like linear-git)
+
+Consumer repos contain **thin caller workflows** that reference reusable workflows
+from `aviadr1/figmaclaw`. All logic lives upstream.
+
+- **figmaclaw-sync.yaml** — hourly cron. Calls `sync.yml` then `claude-run.yml`
+  with `needs_enrichment: true`. Concurrency group: `figma-git-sync`,
+  `cancel-in-progress: false` (never drop a scheduled sync).
+
+- **figmaclaw-webhook.yaml** — `repository_dispatch`. Calls `webhook.yml` then
+  `claude-run.yml` with `changed_only: true`. Same concurrency group,
+  `cancel-in-progress: true` (debounce rapid designer saves).
+
+### CLI commands for CI enrichment (implemented 2026-04-03)
+
+All enrichment tooling is now proper Click commands in figmaclaw — no standalone
+scripts, no `importlib.resources` path resolution, no import hacks.
+
+- **`figmaclaw claude-run`** — discovers files, filters by enrichment status
+  (`--needs-enrichment`, `--changed-only`, `--max-files`), invokes `claude -p`
+  per file with a prompt template. Defaults to bundled `figma-batch-enrich.md`
+  prompt. Outputs stream-json to stdout.
+
+- **`figmaclaw stream-format`** — reads stream-json from stdin, writes
+  human-readable CI log lines to stdout. Appends summary to `$GITHUB_STEP_SUMMARY`
+  in GitHub Actions.
+
+CI workflow usage:
+```bash
+figmaclaw claude-run figma/ \
+  --needs-enrichment \
+  --model claude-sonnet-4-6 \
+  --max-turns 80 \
+  | tee /tmp/claude-raw.jsonl \
+  | figmaclaw stream-format
+```
+
+Installed via `uv tool install` (isolated CLI, no import needed).
+Tested: 23 tests in `tests/test_claude_run.py`.
+
+**History:** These were previously standalone scripts (`scripts/claude_run.py`,
+`.github/stream-formatter.py`) in the linear-git consumer repo. Ported upstream
+to figmaclaw on 2026-04-03 after a syntax error in the standalone script broke
+CI enrichment for 24+ hours. Making them proper CLI commands eliminates the
+class of bugs where import paths, `importlib.resources`, or `uv tool install`
+isolation prevent Python from finding the scripts.
+
+### What must NOT change in figmaclaw
+
+- `pull_logic.py` — correct as-is (writes frontmatter + skeleton body; no LLM)
+- `screenshots.py`, `set_flows.py`, `page_tree.py` — correct CI tools
+- No `figma_llm.py` — figmaclaw has zero LLM dependency
+- No `anthropic` in `pyproject.toml`
+- `enrich.py` — fine for structural re-sync (no LLM)
+
+### Known issue: skeleton body churn
+
+`figmaclaw pull` writes a skeleton body for pages whose Figma structure changed
+(even if they had existing prose). The enrichment job runs immediately after and
+fixes this. Net result: skeleton commit, then ~seconds later enriched commit.
+Acceptable — the skeleton is a brief intermediate state, not permanent loss.
+
+Long-term fix: `write_page()` could skip writing the skeleton body if an existing
+body is present (only write frontmatter). Separate figmaclaw change, not needed
+for correctness.
+
+### One-time migration
+
+To enrich all existing bare pages, trigger `claude-run.yml` via `workflow_dispatch`:
+```
+target: figma/
+needs_enrichment: true
+changed_only: false
+model: claude-sonnet-4-6
+max_turns: 80
+max_files: 0
+```
+
 ## Changes needed
 
-### figmaclaw repo:
+### figmaclaw repo — done:
 
-1. **`figma_frontmatter.py`** — `frames: list[str]` (no descriptions). Add `enriched_hash: str | None`, `enriched_at: str | None`, `enriched_frame_hashes: dict[str, str]`. Backward-compat validator accepts old dict format (extracts keys).
+1. ~~**`figma_frontmatter.py`** — `frames: list[str]`, `enriched_*` fields, backward-compat validator~~ ✅
+2. ~~**`figma_sync_state.py`** — `frame_hashes` in `PageEntry`~~ ✅
+3. ~~**`figma_hash.py`** — `compute_frame_hash()` + `compute_frame_hashes()`~~ ✅
+4. ~~**`figma_render.py`** — `_build_frontmatter()` takes `list[str]`~~ ✅
+5. ~~**`figma_parse.py`** — `parse_frame_descriptions()` removed, frontmatter handles both formats~~ ✅
+6. ~~**`pull_logic.py`** — computes/stores `frame_hashes` in manifest~~ ✅
+7. ~~**`commands/set_flows.py`** — replaces `set_frames.py`~~ ✅
+8. ~~**`commands/write_body.py`** — replaces `replace_body.py`~~ ✅
+9. ~~**`commands/mark_enriched.py`**~~ ✅
+10. ~~**`commands/mark_stale.py`**~~ ✅
+11. ~~**`main.py`** — v2 commands registered~~ ✅
 
-2. **`figma_sync_state.py`** — Add `frame_hashes: dict[str, str]` to `PageEntry`.
+### figmaclaw repo — remaining:
 
-3. **`figma_hash.py`** — Add `compute_frame_hash(frame_node)` and `compute_frame_hashes(page_node)`. Keep existing `compute_page_hash()`.
+12. **`commands/page_tree.py`** → **`commands/inspect.py`** — Rename command from
+    `page-tree` to `inspect`. The `--needs-enrichment` logic exists in JSON output
+    but the command name hasn't been updated. Add explicit `--needs-enrichment` CLI
+    flag (currently only in `--json` output). Always exit 0; exit 2 for errors only.
 
-4. **`figma_render.py`** — `_build_frontmatter()` takes `list[str]` for frame_ids. `scaffold_page()` gets descriptions from FigmaPage model.
+13. **`commands/screenshots.py`** — Add `--stale` flag: reads manifest `frame_hashes`
+    vs frontmatter `enriched_frame_hashes`, only downloads new + modified frames.
+    Currently has `--pending` which checks for missing descriptions (v1 approach).
 
-5. **`figma_parse.py`** — Remove `parse_frame_descriptions()`. `parse_frontmatter()` handles both old dict and new list.
+14. Tests updated for new commands / renamed commands.
 
-6. **`pull_logic.py`** — Compute and store `frame_hashes` in manifest. `_merge_existing()` only merges flows. `build_page_frontmatter()` extracts just IDs. `update_page_frontmatter()` preserves `enriched_*` fields.
+15. Docs updated (CLAUDE.md, format spec, invariants).
 
-7. **`commands/sync.py`** — No description merging.
+### figmaclaw repo — done (2026-04-03):
 
-8. **`commands/set_frames.py`** → **`commands/set_flows.py`** — Rename. Remove `--frames` and `--summary`. Keep `--flows` only. Fix bug: exit 2 with clear error when frontmatter parse fails (currently silently succeeds and writes nothing).
+16. ~~**`commands/claude_run.py`** — `figmaclaw claude-run` Click command. Ported from linear-git's `scripts/claude_run.py`, fixed syntax error, proper CLI integration~~ ✅
+17. ~~**`commands/stream_format.py`** — `figmaclaw stream-format` Click command. Ported from linear-git's `.github/stream-formatter.py`~~ ✅
+18. ~~**`prompts/figma-batch-enrich.md`** — bundled enrichment prompt template. Ported from linear-git's `prompts/`~~ ✅
+19. ~~**`.github/workflows/claude-run.yml`** — reusable CI workflow. Uses `figmaclaw claude-run` and `figmaclaw stream-format` CLI commands (no importlib hacks)~~ ✅
+20. ~~**`CLAUDE.md`** — ecosystem ownership documented (figmaclaw/issueclaw = general-purpose tooling, consumer repos = data only)~~ ✅
+21. ~~**`tests/test_claude_run.py`** — 23 tests: syntax validation, enrichment detection, file collection, CLI dry-run~~ ✅
+22. ~~**Template workflows** — `figmaclaw-sync.yaml` template and bundled workflow updated to include enrichment step via upstream `claude-run.yml`~~ ✅
 
-9. **`commands/replace_body.py`** → **`commands/write_body.py`** — Rename. Body only. Does NOT touch enrichment state.
+### linear-git repo — done (2026-04-03):
 
-10. **`commands/mark_enriched.py`** — NEW. Reads manifest `page_hash` + `frame_hashes`, writes to frontmatter `enriched_hash` + `enriched_frame_hashes` + `enriched_at`.
+23. ~~**figmaclaw-sync.yaml** — enrichment step now calls `aviadr1/figmaclaw/.github/workflows/claude-run.yml@main` instead of local `claude-run.yaml`~~ ✅
+24. ~~**figmaclaw-webhook.yaml** — same change, enrichment calls upstream~~ ✅
+25. ~~**`scripts/claude_run.py`** — syntax error fixed (orphaned `except` block). File kept as fallback for local `claude-run.yaml` manual dispatch~~ ✅
+26. ~~**AGENTS.md** — ecosystem ownership documented~~ ✅
 
-11. **`commands/mark_stale.py`** — NEW. Clears `enriched_*` fields from frontmatter, forcing re-enrichment on next run.
+### linear-git repo — remaining:
 
-12. **`commands/page_tree.py`** → **`commands/inspect.py`** — Rename. `--needs-enrichment` flag: reads frontmatter `enriched_*` + manifest current hashes, compares, reports new/modified/removed frames in JSON. Always exit 0 on success. Exit 2 for errors only.
+27. **Migration script**: convert any remaining `frames: {dict}` → `frames: [list]`
+    in existing `.md` files. (Backward-compat validator handles this at runtime, but
+    files should be normalized.)
 
-13. **`commands/screenshots.py`** — `--stale` flag: reads hash diff, only downloads new + modified frames.
+28. **Remove local tooling copies** — once upstream CLI is proven stable, delete
+    `scripts/claude_run.py`, `.github/stream-formatter.py`, `prompts/figma-batch-enrich.md`,
+    and `.github/workflows/claude-run.yaml` from linear-git. These are now upstream.
 
-14. **`main.py`** — Register renamed commands. No aliases — clean break.
+### figmaclaw repo — remaining:
 
-15. All tests updated.
-16. Docs updated (CLAUDE.md, format spec, invariants).
+29. **`commands/page_tree.py`** → **`commands/inspect.py`** — Rename command from
+    `page-tree` to `inspect`. Add explicit `--needs-enrichment` CLI flag.
 
-### linear-git repo:
+30. **`commands/screenshots.py`** — Add `--stale` flag: reads manifest `frame_hashes`
+    vs frontmatter `enriched_frame_hashes`, only downloads new + modified frames.
 
-17. Migration script: convert all .md files `frames: {dict}` → `frames: [list]`.
-18. **`scripts/claude_run.py`** — Update `_needs_enrichment()` to parse JSON output instead of checking exit code. Use `inspect` instead of `page-tree`.
-19. Update CI prompt: flow is `screenshots → write-body → mark-enriched`.
-20. Commit, push, trigger CI, verify.
+31. **CI prompt** (`prompts/figma-batch-enrich.md`) — Update step 1 to use `inspect`
+    instead of `page-tree`, step 2 to use `screenshots --stale` instead of
+    `--pending` (after those changes land).
+
+32. Commit, push, trigger CI, verify end-to-end.

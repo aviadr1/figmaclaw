@@ -5,6 +5,8 @@ from __future__ import annotations
 import click
 
 from figmaclaw.commands.apply_webhook import apply_webhook_cmd
+from figmaclaw.commands.claude_run import claude_run_cmd
+from figmaclaw.commands.stream_format import stream_format_cmd
 from figmaclaw.commands.sync import sync_cmd
 from figmaclaw.commands.init import init_cmd
 from figmaclaw.commands.list_files import list_cmd
@@ -59,6 +61,7 @@ def cli(ctx: click.Context, json_mode: bool, verbose: int, quiet: int, repo_dir:
 
 
 cli.add_command(apply_webhook_cmd)
+cli.add_command(claude_run_cmd)
 cli.add_command(init_cmd)
 cli.add_command(list_cmd)
 cli.add_command(mark_enriched_cmd)
@@ -67,6 +70,7 @@ cli.add_command(page_tree_cmd)
 cli.add_command(pull_cmd)
 cli.add_command(screenshots_cmd)
 cli.add_command(self_group)
+cli.add_command(stream_format_cmd)
 cli.add_command(set_flows_cmd)
 cli.add_command(sync_cmd)
 cli.add_command(track_cmd)

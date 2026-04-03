@@ -1,7 +1,8 @@
 # Reusable workflow — called by host repos via:
 #   uses: aviadr1/figmaclaw/.github/workflows/claude-run.yml@main
 #
-# Runs claude_run.py (bundled in figmaclaw) to enrich figma pages with LLM descriptions.
+# Runs `figmaclaw claude-run` to enrich figma pages with LLM descriptions.
+# All logic is in the figmaclaw CLI — no script path resolution needed.
 
 on:
   workflow_call:
@@ -10,21 +11,11 @@ on:
         required: true
         type: string
         description: 'File or directory to process (e.g. figma/ or figma/web-app/pages/foo.md)'
-      prompt:
-        required: false
-        type: string
-        default: |
-          Enrich the figmaclaw page file at {file_path}.
-          FIGMA_API_KEY is available in the environment.
-
-          Read the skill and follow it exactly:
-            figmaclaw self skill figma-enrich-page
-        description: 'Inline prompt — use {file_path}, {file_content}, {file_list}, {target_dir}'
       prompt_file:
         required: false
         type: string
         default: ''
-        description: 'Path to a prompt template file inside the repo (overrides prompt if set)'
+        description: 'Path to a prompt template file inside the repo (default: bundled figma-batch-enrich.md)'
       model:
         required: false
         type: string
@@ -67,7 +58,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          fetch-depth: 2   # need parent commit for --changed-only git diff
+          fetch-depth: 2
 
       - uses: actions/setup-node@v5
         with:
@@ -80,35 +71,13 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install figmaclaw (includes claude_run.py and prompts)
-        run: pip install 'figmaclaw @ git+https://github.com/aviadr1/figmaclaw'
+      - name: Install figmaclaw
+        run: pip install uv && uv tool install 'git+https://github.com/aviadr1/figmaclaw'
 
-      - name: Configure git (for any write-back commits)
+      - name: Configure git
         run: |
           git config user.name  "claude-run[bot]"
           git config user.email "claude-run[bot]@users.noreply.github.com"
-
-      - name: Resolve prompt
-        id: prompt
-        run: |
-          PROMPT_FILE="${{ inputs.prompt_file }}"
-          if [ -n "$PROMPT_FILE" ] && [ -f "$PROMPT_FILE" ]; then
-            echo "Using prompt file: $PROMPT_FILE"
-            echo "flag=--prompt-file $PROMPT_FILE" >> "$GITHUB_OUTPUT"
-          else
-            # Check for bundled prompt in figmaclaw package
-            BUNDLED="$(python3 -c "import importlib.resources; print(importlib.resources.files('figmaclaw.prompts').joinpath('figma-batch-enrich.md'))" 2>/dev/null || true)"
-            if [ -n "$BUNDLED" ] && [ -f "$BUNDLED" ]; then
-              echo "Using bundled prompt: $BUNDLED"
-              echo "flag=--prompt-file $BUNDLED" >> "$GITHUB_OUTPUT"
-            else
-              # Write inline prompt to a temp file to avoid shell quoting nightmares
-              cat <<'__PROMPT_EOF__' > /tmp/claude-prompt.txt
-          ${{ inputs.prompt }}
-          __PROMPT_EOF__
-              echo "flag=--prompt-file /tmp/claude-prompt.txt" >> "$GITHUB_OUTPUT"
-            fi
-          fi
 
       - name: Run claude-run
         id: claude
@@ -119,36 +88,34 @@ jobs:
         run: |
           set -euo pipefail
 
-          CHANGED_FLAG=""
+          # Build CLI flags
+          FLAGS=""
           if [ "${{ inputs.changed_only }}" = "true" ]; then
-            CHANGED_FLAG="--changed-only"
+            FLAGS="$FLAGS --changed-only"
           fi
-
-          ENRICH_FLAG=""
           if [ "${{ inputs.needs_enrichment }}" = "true" ]; then
-            ENRICH_FLAG="--needs-enrichment"
+            FLAGS="$FLAGS --needs-enrichment"
           fi
-
-          MAX_FILES_FLAG=""
           if [ "${{ inputs.max_files }}" != "0" ]; then
-            MAX_FILES_FLAG="--max-files ${{ inputs.max_files }}"
+            FLAGS="$FLAGS --max-files ${{ inputs.max_files }}"
           fi
 
-          # Locate claude_run.py from figmaclaw package
-          CLAUDE_RUN="$(python3 -c "import importlib.resources; print(importlib.resources.files('figmaclaw.scripts').joinpath('claude_run.py'))")"
-          STREAM_FMT="$(python3 -c "import importlib.resources; print(importlib.resources.files('figmaclaw.scripts').joinpath('stream_formatter.py'))")"
+          PROMPT_FLAG=""
+          PROMPT_FILE="${{ inputs.prompt_file }}"
+          if [ -n "$PROMPT_FILE" ] && [ -f "$PROMPT_FILE" ]; then
+            PROMPT_FLAG="--prompt-file $PROMPT_FILE"
+          fi
+          # If no prompt_file, figmaclaw uses its bundled default
 
           echo "::group::claude-run raw stream-json"
-          python "$CLAUDE_RUN" \
+          figmaclaw claude-run \
             "${{ inputs.target }}" \
-            ${{ steps.prompt.outputs.flag }} \
             --model "${{ inputs.model }}" \
             --max-turns "${{ inputs.max_turns }}" \
-            $CHANGED_FLAG \
-            $ENRICH_FLAG \
-            $MAX_FILES_FLAG \
+            $PROMPT_FLAG \
+            $FLAGS \
             | tee /tmp/claude-raw.jsonl \
-            | python "$STREAM_FMT"
+            | figmaclaw stream-format
           echo "::endgroup::"
 
       - name: Verify figma enrichment complete
@@ -164,41 +131,23 @@ jobs:
             exit 0
           fi
 
-          python3 - "$TARGET" <<'EOF'
+          figmaclaw page-tree "$TARGET" --json | python3 -c "
           import json, sys
-          from pathlib import Path
-
-          md = Path(sys.argv[1])
-          import subprocess
-          r = subprocess.run(
-              ["figmaclaw", "page-tree", str(md), "--json"],
-              capture_output=True, text=True
-          )
-          if r.returncode != 0:
-              print(f"page-tree could not read {md}: {r.stderr.strip()[:200]}")
-              sys.exit(1)
-
-          data = json.loads(r.stdout)
-          total   = data.get("total_frames", 0)
-          missing = data.get("missing_descriptions", 0)
-          needs   = data.get("needs_enrichment", True)
-
+          data = json.load(sys.stdin)
+          total   = data.get('total_frames', 0)
+          missing = data.get('missing_descriptions', 0)
+          needs   = data.get('needs_enrichment', True)
           if total == 0:
-              print(f"no frames found in {md} — nothing to verify")
+              print(f'no frames — nothing to verify')
               sys.exit(0)
-
           filled = total - missing
           pct = int(filled / total * 100) if total > 0 else 100
-          print(f"enrichment: {filled}/{total} frames described ({pct}%)")
-          print(f"needs_enrichment: {needs}")
+          print(f'enrichment: {filled}/{total} frames described ({pct}%)')
+          print(f'needs_enrichment: {needs}')
           if needs:
-              print(f"  still pending: {missing} placeholder(s)")
-              for section in data.get("sections", []):
-                  for frame in section.get("frames", []):
-                      if not frame.get("in_frontmatter", True):
-                          print(f"    [{section['name']}] {frame['name']}  ({frame['node_id']})")
+              print(f'  still pending: {missing} placeholder(s)')
               sys.exit(1)
-          EOF
+          "
 
       - name: Upload raw stream-json artifact
         if: always()
@@ -207,11 +156,11 @@ jobs:
           name: claude-run-raw-${{ github.run_id }}
           path: /tmp/claude-raw.jsonl
           retention-days: 14
+          if-no-files-found: warn
 
       - name: Show formatted output in step summary
         if: always()
         run: |
-          STREAM_FMT="$(python3 -c "import importlib.resources; print(importlib.resources.files('figmaclaw.scripts').joinpath('stream_formatter.py'))")"
           echo "## Run parameters" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| param | value |" >> "$GITHUB_STEP_SUMMARY"
@@ -220,4 +169,4 @@ jobs:
           echo "| model  | \`${{ inputs.model }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| max_turns | ${{ inputs.max_turns }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          cat /tmp/claude-raw.jsonl | python "$STREAM_FMT" > /dev/null || true
+          cat /tmp/claude-raw.jsonl 2>/dev/null | figmaclaw stream-format > /dev/null || true

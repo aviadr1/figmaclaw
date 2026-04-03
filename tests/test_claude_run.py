@@ -1,29 +1,29 @@
 """
-Tests for figmaclaw.scripts.claude_run — the Claude Code CI launcher.
+Tests for figmaclaw claude-run — the Claude Code CI enrichment command.
 
 These tests verify the file-filtering and enrichment-detection logic that
 decides which files get passed to Claude for enrichment. The actual Claude
 invocation is never called — we test everything up to that boundary.
 
-INVARIANT: claude_run.py must always be valid Python. A syntax error here
+INVARIANT: all figmaclaw commands must be valid Python. A syntax error
 breaks the entire enrichment pipeline (24+ hours of silent CI failures).
 """
 from __future__ import annotations
 
 import py_compile
-import subprocess
 import textwrap
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
+from click.testing import CliRunner
 
-from figmaclaw.scripts.claude_run import (
+from figmaclaw.commands.claude_run import (
     MAX_FRAMES_PER_FILE,
-    _build_prompt,
-    _collect_files,
-    _enrichment_info,
+    build_prompt,
+    collect_files,
+    enrichment_info,
 )
+from figmaclaw.main import cli
 
 
 # ---------------------------------------------------------------------------
@@ -32,36 +32,30 @@ from figmaclaw.scripts.claude_run import (
 
 
 class TestSyntaxValidity:
-    """claude_run.py must always compile. This is the canary test."""
+    """All command modules must compile. This is the canary test."""
 
-    def test_module_compiles(self) -> None:
-        """INVARIANT: the script must be valid Python — a syntax error here
+    def test_claude_run_compiles(self) -> None:
+        """INVARIANT: the command module must be valid Python — a syntax error
         silently breaks the entire CI enrichment pipeline."""
-        script = Path(__file__).parent.parent / "figmaclaw" / "scripts" / "claude_run.py"
+        script = Path(__file__).parent.parent / "figmaclaw" / "commands" / "claude_run.py"
         py_compile.compile(str(script), doraise=True)
 
-    def test_stream_formatter_compiles(self) -> None:
-        script = Path(__file__).parent.parent / "figmaclaw" / "scripts" / "stream_formatter.py"
+    def test_stream_format_compiles(self) -> None:
+        script = Path(__file__).parent.parent / "figmaclaw" / "commands" / "stream_format.py"
         py_compile.compile(str(script), doraise=True)
-
-    def test_all_scripts_compile(self) -> None:
-        """Every .py file in figmaclaw/scripts/ must compile."""
-        scripts_dir = Path(__file__).parent.parent / "figmaclaw" / "scripts"
-        for py_file in scripts_dir.glob("*.py"):
-            py_compile.compile(str(py_file), doraise=True)
 
 
 # ---------------------------------------------------------------------------
-# _enrichment_info — fast check for whether a file needs enrichment
+# enrichment_info — fast check for whether a file needs enrichment
 # ---------------------------------------------------------------------------
 
 
 class TestEnrichmentInfo:
-    """_enrichment_info reads frontmatter to decide if a file needs enrichment."""
+    """enrichment_info reads frontmatter to decide if a file needs enrichment."""
 
     def test_file_not_found_returns_false(self, tmp_path: Path) -> None:
         """Missing file → (False, 0). Never crash on missing files."""
-        needs, count = _enrichment_info(tmp_path / "nonexistent.md")
+        needs, count = enrichment_info(tmp_path / "nonexistent.md")
         assert needs is False
         assert count == 0
 
@@ -82,7 +76,7 @@ class TestEnrichmentInfo:
             | Login  | `1:1`   | (no description yet) |
             | Home   | `1:2`   | (no description yet) |
         """))
-        needs, count = _enrichment_info(md)
+        needs, count = enrichment_info(md)
         assert needs is True
         assert count == 2
 
@@ -103,7 +97,7 @@ class TestEnrichmentInfo:
             |--------|---------|-------------|
             | Login  | `1:1`   | Login screen with email/password form |
         """))
-        needs, count = _enrichment_info(md)
+        needs, count = enrichment_info(md)
         assert needs is False
         assert count == 0
 
@@ -122,7 +116,7 @@ class TestEnrichmentInfo:
             | Home   | `1:2`   | desc |
             | Profile | `1:3`  | desc |
         """))
-        needs, count = _enrichment_info(md)
+        needs, count = enrichment_info(md)
         assert needs is True
         assert count == 3
 
@@ -130,7 +124,7 @@ class TestEnrichmentInfo:
         """Empty file → needs enrichment, 0 frames."""
         md = tmp_path / "page.md"
         md.write_text("")
-        needs, count = _enrichment_info(md)
+        needs, count = enrichment_info(md)
         assert needs is True
         assert count == 0
 
@@ -151,7 +145,7 @@ class TestEnrichmentInfo:
             |--------|---------|-------------|
             | Login  | `1:1`   | desc |
         """))
-        needs, count = _enrichment_info(md)
+        needs, count = enrichment_info(md)
         assert needs is True
         assert count == 1
 
@@ -159,7 +153,7 @@ class TestEnrichmentInfo:
         """File without --- delimiter → no frontmatter → needs enrichment."""
         md = tmp_path / "page.md"
         md.write_text("Just plain text, no frontmatter at all.")
-        needs, count = _enrichment_info(md)
+        needs, count = enrichment_info(md)
         assert needs is True
         assert count == 0
 
@@ -175,18 +169,18 @@ class TestEnrichmentInfo:
             |--------|---------|-------------|
             | A | `1:1` | desc |
         """))
-        needs, count = _enrichment_info(md)
+        needs, count = enrichment_info(md)
         assert needs is True
-        assert count == 1  # only the data row, not header or separator
+        assert count == 1
 
 
 # ---------------------------------------------------------------------------
-# _collect_files — file discovery and filtering
+# collect_files — file discovery and filtering
 # ---------------------------------------------------------------------------
 
 
 class TestCollectFiles:
-    """_collect_files finds, filters, and sorts files for enrichment."""
+    """collect_files finds, filters, and sorts files for enrichment."""
 
     def _make_page(self, path: Path, *, enriched: bool = False, frames: int = 2) -> None:
         """Create a minimal figma page .md file."""
@@ -206,7 +200,7 @@ class TestCollectFiles:
         """Single file target → returns [target], regardless of filters."""
         md = tmp_path / "page.md"
         self._make_page(md)
-        result = _collect_files(md, "**/*.md", changed_only=False)
+        result = collect_files(md, "**/*.md", changed_only=False)
         assert result == [md]
 
     def test_directory_glob(self, tmp_path: Path) -> None:
@@ -215,7 +209,7 @@ class TestCollectFiles:
         self._make_page(pages / "a.md")
         self._make_page(pages / "b.md")
         (tmp_path / "figma" / "other.txt").write_text("not a match")
-        result = _collect_files(tmp_path / "figma", "**/*.md", changed_only=False)
+        result = collect_files(tmp_path / "figma", "**/*.md", changed_only=False)
         assert len(result) == 2
 
     def test_needs_enrichment_filters_enriched(self, tmp_path: Path) -> None:
@@ -223,7 +217,7 @@ class TestCollectFiles:
         pages = tmp_path / "figma" / "pages"
         self._make_page(pages / "enriched.md", enriched=True)
         self._make_page(pages / "pending.md", enriched=False)
-        result = _collect_files(
+        result = collect_files(
             tmp_path / "figma", "**/*.md", changed_only=False, needs_enrichment=True
         )
         assert len(result) == 1
@@ -234,7 +228,7 @@ class TestCollectFiles:
         pages = tmp_path / "figma" / "pages"
         self._make_page(pages / "small.md", frames=5)
         self._make_page(pages / "huge.md", frames=MAX_FRAMES_PER_FILE + 1)
-        result = _collect_files(
+        result = collect_files(
             tmp_path / "figma", "**/*.md", changed_only=False, needs_enrichment=True
         )
         assert len(result) == 1
@@ -246,7 +240,7 @@ class TestCollectFiles:
         self._make_page(pages / "big.md", frames=50)
         self._make_page(pages / "small.md", frames=3)
         self._make_page(pages / "medium.md", frames=20)
-        result = _collect_files(
+        result = collect_files(
             tmp_path / "figma", "**/*.md", changed_only=False, needs_enrichment=True
         )
         assert [r.name for r in result] == ["small.md", "medium.md", "big.md"]
@@ -255,23 +249,23 @@ class TestCollectFiles:
         """Empty directory → empty list, no crash."""
         empty = tmp_path / "empty"
         empty.mkdir()
-        result = _collect_files(empty, "**/*.md", changed_only=False)
+        result = collect_files(empty, "**/*.md", changed_only=False)
         assert result == []
 
 
 # ---------------------------------------------------------------------------
-# _build_prompt — template substitution
+# build_prompt — template substitution
 # ---------------------------------------------------------------------------
 
 
 class TestBuildPrompt:
-    """_build_prompt fills template placeholders."""
+    """build_prompt fills template placeholders."""
 
     def test_fills_all_placeholders(self, tmp_path: Path) -> None:
         md = tmp_path / "page.md"
         md.write_text("# Hello")
         template = "Process {file_path} named {filename} content={file_content} dir={target_dir}"
-        result = _build_prompt(template, tmp_path, [md])
+        result = build_prompt(template, tmp_path, [md])
         assert str(md) in result
         assert "page.md" in result
         assert "# Hello" in result
@@ -283,53 +277,54 @@ class TestBuildPrompt:
         a.write_text("A")
         b.write_text("B")
         template = "files:\n{file_list}"
-        result = _build_prompt(template, tmp_path, [a, b])
+        result = build_prompt(template, tmp_path, [a, b])
         assert f"- {a}" in result
         assert f"- {b}" in result
 
     def test_missing_file_gives_empty_content(self, tmp_path: Path) -> None:
         md = tmp_path / "nonexistent.md"
         template = "content=[{file_content}]"
-        result = _build_prompt(template, tmp_path, [md])
+        result = build_prompt(template, tmp_path, [md])
         assert "content=[]" in result
 
 
 # ---------------------------------------------------------------------------
-# Integration: dry-run CLI
+# CLI integration: dry-run and help
 # ---------------------------------------------------------------------------
 
 
-class TestDryRun:
-    """The --dry-run flag prints files without invoking claude."""
+class TestCLI:
+    """Click CLI integration tests."""
+
+    def test_help(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(cli, ["claude-run", "--help"])
+        assert result.exit_code == 0
+        assert "Launch claude" in result.output
 
     def test_dry_run_lists_files(self, tmp_path: Path) -> None:
         md = tmp_path / "page.md"
         md.write_text("---\nfile_key: x\n---\n")
-        result = subprocess.run(
-            [
-                "python", "-m", "figmaclaw.scripts.claude_run",
-                str(md),
-                "--prompt", "test {file_path}",
-                "--dry-run",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode == 0
-        assert str(md) in result.stdout
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "--repo-dir", str(tmp_path),
+            "claude-run", str(md), "--prompt", "test {file_path}", "--dry-run",
+        ])
+        assert result.exit_code == 0
+        assert str(md) in result.output
 
     def test_dry_run_no_files_exits_zero(self, tmp_path: Path) -> None:
         empty = tmp_path / "empty"
         empty.mkdir()
-        result = subprocess.run(
-            [
-                "python", "-m", "figmaclaw.scripts.claude_run",
-                str(empty),
-                "--prompt", "test",
-                "--dry-run",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode == 0
-        assert "No files found" in result.stderr
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "--repo-dir", str(tmp_path),
+            "claude-run", str(empty), "--prompt", "test", "--dry-run",
+        ])
+        assert result.exit_code == 0
+
+    def test_stream_format_help(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(cli, ["stream-format", "--help"])
+        assert result.exit_code == 0
+        assert "stream-json" in result.output
