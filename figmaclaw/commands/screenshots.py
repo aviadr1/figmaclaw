@@ -41,9 +41,14 @@ _DOWNLOAD_LOCK_FILENAME = ".figma-downloads.lock"
     "--stale", "stale_only", is_flag=True, default=False,
     help="Only download frames whose content hash changed since last enrichment.",
 )
+@click.option(
+    "--section", "section_node_id", default=None,
+    help="Only download frames belonging to this section (by node_id).",
+)
 @click.pass_context
 def screenshots_cmd(
     ctx: click.Context, md_path: Path, pending_only: bool, stale_only: bool,
+    section_node_id: str | None,
 ) -> None:
     """Download frame screenshots for a figmaclaw .md file to local cache.
 
@@ -59,12 +64,13 @@ def screenshots_cmd(
     if not api_key:
         raise click.UsageError("FIGMA_API_KEY environment variable is not set.")
 
-    result = asyncio.run(_run(api_key, repo_dir, md_path, pending_only, stale_only))
+    result = asyncio.run(_run(api_key, repo_dir, md_path, pending_only, stale_only, section_node_id))
     click.echo(json.dumps(result, indent=2))
 
 
 async def _run(
     api_key: str, repo_dir: Path, md_path: Path, pending_only: bool, stale_only: bool,
+    section_node_id: str | None = None,
 ) -> dict:
     if not md_path.is_absolute():
         md_path = repo_dir / md_path
@@ -81,6 +87,15 @@ async def _run(
     # Node IDs come from the body (parse_sections) — covers pages where fm.frames
     # is empty because no descriptions have been written yet.
     all_body_ids = [f.node_id for s in parse_sections(md_text) for f in s.frames]
+
+    # Section filter: restrict to frames in one section
+    if section_node_id:
+        section_frames: set[str] = set()
+        for s in parse_sections(md_text):
+            if s.node_id == section_node_id:
+                section_frames = {f.node_id for f in s.frames}
+                break
+        all_body_ids = [nid for nid in all_body_ids if nid in section_frames]
 
     if stale_only:
         # Stale = frames whose content hash changed since last enrichment.

@@ -375,6 +375,47 @@ This is rare and handled manually (`mark-stale`).
 | `set-flows` | set | Writes a specific field value — "set flows to X" |
 | `screenshots` | (noun) | Downloads artifacts — the noun is the thing you get |
 
+### D9: Current hashes in manifest, not frontmatter
+
+**Decision:** Current frame hashes (`frame_hashes`) live in the manifest only.
+Enriched frame hashes (`enriched_frame_hashes`) live in frontmatter only.
+
+**Why:** Per D4 ("manifest is cache, frontmatter is state"): current frame hashes
+are a cache of Figma API state — recomputable, lossy. They belong in the manifest.
+Enriched frame hashes are persistent state — they record what things looked like when
+we last wrote descriptions. They belong in frontmatter.
+
+**Alternative considered:** Adding `frame_hashes` to frontmatter for self-contained
+staleness detection without manifest dependency (D3). Rejected because:
+- Duplicates data in two places (manifest AND frontmatter)
+- Bloats large pages (~10KB of hashes for 500-frame pages)
+- Increases git churn (every frame content change rewrites frontmatter, not just the manifest)
+- The manifest is committed to the repo and always available in practice
+- `screenshots --stale` already reads the manifest — `inspect` follows the same pattern
+
+**Fallback:** If manifest is missing, treat all frames as stale (safe, triggers full re-enrichment).
+
+### D10: Section-level enrichment via per-frame hash aggregation
+
+**Decision:** No per-section hashes or timestamps in frontmatter. Section staleness
+is computed at runtime by mapping stale frames (per-frame hash diff between manifest
+and frontmatter) to sections (body parsing via `parse_sections()`).
+
+**Why:** Per-frame hashes already exist. Computing "which sections are stale" is a
+join of two existing data sources: `manifest.frame_hashes` (current) ×
+`enriched_frame_hashes` (at enrichment) × `parse_sections()` (section→frames map).
+Adding per-section hashes would be redundant aggregation of per-frame data.
+
+**`mark-enriched` remains page-level:** Called only after ALL stale sections are
+re-enriched. Cannot call after each section — that would mark other still-stale
+sections as current.
+
+**Section-level enrichment commands:**
+- `write-body --section <node_id>` — surgically replace one section
+- `screenshots --section <node_id>` — download only one section's frames
+- `inspect --json` — reports `pending_frames` and `stale_frames` per section
+- `claude-run --section-mode` — for large pages, enriches one section at a time
+
 ## CI enrichment pipeline (implemented)
 
 These invariants were established during the CI enrichment work and must be preserved.
@@ -544,4 +585,18 @@ max_files: 0
 32. ~~**CI prompt** (`prompts/figma-batch-enrich.md`) — Updated to use `inspect` and `screenshots --stale`~~ ✅
 33. ~~All skills and workflow references updated~~ ✅
 
-**All v2 migration items are complete. No remaining work.**
+### figmaclaw repo — done (2026-04-03, section-level enrichment):
+
+34. ~~**`figma_md_parse.py`** — `section_line_ranges()` helper for section boundary detection~~ ✅
+35. ~~**`commands/inspect.py`** — per-section `pending_frames` and `stale_frames` in `--json` output~~ ✅
+36. ~~**`commands/screenshots.py`** — `--section <node_id>` filter~~ ✅
+37. ~~**`commands/write_body.py`** — `--section <node_id>` surgical section replacement~~ ✅
+38. ~~**`commands/claude_run.py`** — `--section-mode` flag, `pending_sections()`, `needs_finalization()`, section-by-section orchestration~~ ✅
+39. ~~**`prompts/figma-section-enrich.md`** — per-section enrichment prompt~~ ✅
+40. ~~**`prompts/figma-section-finalize.md`** — finalization prompt (page summary + mermaid + mark-enriched)~~ ✅
+41. ~~**`.github/workflows/claude-run.yml`** — `min_frames`, `max_frames`, `section_mode` inputs~~ ✅
+42. ~~**Templates** — two-pass enrichment (bulk ≤80 frames + section-mode >80 frames)~~ ✅
+43. ~~**Design decisions D9, D10** documented in this plan~~ ✅
+44. ~~**Tests** — 264 passing (19 new tests for section-level features)~~ ✅
+
+**All v2 migration and section-level enrichment items are complete.**

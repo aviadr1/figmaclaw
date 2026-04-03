@@ -36,6 +36,21 @@ on:
         required: false
         type: number
         default: 3
+      min_frames:
+        required: false
+        type: number
+        default: 0
+        description: 'Only process files with at least N frames'
+      max_frames:
+        required: false
+        type: number
+        default: 0
+        description: 'Only process files with at most N frames (0 = no limit)'
+      section_mode:
+        required: false
+        type: boolean
+        default: false
+        description: 'For large pages, enrich one section at a time'
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
@@ -98,6 +113,15 @@ jobs:
           fi
           if [ "${{ inputs.max_files }}" != "0" ]; then
             FLAGS="$FLAGS --max-files ${{ inputs.max_files }}"
+          fi
+          if [ "${{ inputs.min_frames }}" != "0" ]; then
+            FLAGS="$FLAGS --min-frames ${{ inputs.min_frames }}"
+          fi
+          if [ "${{ inputs.max_frames }}" != "0" ]; then
+            FLAGS="$FLAGS --max-frames ${{ inputs.max_frames }}"
+          fi
+          if [ "${{ inputs.section_mode }}" = "true" ]; then
+            FLAGS="$FLAGS --section-mode"
           fi
 
           PROMPT_FLAG=""

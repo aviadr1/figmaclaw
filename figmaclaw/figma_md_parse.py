@@ -45,45 +45,68 @@ class ParsedSection:
     frames: list[ParsedFrame] = field(default_factory=list)
 
 
+def section_line_ranges(md: str) -> list[tuple[ParsedSection, int, int]]:
+    """Return ``(section, start_line, end_line)`` for each ``## `` section.
+
+    *start_line* is the index of the ``## `` heading line (inclusive).
+    *end_line* is the index of the next ``## `` heading or ``len(lines)``
+    (exclusive).
+
+    The **Screen flows** section (Mermaid diagram) IS included — callers
+    that need it for boundary detection can check ``section.name``.
+
+    Used by ``write-body --section`` to surgically replace one section, and
+    by ``inspect`` to count pending/stale frames per section.
+    """
+    lines = md.splitlines()
+    # First pass: find all ## heading positions and parse them
+    headings: list[tuple[int, ParsedSection | None]] = []
+    for i, line in enumerate(lines):
+        if _ANY_H2_RE.match(line):
+            m = _SECTION_RE.match(line)
+            if m:
+                headings.append((i, ParsedSection(name=m.group(1), node_id=m.group(2))))
+            else:
+                # Non-section ## heading (e.g. "## Screen flows") — still a boundary
+                raw_name = line.lstrip("# ").strip()
+                headings.append((i, ParsedSection(name=raw_name, node_id="")))
+
+    if not headings:
+        return []
+
+    # Second pass: extract frames within each section's line range
+    result: list[tuple[ParsedSection, int, int]] = []
+    for idx, (start, section) in enumerate(headings):
+        end = headings[idx + 1][0] if idx + 1 < len(headings) else len(lines)
+        assert section is not None
+        # Parse frame rows within this range
+        in_table = False
+        for line in lines[start:end]:
+            if line.startswith("|---") or line.startswith("| ---"):
+                in_table = True
+                continue
+            if in_table and line.startswith("|"):
+                m2 = _FRAME_ROW_RE.match(line)
+                if m2:
+                    section.frames.append(ParsedFrame(
+                        name=m2.group(1).strip(),
+                        node_id=m2.group(2).strip(),
+                    ))
+            elif in_table and not line.strip():
+                in_table = False
+        result.append((section, start, end))
+
+    return result
+
+
 def parse_sections(md: str) -> list[ParsedSection]:
     """Extract sections and their frames from a figmaclaw page .md body.
 
     Returns sections in document order, skipping Screen Flow (Mermaid diagram section).
     Component library files (with a 'Variants' section) are handled identically.
     """
-    sections: list[ParsedSection] = []
-    current: ParsedSection | None = None
-    in_table = False
-
-    for line in md.splitlines():
-        # Any ## heading resets the active section first
-        if _ANY_H2_RE.match(line):
-            current = None
-            in_table = False
-            m = _SECTION_RE.match(line)
-            if m:
-                name, node_id = m.group(1), m.group(2)
-                if name not in _SKIP_SECTIONS:
-                    current = ParsedSection(name=name, node_id=node_id)
-                    sections.append(current)
-            continue
-
-        if current is None:
-            continue
-
-        # Table separator row: marks start of data rows regardless of column names.
-        if line.startswith("|---") or line.startswith("| ---"):
-            in_table = True
-            continue
-
-        if in_table and line.startswith("|"):
-            m2 = _FRAME_ROW_RE.match(line)
-            if m2:
-                current.frames.append(ParsedFrame(
-                    name=m2.group(1).strip(),
-                    node_id=m2.group(2).strip(),
-                ))
-        elif in_table and not line.strip():
-            in_table = False
-
-    return sections
+    return [
+        section
+        for section, _, _ in section_line_ranges(md)
+        if section.name not in _SKIP_SECTIONS and section.node_id
+    ]

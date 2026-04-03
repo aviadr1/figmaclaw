@@ -3,15 +3,21 @@
 Thin orchestrator: discovers files, filters by enrichment status, then
 invokes ``claude -p`` for each file with a prompt template.
 
-Single file  → one claude -p invocation
-Directory    → one claude -p per file (sequential, commit+push after each)
+Modes:
+  - **Whole-page** (default): one claude -p per file with the batch-enrich prompt.
+  - **Section-mode** (``--section-mode``): for large pages (>SECTION_THRESHOLD frames),
+    enriches one section at a time. Each section gets its own Claude invocation and
+    commit. After all sections are done, a finalization step writes the page summary,
+    Screen flows mermaid, and calls mark-enriched.
 
 Prompt template placeholders:
-  {file_path}     single-file path
-  {file_content}  single-file content
-  {filename}      bare filename
-  {file_list}     newline-separated list of paths  (directory mode)
-  {target_dir}    directory being processed         (directory mode)
+  {file_path}       single-file path
+  {file_content}    single-file content
+  {filename}        bare filename
+  {file_list}       newline-separated list of paths  (directory mode)
+  {target_dir}      directory being processed         (directory mode)
+  {section_node_id} section node ID (section-mode only)
+  {section_name}    section name (section-mode only)
 """
 
 from __future__ import annotations
@@ -23,6 +29,11 @@ import threading
 from pathlib import Path
 
 import click
+
+from figmaclaw.figma_md_parse import section_line_ranges
+
+SECTION_THRESHOLD = 80  # files with more frames than this use section-mode
+
 
 # ---------------------------------------------------------------------------
 # File discovery helpers (no Figma API calls — pure file reads)
@@ -137,8 +148,76 @@ def collect_files(
     return files
 
 
-def build_prompt(template: str, target: Path, files: list[Path]) -> str:
-    """Fill template placeholders for a single file."""
+# ---------------------------------------------------------------------------
+# Section-level enrichment helpers
+# ---------------------------------------------------------------------------
+
+
+def pending_sections(md_path: Path) -> list[dict[str, str | int]]:
+    """Return sections that need enrichment (have pending placeholders).
+
+    Returns ``[{"node_id": ..., "name": ..., "pending_frames": N}]`` for
+    sections with ``(no description yet)`` placeholders.
+    """
+    try:
+        text = md_path.read_text()
+    except OSError:
+        return []
+
+    lines = text.splitlines()
+    result: list[dict[str, str | int]] = []
+    for section, start, end in section_line_ranges(text):
+        if not section.node_id:
+            continue  # skip Screen flows etc.
+        pending = sum(
+            1 for line in lines[start:end]
+            if "| (no description yet) |" in line
+        )
+        if pending > 0:
+            result.append({
+                "node_id": section.node_id,
+                "name": section.name,
+                "pending_frames": pending,
+            })
+    return result
+
+
+def needs_finalization(md_path: Path) -> bool:
+    """True when all sections are described but the page isn't marked enriched yet.
+
+    This means section-by-section enrichment is complete and the finalization
+    step (page summary + mermaid + mark-enriched) should run.
+    """
+    try:
+        text = md_path.read_text()
+    except OSError:
+        return False
+
+    # If there are still pending placeholders, not ready
+    if "| (no description yet) |" in text:
+        return False
+
+    # If already marked as enriched, no need to finalize
+    fm_block = text.split("\n---")[0] if "\n---" in text else ""
+    if "enriched_hash:" in fm_block:
+        return False
+
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Prompt helpers
+# ---------------------------------------------------------------------------
+
+
+def build_prompt(
+    template: str,
+    target: Path,
+    files: list[Path],
+    section_node_id: str = "",
+    section_name: str = "",
+) -> str:
+    """Fill template placeholders for a single file or section."""
     file_path = files[0] if files else target
     content = file_path.read_text() if file_path.exists() else ""
     file_list = "\n".join(f"- {f}" for f in files)
@@ -149,7 +228,29 @@ def build_prompt(template: str, target: Path, files: list[Path]) -> str:
         .replace("{filename}", file_path.name)
         .replace("{file_list}", file_list)
         .replace("{target_dir}", str(target))
+        .replace("{section_node_id}", section_node_id)
+        .replace("{section_name}", section_name)
     )
+
+
+def _prompt_path(name: str) -> Path:
+    """Return path to a bundled prompt template."""
+    return Path(str(importlib.resources.files("figmaclaw.prompts").joinpath(name)))
+
+
+def default_prompt_path() -> Path:
+    """Return the path to the bundled ``figma-batch-enrich.md`` prompt."""
+    return _prompt_path("figma-batch-enrich.md")
+
+
+def section_prompt_path() -> Path:
+    """Return the path to the bundled ``figma-section-enrich.md`` prompt."""
+    return _prompt_path("figma-section-enrich.md")
+
+
+def finalize_prompt_path() -> Path:
+    """Return the path to the bundled ``figma-section-finalize.md`` prompt."""
+    return _prompt_path("figma-section-finalize.md")
 
 
 # ---------------------------------------------------------------------------
@@ -205,18 +306,6 @@ def _run_claude(
 
 
 # ---------------------------------------------------------------------------
-# Bundled prompt resolution
-# ---------------------------------------------------------------------------
-
-
-def default_prompt_path() -> Path:
-    """Return the path to the bundled ``figma-batch-enrich.md`` prompt."""
-    return Path(
-        str(importlib.resources.files("figmaclaw.prompts").joinpath("figma-batch-enrich.md"))
-    )
-
-
-# ---------------------------------------------------------------------------
 # Click command
 # ---------------------------------------------------------------------------
 
@@ -260,6 +349,10 @@ def default_prompt_path() -> Path:
     "--max-files", type=int, default=0,
     help="Limit to N files (0 = unlimited).",
 )
+@click.option(
+    "--section-mode", is_flag=True,
+    help="For large pages (>80 frames), enrich one section at a time.",
+)
 @click.option("--dry-run", is_flag=True, help="Print file list without calling claude.")
 @click.option(
     "--skip-permissions/--no-skip-permissions", default=True,
@@ -279,6 +372,7 @@ def claude_run_cmd(
     min_frames: int,
     max_frames: int,
     max_files: int,
+    section_mode: bool,
     dry_run: bool,
     skip_permissions: bool,
 ) -> None:
@@ -286,6 +380,11 @@ def claude_run_cmd(
 
     TARGET is a file or directory to process. Each file is enriched
     individually with commit+push after each success.
+
+    With --section-mode, large pages (>80 frames) are enriched one section at
+    a time. Each section gets its own Claude invocation and commit. After all
+    sections are done, a finalization step writes the page summary + mermaid
+    and calls mark-enriched.
 
     Outputs stream-json to stdout — pipe through ``figmaclaw stream-format``
     for human-readable CI logs.
@@ -317,7 +416,15 @@ def claude_run_cmd(
     if dry_run:
         click.echo("[claude-run] DRY RUN — files that would be passed to claude:")
         for f in files:
-            click.echo(f"  {f}")
+            _, fc = enrichment_info(f)
+            if section_mode and fc > SECTION_THRESHOLD:
+                sections = pending_sections(f)
+                fin = needs_finalization(f)
+                click.echo(f"  {f} ({fc} frames, section-mode: {len(sections)} pending sections, finalize={fin})")
+                for s in sections:
+                    click.echo(f"    section {s['node_id']} ({s['name']}): {s['pending_frames']} pending")
+            else:
+                click.echo(f"  {f} ({fc} frames)")
         sys.exit(0)
 
     total = len(files)
@@ -325,21 +432,82 @@ def claude_run_cmd(
     failed = 0
 
     for i, file_path in enumerate(files, 1):
-        click.echo(f"[claude-run] [{i}/{total}] enriching: {file_path}", err=True)
-        prompt = build_prompt(template, file_path, [file_path])
-        rc = _run_claude(
-            prompt=prompt,
-            model=model,
-            max_turns=max_turns,
-            skip_permissions=skip_permissions,
-            extra_flags=[],
-        )
-        if rc != 0:
-            click.echo(f"[claude-run] [{i}/{total}] FAILED (exit {rc}): {file_path}", err=True)
-            failed += 1
+        _, frame_count = enrichment_info(file_path)
+
+        if section_mode and frame_count > SECTION_THRESHOLD:
+            # Section-by-section enrichment for large pages
+            sections = pending_sections(file_path)
+            if sections:
+                sec_template = section_prompt_path().read_text()
+                click.echo(
+                    f"[claude-run] [{i}/{total}] section-mode: {file_path} "
+                    f"({len(sections)} pending sections)",
+                    err=True,
+                )
+                for si, section in enumerate(sections, 1):
+                    node_id = str(section["node_id"])
+                    name = str(section["name"])
+                    click.echo(
+                        f"[claude-run] [{i}/{total}] section [{si}/{len(sections)}]: "
+                        f"{name} ({node_id})",
+                        err=True,
+                    )
+                    prompt = build_prompt(
+                        sec_template, file_path, [file_path],
+                        section_node_id=node_id, section_name=name,
+                    )
+                    rc = _run_claude(
+                        prompt=prompt, model=model, max_turns=max_turns,
+                        skip_permissions=skip_permissions, extra_flags=[],
+                    )
+                    if rc != 0:
+                        click.echo(
+                            f"[claude-run] [{i}/{total}] section FAILED (exit {rc}): "
+                            f"{name} in {file_path}",
+                            err=True,
+                        )
+                        failed += 1
+                        break  # stop this file, resume next CI run
+                    succeeded += 1
+
+            # Check if all sections done → finalize
+            if needs_finalization(file_path):
+                click.echo(
+                    f"[claude-run] [{i}/{total}] finalizing: {file_path}",
+                    err=True,
+                )
+                fin_template = finalize_prompt_path().read_text()
+                prompt = build_prompt(fin_template, file_path, [file_path])
+                rc = _run_claude(
+                    prompt=prompt, model=model, max_turns=max_turns,
+                    skip_permissions=skip_permissions, extra_flags=[],
+                )
+                if rc != 0:
+                    click.echo(
+                        f"[claude-run] [{i}/{total}] finalize FAILED (exit {rc}): {file_path}",
+                        err=True,
+                    )
+                    failed += 1
+                else:
+                    click.echo(
+                        f"[claude-run] [{i}/{total}] finalize OK: {file_path}",
+                        err=True,
+                    )
+                    succeeded += 1
         else:
-            click.echo(f"[claude-run] [{i}/{total}] OK: {file_path}", err=True)
-            succeeded += 1
+            # Standard whole-page enrichment
+            click.echo(f"[claude-run] [{i}/{total}] enriching: {file_path}", err=True)
+            prompt = build_prompt(template, file_path, [file_path])
+            rc = _run_claude(
+                prompt=prompt, model=model, max_turns=max_turns,
+                skip_permissions=skip_permissions, extra_flags=[],
+            )
+            if rc != 0:
+                click.echo(f"[claude-run] [{i}/{total}] FAILED (exit {rc}): {file_path}", err=True)
+                failed += 1
+            else:
+                click.echo(f"[claude-run] [{i}/{total}] OK: {file_path}", err=True)
+                succeeded += 1
 
     click.echo(f"[claude-run] Done: {succeeded} succeeded, {failed} failed out of {total}", err=True)
     sys.exit(1 if failed > 0 and succeeded == 0 else 0)

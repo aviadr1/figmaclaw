@@ -18,10 +18,12 @@ import pytest
 from click.testing import CliRunner
 
 from figmaclaw.commands.claude_run import (
-    MAX_FRAMES_PER_FILE,
+    SECTION_THRESHOLD,
     build_prompt,
     collect_files,
     enrichment_info,
+    needs_finalization,
+    pending_sections,
 )
 from figmaclaw.main import cli
 
@@ -223,16 +225,29 @@ class TestCollectFiles:
         assert len(result) == 1
         assert result[0].name == "pending.md"
 
-    def test_needs_enrichment_skips_large_files(self, tmp_path: Path) -> None:
-        """Files with more than MAX_FRAMES_PER_FILE frames are skipped."""
+    def test_needs_enrichment_skips_files_above_max_frames(self, tmp_path: Path) -> None:
+        """Files with more than max_frames are filtered out."""
         pages = tmp_path / "figma" / "pages"
         self._make_page(pages / "small.md", frames=5)
-        self._make_page(pages / "huge.md", frames=MAX_FRAMES_PER_FILE + 1)
+        self._make_page(pages / "huge.md", frames=81)
         result = collect_files(
-            tmp_path / "figma", "**/*.md", changed_only=False, needs_enrichment=True
+            tmp_path / "figma", "**/*.md", changed_only=False,
+            needs_enrichment=True, max_frames=80,
         )
         assert len(result) == 1
         assert result[0].name == "small.md"
+
+    def test_needs_enrichment_skips_files_below_min_frames(self, tmp_path: Path) -> None:
+        """Files with fewer than min_frames are filtered out."""
+        pages = tmp_path / "figma" / "pages"
+        self._make_page(pages / "small.md", frames=5)
+        self._make_page(pages / "large.md", frames=100)
+        result = collect_files(
+            tmp_path / "figma", "**/*.md", changed_only=False,
+            needs_enrichment=True, min_frames=81,
+        )
+        assert len(result) == 1
+        assert result[0].name == "large.md"
 
     def test_needs_enrichment_sorts_smallest_first(self, tmp_path: Path) -> None:
         """Files are sorted by frame count ascending — small files enriched first."""
@@ -328,3 +343,166 @@ class TestCLI:
         result = runner.invoke(cli, ["stream-format", "--help"])
         assert result.exit_code == 0
         assert "stream-json" in result.output
+
+    def test_section_mode_help(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(cli, ["claude-run", "--help"])
+        assert result.exit_code == 0
+        assert "--section-mode" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Section-mode helpers: pending_sections and needs_finalization
+# ---------------------------------------------------------------------------
+
+_LARGE_PAGE_MD = """\
+---
+file_key: abc
+page_node_id: '1:1'
+---
+
+# File / Page
+
+## Auth (`10:1`)
+
+| Screen | Node ID | Description |
+|--------|---------|-------------|
+| Login | `11:1` | (no description yet) |
+| Signup | `11:2` | (no description yet) |
+
+## Dashboard (`20:1`)
+
+| Screen | Node ID | Description |
+|--------|---------|-------------|
+| Home | `21:1` | (no description yet) |
+"""
+
+_PARTIALLY_ENRICHED_MD = """\
+---
+file_key: abc
+page_node_id: '1:1'
+---
+
+# File / Page
+
+## Auth (`10:1`)
+
+Auth intro.
+
+| Screen | Node ID | Description |
+|--------|---------|-------------|
+| Login | `11:1` | A login screen |
+| Signup | `11:2` | A signup screen |
+
+## Dashboard (`20:1`)
+
+| Screen | Node ID | Description |
+|--------|---------|-------------|
+| Home | `21:1` | (no description yet) |
+"""
+
+_FULLY_DESCRIBED_MD = """\
+---
+file_key: abc
+page_node_id: '1:1'
+---
+
+# File / Page
+
+## Auth (`10:1`)
+
+| Screen | Node ID | Description |
+|--------|---------|-------------|
+| Login | `11:1` | A login screen |
+
+## Dashboard (`20:1`)
+
+| Screen | Node ID | Description |
+|--------|---------|-------------|
+| Home | `21:1` | A dashboard |
+"""
+
+_FULLY_ENRICHED_MD = """\
+---
+file_key: abc
+page_node_id: '1:1'
+enriched_hash: deadbeef12345678
+---
+
+# File / Page
+
+## Auth (`10:1`)
+
+| Screen | Node ID | Description |
+|--------|---------|-------------|
+| Login | `11:1` | A login screen |
+"""
+
+
+class TestPendingSections:
+    """pending_sections identifies sections with placeholder descriptions."""
+
+    def test_all_pending(self, tmp_path: Path) -> None:
+        md = tmp_path / "page.md"
+        md.write_text(_LARGE_PAGE_MD)
+        sections = pending_sections(md)
+        assert len(sections) == 2
+        assert sections[0]["node_id"] == "10:1"
+        assert sections[0]["pending_frames"] == 2
+        assert sections[1]["node_id"] == "20:1"
+        assert sections[1]["pending_frames"] == 1
+
+    def test_partially_enriched(self, tmp_path: Path) -> None:
+        md = tmp_path / "page.md"
+        md.write_text(_PARTIALLY_ENRICHED_MD)
+        sections = pending_sections(md)
+        assert len(sections) == 1
+        assert sections[0]["node_id"] == "20:1"
+
+    def test_fully_described(self, tmp_path: Path) -> None:
+        md = tmp_path / "page.md"
+        md.write_text(_FULLY_DESCRIBED_MD)
+        sections = pending_sections(md)
+        assert len(sections) == 0
+
+    def test_missing_file(self, tmp_path: Path) -> None:
+        sections = pending_sections(tmp_path / "nonexistent.md")
+        assert sections == []
+
+
+class TestNeedsFinalization:
+    """needs_finalization detects when all sections are done but page isn't marked enriched."""
+
+    def test_true_when_described_but_no_enriched_hash(self, tmp_path: Path) -> None:
+        md = tmp_path / "page.md"
+        md.write_text(_FULLY_DESCRIBED_MD)
+        assert needs_finalization(md) is True
+
+    def test_false_when_still_pending(self, tmp_path: Path) -> None:
+        md = tmp_path / "page.md"
+        md.write_text(_PARTIALLY_ENRICHED_MD)
+        assert needs_finalization(md) is False
+
+    def test_false_when_already_enriched(self, tmp_path: Path) -> None:
+        md = tmp_path / "page.md"
+        md.write_text(_FULLY_ENRICHED_MD)
+        assert needs_finalization(md) is False
+
+    def test_false_for_missing_file(self, tmp_path: Path) -> None:
+        assert needs_finalization(tmp_path / "nonexistent.md") is False
+
+
+class TestBuildPromptSectionPlaceholders:
+    """build_prompt fills section-mode placeholders."""
+
+    def test_section_placeholders(self, tmp_path: Path) -> None:
+        md = tmp_path / "page.md"
+        md.write_text("# content")
+        template = "Enrich {section_node_id} ({section_name}) in {file_path}"
+        result = build_prompt(
+            template, tmp_path, [md],
+            section_node_id="10:1", section_name="Auth",
+        )
+        assert "10:1" in result
+        assert "Auth" in result
+        assert str(md) in result

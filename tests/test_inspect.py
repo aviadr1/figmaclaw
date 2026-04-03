@@ -167,6 +167,56 @@ def test_inspect_shows_needs_enrichment_for_unenriched_page(tmp_path: Path) -> N
     assert data["needs_enrichment"] is True  # no enriched_hash = needs enrichment
 
 
+def test_inspect_json_per_section_pending_counts(tmp_path: Path) -> None:
+    """INVARIANT: --json output includes per-section pending_frames counts."""
+    md_path = _write_md(tmp_path, _make_page(with_descriptions=False))
+    runner = CliRunner()
+    result = runner.invoke(cli, [
+        "--repo-dir", str(tmp_path),
+        "inspect", str(md_path), "--json",
+    ])
+
+    data = json.loads(result.output)
+    assert "total_sections" in data
+    assert "pending_sections" in data
+    assert data["total_sections"] == 1
+    assert data["pending_sections"] == 1  # section has placeholders
+    section = data["sections"][0]
+    assert "pending_frames" in section
+    assert "stale_frames" in section
+    assert "total_frames" in section
+    assert section["pending_frames"] == 2  # both frames have (no description yet)
+    assert section["total_frames"] == 2
+
+
+def test_inspect_json_per_section_zero_pending_when_described(tmp_path: Path) -> None:
+    """INVARIANT: described sections have pending_frames=0."""
+    md_path = _write_md(tmp_path, _make_page(with_descriptions=True))
+    runner = CliRunner()
+    result = runner.invoke(cli, [
+        "--repo-dir", str(tmp_path),
+        "inspect", str(md_path), "--json",
+    ])
+
+    data = json.loads(result.output)
+    assert data["pending_sections"] == 0
+    assert data["sections"][0]["pending_frames"] == 0
+
+
+def test_inspect_json_section_threshold(tmp_path: Path) -> None:
+    """INVARIANT: section_threshold is included in --json output."""
+    md_path = _write_md(tmp_path, _make_page())
+    runner = CliRunner()
+    result = runner.invoke(cli, [
+        "--repo-dir", str(tmp_path),
+        "inspect", str(md_path), "--json",
+    ])
+
+    data = json.loads(result.output)
+    assert "section_threshold" in data
+    assert data["section_threshold"] == 80
+
+
 def test_inspect_exit_code_2_for_non_figmaclaw_file(tmp_path: Path) -> None:
     """INVARIANT: inspect exits with code 2 when the file has no figmaclaw frontmatter."""
     md_path = tmp_path / "plain.md"

@@ -1,12 +1,13 @@
-# Installed by: figmaclaw init (or figmaclaw workflows upgrade)
-# Upgrade after tool update: figmaclaw workflows upgrade
-# Logic lives in: aviadr1/figmaclaw/.github/workflows/sync.yml
+# SOURCE OF TRUTH: aviadr1/figmaclaw
+# All logic for the sync job lives in aviadr1/figmaclaw/.github/workflows/sync.yml
+# Make changes there, not here. This file just calls that reusable workflow.
+# To upgrade: figmaclaw workflows upgrade
 
 name: figmaclaw — nightly sync
 
 on:
   schedule:
-    - cron: '0 2 * * *'  # 2am UTC daily
+    - cron: '0 * * * *'  # every hour
   workflow_dispatch:
     inputs:
       force:
@@ -35,7 +36,9 @@ jobs:
       figma_team_id: ${{ vars.FIGMA_TEAM_ID }}
     secrets:
       FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+      # Note: ANTHROPIC_API_KEY intentionally omitted — figmaclaw pull has zero LLM dependency
 
+  # Bulk enrichment: small pages (≤80 frames), many per run
   enrich:
     needs: sync
     if: success()
@@ -45,7 +48,25 @@ jobs:
       model: claude-sonnet-4-6
       max_turns: 80
       needs_enrichment: true
+      max_frames: 80
       max_files: 0
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+
+  # Large page enrichment: section-by-section, one page per run
+  enrich-large:
+    needs: sync
+    if: success()
+    uses: aviadr1/figmaclaw/.github/workflows/claude-run.yml@main
+    with:
+      target: figma/
+      model: claude-sonnet-4-6
+      max_turns: 80
+      needs_enrichment: true
+      min_frames: 81
+      max_files: 1
+      section_mode: true
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
