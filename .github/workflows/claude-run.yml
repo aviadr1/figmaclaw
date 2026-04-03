@@ -1,0 +1,223 @@
+# Reusable workflow — called by host repos via:
+#   uses: aviadr1/figmaclaw/.github/workflows/claude-run.yml@main
+#
+# Runs claude_run.py (bundled in figmaclaw) to enrich figma pages with LLM descriptions.
+
+on:
+  workflow_call:
+    inputs:
+      target:
+        required: true
+        type: string
+        description: 'File or directory to process (e.g. figma/ or figma/web-app/pages/foo.md)'
+      prompt:
+        required: false
+        type: string
+        default: |
+          Enrich the figmaclaw page file at {file_path}.
+          FIGMA_API_KEY is available in the environment.
+
+          Read the skill and follow it exactly:
+            figmaclaw self skill figma-enrich-page
+        description: 'Inline prompt — use {file_path}, {file_content}, {file_list}, {target_dir}'
+      prompt_file:
+        required: false
+        type: string
+        default: ''
+        description: 'Path to a prompt template file inside the repo (overrides prompt if set)'
+      model:
+        required: false
+        type: string
+        default: 'claude-sonnet-4-6'
+      max_turns:
+        required: false
+        type: number
+        default: 50
+      changed_only:
+        required: false
+        type: boolean
+        default: false
+      needs_enrichment:
+        required: false
+        type: boolean
+        default: false
+      max_files:
+        required: false
+        type: number
+        default: 3
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+      FIGMA_API_KEY:
+        required: false
+
+concurrency:
+  group: claude-run-${{ github.ref }}-${{ inputs.target }}
+  cancel-in-progress: true
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    permissions:
+      contents: write
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 2   # need parent commit for --changed-only git diff
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install figmaclaw (includes claude_run.py and prompts)
+        run: pip install uv && uv tool install 'git+https://github.com/aviadr1/figmaclaw'
+
+      - name: Configure git (for any write-back commits)
+        run: |
+          git config user.name  "claude-run[bot]"
+          git config user.email "claude-run[bot]@users.noreply.github.com"
+
+      - name: Resolve prompt
+        id: prompt
+        run: |
+          PROMPT_FILE="${{ inputs.prompt_file }}"
+          if [ -n "$PROMPT_FILE" ] && [ -f "$PROMPT_FILE" ]; then
+            echo "Using prompt file: $PROMPT_FILE"
+            echo "flag=--prompt-file $PROMPT_FILE" >> "$GITHUB_OUTPUT"
+          else
+            # Check for bundled prompt in figmaclaw package
+            BUNDLED="$(python3 -c "import importlib.resources; print(importlib.resources.files('figmaclaw.prompts').joinpath('figma-batch-enrich.md'))" 2>/dev/null || true)"
+            if [ -n "$BUNDLED" ] && [ -f "$BUNDLED" ]; then
+              echo "Using bundled prompt: $BUNDLED"
+              echo "flag=--prompt-file $BUNDLED" >> "$GITHUB_OUTPUT"
+            else
+              # Write inline prompt to a temp file to avoid shell quoting nightmares
+              cat <<'__PROMPT_EOF__' > /tmp/claude-prompt.txt
+          ${{ inputs.prompt }}
+          __PROMPT_EOF__
+              echo "flag=--prompt-file /tmp/claude-prompt.txt" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Run claude-run
+        id: claude
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          FIGMA_API_KEY:           ${{ secrets.FIGMA_API_KEY }}
+          FIGMA_TEAM_ID:     ${{ vars.FIGMA_TEAM_ID }}
+        run: |
+          set -euo pipefail
+
+          CHANGED_FLAG=""
+          if [ "${{ inputs.changed_only }}" = "true" ]; then
+            CHANGED_FLAG="--changed-only"
+          fi
+
+          ENRICH_FLAG=""
+          if [ "${{ inputs.needs_enrichment }}" = "true" ]; then
+            ENRICH_FLAG="--needs-enrichment"
+          fi
+
+          MAX_FILES_FLAG=""
+          if [ "${{ inputs.max_files }}" != "0" ]; then
+            MAX_FILES_FLAG="--max-files ${{ inputs.max_files }}"
+          fi
+
+          # Locate claude_run.py from figmaclaw package
+          CLAUDE_RUN="$(python3 -c "import importlib.resources; print(importlib.resources.files('figmaclaw.scripts').joinpath('claude_run.py'))")"
+          STREAM_FMT="$(python3 -c "import importlib.resources; print(importlib.resources.files('figmaclaw.scripts').joinpath('stream_formatter.py'))")"
+
+          echo "::group::claude-run raw stream-json"
+          python "$CLAUDE_RUN" \
+            "${{ inputs.target }}" \
+            ${{ steps.prompt.outputs.flag }} \
+            --model "${{ inputs.model }}" \
+            --max-turns "${{ inputs.max_turns }}" \
+            $CHANGED_FLAG \
+            $ENRICH_FLAG \
+            $MAX_FILES_FLAG \
+            | tee /tmp/claude-raw.jsonl \
+            | python "$STREAM_FMT"
+          echo "::endgroup::"
+
+      - name: Verify figma enrichment complete
+        if: success()
+        env:
+          FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+        run: |
+          TARGET="${{ inputs.target }}"
+
+          # Only applies to single figma .md files
+          if [[ "$TARGET" != figma/*.md ]]; then
+            echo "target is not a single figma page — skipping postcondition check"
+            exit 0
+          fi
+
+          python3 - "$TARGET" <<'EOF'
+          import json, sys
+          from pathlib import Path
+
+          md = Path(sys.argv[1])
+          import subprocess
+          r = subprocess.run(
+              ["figmaclaw", "page-tree", str(md), "--json"],
+              capture_output=True, text=True
+          )
+          if r.returncode != 0:
+              print(f"page-tree could not read {md}: {r.stderr.strip()[:200]}")
+              sys.exit(1)
+
+          data = json.loads(r.stdout)
+          total   = data.get("total_frames", 0)
+          missing = data.get("missing_descriptions", 0)
+          needs   = data.get("needs_enrichment", True)
+
+          if total == 0:
+              print(f"no frames found in {md} — nothing to verify")
+              sys.exit(0)
+
+          filled = total - missing
+          pct = int(filled / total * 100) if total > 0 else 100
+          print(f"enrichment: {filled}/{total} frames described ({pct}%)")
+          print(f"needs_enrichment: {needs}")
+          if needs:
+              print(f"  still pending: {missing} placeholder(s)")
+              for section in data.get("sections", []):
+                  for frame in section.get("frames", []):
+                      if not frame.get("in_frontmatter", True):
+                          print(f"    [{section['name']}] {frame['name']}  ({frame['node_id']})")
+              sys.exit(1)
+          EOF
+
+      - name: Upload raw stream-json artifact
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: claude-run-raw-${{ github.run_id }}
+          path: /tmp/claude-raw.jsonl
+          retention-days: 14
+
+      - name: Show formatted output in step summary
+        if: always()
+        run: |
+          STREAM_FMT="$(python3 -c "import importlib.resources; print(importlib.resources.files('figmaclaw.scripts').joinpath('stream_formatter.py'))")"
+          echo "## Run parameters" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| param | value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| target | \`${{ inputs.target }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| model  | \`${{ inputs.model }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| max_turns | ${{ inputs.max_turns }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/claude-raw.jsonl | python "$STREAM_FMT" > /dev/null || true

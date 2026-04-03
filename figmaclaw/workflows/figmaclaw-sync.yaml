@@ -35,3 +35,17 @@ jobs:
       figma_team_id: ${{ vars.FIGMA_TEAM_ID }}
     secrets:
       FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+
+  enrich:
+    needs: sync
+    if: success()
+    uses: aviadr1/figmaclaw/.github/workflows/claude-run.yml@main
+    with:
+      target: figma/
+      model: claude-sonnet-4-6
+      max_turns: 80
+      needs_enrichment: true
+      max_files: 0
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}

@@ -1,5 +1,31 @@
 # figmaclaw
 
+## Ecosystem ownership
+
+figmaclaw and issueclaw are **general-purpose open-source tools** — they work for any company, not just Gigaverse. Consumer repos (e.g. `gigaverse_app/linear-git`) are company-specific knowledge repositories.
+
+| Repo | Role | Owns |
+|------|------|------|
+| **figmaclaw** (this repo) | General-purpose Figma→Git sync | CLI, sync/enrichment logic, reusable CI workflows, enrichment skills, prompt templates, `claude_run.py` launcher |
+| **issueclaw** | General-purpose Linear→Git sync | CLI, sync/push/webhook logic, reusable CI workflows |
+| **Consumer repos** (e.g. linear-git) | Company-specific knowledge repo | Accumulated markdown data. Consumes figmaclaw + issueclaw via pip + reusable workflows |
+
+**The rule:** All reusable algorithms, scripts, CI workflows, and LLM prompts belong in the tooling repos (figmaclaw / issueclaw). Consumer repos are pure data — they call reusable workflows with repo-specific config (secrets, schedules, team IDs) but never define tooling logic locally. If you find tooling code in a consumer repo, port it upstream to the appropriate tooling repo.
+
+**What belongs here (figmaclaw):**
+- `figmaclaw` CLI package — all commands (sync, pull, write-body, mark-enriched, screenshots, etc.)
+- `.github/workflows/sync.yml`, `webhook.yml`, `claude-run.yml` — reusable workflows called by consumer repos
+- `figmaclaw/skills/` — LLM skills (figma-enrich-page)
+- `figmaclaw/templates/` — workflow templates scaffolded to consumer repos by `figmaclaw init`
+- `scripts/claude_run.py` — generic Claude Code launcher for CI enrichment
+- `prompts/` — prompt templates for enrichment
+- `stream-formatter.py` — CI log formatter for Claude stream-json output
+- All tests for the above
+
+**What does NOT belong here:**
+- Figma page data (`.md` files with frontmatter) — those live in consumer repos
+- Repo-specific CI config (secrets, cron schedules, team IDs) — those live in consumer repo workflow callers
+
 ## Output format — design contract
 
 **Full format spec:** [`docs/figmaclaw-md-format.md`](docs/figmaclaw-md-format.md)

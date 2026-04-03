@@ -1,3 +1,8 @@
+# SOURCE OF TRUTH: aviadr1/figmaclaw
+# All logic for the sync job lives in aviadr1/figmaclaw/.github/workflows/sync.yml
+# Make changes there, not here. This file just calls that reusable workflow.
+# To upgrade: figmaclaw workflows upgrade
+
 name: figmaclaw — nightly sync
 
 on:
@@ -10,53 +15,39 @@ on:
         required: false
         default: 'false'
       since:
-        description: 'Only track files modified within this window (e.g. 3m, 7d, 1y, all). Default: 3m'
+        description: 'Discover files modified within this window (e.g. 3m, 7d, 1y, all). Default: 3m'
         required: false
         default: '3m'
 
+# Must be in caller: concurrency groups are repo-scoped.
+# Shared with webhook so both queue behind each other.
+# cancel-in-progress: false — never drop a scheduled sync run.
+concurrency:
+  group: figma-git-sync
+  cancel-in-progress: false
+
 jobs:
   sync:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    uses: aviadr1/figmaclaw/.github/workflows/sync.yml@main
+    with:
+      force: ${{ github.event.inputs.force || 'false' }}
+      since: ${{ github.event.inputs.since || '3m' }}
+      # vars.FIGMA_TEAM_ID is a repo variable (not secret) — must be passed as input
+      figma_team_id: ${{ vars.FIGMA_TEAM_ID }}
+    secrets:
+      FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+      # Note: ANTHROPIC_API_KEY intentionally omitted — figmaclaw pull has zero LLM dependency
 
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: Install figmaclaw
-        run: pip install uv && uv tool install git+https://github.com/aviadr1/figmaclaw
-
-      - name: Pull latest changes
-        run: git pull --no-rebase
-
-      - name: Configure git
-        run: |
-          git config user.name "figmaclaw[bot]"
-          git config user.email "figmaclaw[bot]@users.noreply.github.com"
-
-      - name: Pull Figma files (discover + auto-commit per page, push every 10)
-        continue-on-error: true  # partial progress is committed; final push runs regardless
-        env:
-          FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
-          FIGMA_TEAM_ID: ${{ vars.FIGMA_TEAM_ID }}
-        run: |
-          FORCE_FLAG=""
-          if [ "${{ github.event.inputs.force }}" = "true" ]; then
-            FORCE_FLAG="--force"
-          fi
-          SINCE="${{ github.event.inputs.since }}"
-          if [ -z "$SINCE" ]; then
-            SINCE="3m"
-          fi
-          figmaclaw pull --team-id "$FIGMA_TEAM_ID" --since "$SINCE" --auto-commit --push-every 10 $FORCE_FLAG
-
-      - name: Push remaining commits
-        if: always()
-        run: |
-          git add figma/ .figma-sync/
-          if ! git diff --cached --quiet; then
-            git commit -m "sync: figmaclaw — checkpoint (partial run)"
-          fi
-          git push || (git pull --no-rebase && git push)
+  enrich:
+    needs: sync
+    if: success()
+    uses: aviadr1/figmaclaw/.github/workflows/claude-run.yml@main
+    with:
+      target: figma/
+      model: claude-sonnet-4-6
+      max_turns: 80
+      needs_enrichment: true
+      max_files: 0
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
