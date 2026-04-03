@@ -21,6 +21,7 @@ from figmaclaw.commands.set_flows import set_flows_cmd
 from figmaclaw.commands.track import track_cmd
 from figmaclaw.commands.workflows_cmd import workflows_group
 from figmaclaw.commands.write_body import write_body_cmd
+from figmaclaw.commands.write_descriptions import write_descriptions_cmd
 
 
 def _version_callback(ctx: click.Context, _param: click.Parameter, value: bool) -> None:
@@ -78,3 +79,4 @@ cli.add_command(sync_cmd)
 cli.add_command(track_cmd)
 cli.add_command(workflows_group)
 cli.add_command(write_body_cmd)
+cli.add_command(write_descriptions_cmd)

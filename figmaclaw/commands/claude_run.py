@@ -33,6 +33,7 @@ import click
 from figmaclaw.figma_md_parse import section_line_ranges
 
 SECTION_THRESHOLD = 80  # files with more frames than this use section-mode
+LARGE_SECTION_THRESHOLD = 60  # sections with more frames than this use frame-level mode
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +244,11 @@ def default_prompt_path() -> Path:
     return _prompt_path("figma-batch-enrich.md")
 
 
+def frames_prompt_path() -> Path:
+    """Return the path to the bundled ``figma-frames-enrich.md`` prompt."""
+    return _prompt_path("figma-frames-enrich.md")
+
+
 def section_prompt_path() -> Path:
     """Return the path to the bundled ``figma-section-enrich.md`` prompt."""
     return _prompt_path("figma-section-enrich.md")
@@ -448,6 +454,7 @@ def claude_run_cmd(
             sections = pending_sections(file_path)
             if sections:
                 sec_template = section_prompt_path().read_text()
+                frames_template = frames_prompt_path().read_text()
                 click.echo(
                     f"[claude-run] [{i}/{total}] section-mode: {file_path} "
                     f"({len(sections)} pending sections)",
@@ -456,13 +463,24 @@ def claude_run_cmd(
                 for si, section in enumerate(sections, 1):
                     node_id = str(section["node_id"])
                     name = str(section["name"])
+                    pending = int(section["pending_frames"])
+
+                    # Large sections use frame-level mode (write-descriptions)
+                    # Small sections use section-level mode (write-body --section)
+                    if pending > LARGE_SECTION_THRESHOLD:
+                        template_to_use = frames_template
+                        mode_label = "frames"
+                    else:
+                        template_to_use = sec_template
+                        mode_label = "section"
+
                     click.echo(
-                        f"[claude-run] [{i}/{total}] section [{si}/{len(sections)}]: "
-                        f"{name} ({node_id})",
+                        f"[claude-run] [{i}/{total}] {mode_label} [{si}/{len(sections)}]: "
+                        f"{name} ({node_id}, {pending} pending)",
                         err=True,
                     )
                     prompt = build_prompt(
-                        sec_template, file_path, [file_path],
+                        template_to_use, file_path, [file_path],
                         section_node_id=node_id, section_name=name,
                     )
                     rc = _run_claude(
@@ -471,7 +489,7 @@ def claude_run_cmd(
                     )
                     if rc != 0:
                         click.echo(
-                            f"[claude-run] [{i}/{total}] section FAILED (exit {rc}): "
+                            f"[claude-run] [{i}/{total}] {mode_label} FAILED (exit {rc}): "
                             f"{name} in {file_path}",
                             err=True,
                         )
