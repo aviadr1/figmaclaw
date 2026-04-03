@@ -137,5 +137,12 @@ advantage is decoupling, but `write-descriptions` already achieves that.
    prompt instead of section-level prompt
 4. Section intro handled separately after all frames described
 
-**Fallback for existing section-mode:** Small sections (≤60 frames) continue
-using `write-body --section`. Only large sections switch to frame-level updates.
+**Implemented (2026-04-03):** One threshold everywhere: 80 frames.
+- Pages ≤80 frames: whole-page (`write-body`)
+- Sections ≤80 frames: section-mode (`write-body --section`)
+- Sections >80 frames: frame-level (`write-descriptions`, chunked at 80)
+
+**Empirical maximums (needs updating as data comes in):**
+- Whole-page proven up to 25 frames (80 threshold is extrapolation)
+- Section-mode proven up to 90 frames total (28 frames per section max)
+- Frame-level: not yet tested in CI
