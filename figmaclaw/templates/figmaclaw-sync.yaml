@@ -1,6 +1,6 @@
 # SOURCE OF TRUTH: aviadr1/figmaclaw
-# All logic for the sync job lives in aviadr1/figmaclaw/.github/workflows/sync.yml
-# Make changes there, not here. This file just calls that reusable workflow.
+# All logic lives in aviadr1/figmaclaw/.github/workflows/ (sync.yml, claude-run.yml)
+# Make changes there, not here. This file just calls those reusable workflows.
 # To upgrade: figmaclaw workflows upgrade
 
 name: figmaclaw — nightly sync
@@ -36,9 +36,8 @@ jobs:
     secrets:
       FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
 
-  # Whole-page enrichment: all pages up to 500 frames
-  # Subagent batching (8 frames/batch) handles pages up to ~500 frames
-  # within the 55-minute timeout. Sorted smallest-first for throughput.
+  # Whole-page enrichment: small pages (≤80 frames), many per run
+  # Sorted smallest-first for throughput. ~38 pages/hour observed.
   enrich:
     needs: sync
     if: success()
@@ -48,15 +47,17 @@ jobs:
       model: claude-sonnet-4-6
       max_turns: 80
       needs_enrichment: true
-      max_frames: 500
+      max_frames: 80
       max_files: 0
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
 
-  # Giant page enrichment (>500 frames): section-by-section
-  # Each section is committed independently — resumes where
-  # it left off if timeout occurs.
+  # Section-mode enrichment: large pages (>80 frames)
+  # One section per Claude invocation, committed independently.
+  # Resumable: timeout loses at most 1 section of work.
+  # Processes multiple pages per run (unlimited).
+  # Re-enrichment: only changed sections are re-processed.
   enrich-large:
     needs: sync
     if: success()
@@ -66,7 +67,7 @@ jobs:
       model: claude-sonnet-4-6
       max_turns: 80
       needs_enrichment: true
-      min_frames: 501
+      min_frames: 81
       max_files: 0
       section_mode: true
     secrets:
