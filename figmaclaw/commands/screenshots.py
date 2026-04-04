@@ -171,7 +171,9 @@ async def _run(
         await asyncio.to_thread(_release, lock_fd)
 
     screenshots = [r for r in results if isinstance(r, dict)]
-    return {"file_key": file_key, "screenshots": screenshots}
+    # Report frames that Figma couldn't render (URL was None)
+    failed = [nid for nid, url in all_urls.items() if url is None]
+    return {"file_key": file_key, "screenshots": screenshots, "failed": failed}
 
 
 async def _download_one(

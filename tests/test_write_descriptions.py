@@ -177,3 +177,27 @@ def test_update_descriptions_idempotent() -> None:
     result1, _ = _update_descriptions(_TEST_MD, descs)
     result2, _ = _update_descriptions(result1, descs)
     assert result1 == result2
+
+
+def test_update_descriptions_handles_failed_frames() -> None:
+    """INVARIANT: failed frames (screenshot unavailable) clear the placeholder."""
+    result, count = _update_descriptions(_TEST_MD, {
+        "11:1": "(screenshot unavailable)",
+    })
+    assert count == 1
+    assert "(screenshot unavailable)" in result
+    assert "| Login | `11:1` | (screenshot unavailable) |" in result
+    # This frame no longer has the "(no description yet)" placeholder
+    # so pending_sections() won't count it, breaking the stuck loop
+    assert result.count("(no description yet)") == 2  # 11:2 and 21:1 still pending
+
+
+def test_update_descriptions_clears_all_placeholders_with_mixed() -> None:
+    """INVARIANT: mix of real descriptions and unavailable markers works."""
+    result, count = _update_descriptions(_TEST_MD, {
+        "11:1": "A real login screen description",
+        "11:2": "(screenshot unavailable)",
+        "21:1": "The dashboard",
+    })
+    assert count == 3
+    assert "(no description yet)" not in result

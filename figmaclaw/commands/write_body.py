@@ -78,6 +78,49 @@ def _write_section(md: str, section_node_id: str, new_section_text: str) -> str:
     return f"---\n{fm_body}\n---\n{new_body}"
 
 
+def _write_section_intro(md: str, section_node_id: str, intro: str) -> str:
+    """Insert or replace a section intro without touching the frame table.
+
+    Finds the section heading, then inserts *intro* (1-2 sentences) between
+    the heading line and the table header (``| Screen |`` line). If an intro
+    already exists, it's replaced. The table and all other content are untouched.
+    """
+    parts = split_frontmatter(md)
+    if parts is None:
+        raise ValueError("No frontmatter found")
+    fm_body, body = parts
+
+    lines = body.split("\n")
+    heading_line: int | None = None
+    table_line: int | None = None
+
+    for i, line in enumerate(lines):
+        m = _SECTION_RE.match(line)
+        if m and m.group(2) == section_node_id:
+            heading_line = i
+            continue
+        if heading_line is not None and table_line is None:
+            if line.startswith("| "):
+                table_line = i
+                break
+            if _ANY_H2_RE.match(line):
+                # Next section before we found a table — no table in this section
+                table_line = i
+                break
+
+    if heading_line is None:
+        raise ValueError(f"Section `{section_node_id}` not found in body")
+    if table_line is None:
+        table_line = len(lines)
+
+    # Replace everything between heading and table with: blank + intro + blank
+    intro_lines = [lines[heading_line], "", intro.strip(), ""]
+    new_lines = lines[:heading_line] + intro_lines + lines[table_line:]
+    new_body = "\n".join(new_lines)
+
+    return f"---\n{fm_body}\n---\n{new_body}"
+
+
 @click.command("write-body")
 @click.argument("md_path", type=click.Path(exists=True, path_type=Path))
 @click.option(
@@ -85,6 +128,12 @@ def _write_section(md: str, section_node_id: str, new_section_text: str) -> str:
     "body_input",
     default=None,
     help="New body content (string or path to a file). Reads stdin if omitted.",
+)
+@click.option(
+    "--intro",
+    "intro_text",
+    default=None,
+    help="Write only a section intro (use with --section). Does not touch the frame table.",
 )
 @click.option(
     "--section",
@@ -98,6 +147,7 @@ def write_body_cmd(
     ctx: click.Context,
     md_path: Path,
     body_input: str | None,
+    intro_text: str | None,
     section_node_id: str | None,
     auto_commit: bool,
 ) -> None:
@@ -105,14 +155,35 @@ def write_body_cmd(
 
     MD_PATH is the path to a figmaclaw-rendered page .md file.
 
-    Default mode: writes new body content below the frontmatter (full replace).
-    With --section: surgically replaces one section, preserving everything else.
+    Modes:
+      - Default: full body replacement (writes everything below frontmatter).
+      - --section: surgically replaces one section (heading + intro + table).
+      - --section --intro: inserts/replaces only the section intro sentence,
+        leaving the frame table completely untouched. Safe for any section size.
 
     Does not call the Figma API.
     """
     repo_dir = Path(ctx.obj["repo_dir"])
     if not md_path.is_absolute():
         md_path = repo_dir / md_path
+
+    # --intro mode: just write the intro, no body content needed from stdin
+    if intro_text is not None and section_node_id is not None:
+        md_text = md_path.read_text()
+        fm = parse_frontmatter(md_text)
+        if fm is None:
+            raise click.UsageError(f"{md_path}: no figmaclaw frontmatter found")
+        try:
+            updated = _write_section_intro(md_text, section_node_id, intro_text)
+        except ValueError as e:
+            raise click.UsageError(str(e))
+        md_path.write_text(updated)
+        rel = str(md_path.relative_to(repo_dir) if md_path.is_relative_to(repo_dir) else md_path)
+        click.echo(f"write-body: updated intro for section {section_node_id} in {rel}")
+        if auto_commit:
+            if git_commit(repo_dir, [rel], f"sync: add intro for section in {rel}"):
+                click.echo(f"  committed: {rel}")
+        return
 
     if body_input is not None:
         p = Path(body_input)
@@ -122,7 +193,7 @@ def write_body_cmd(
             new_content = body_input
     else:
         if sys.stdin.isatty():
-            raise click.UsageError("Provide --body or pipe body content to stdin.")
+            raise click.UsageError("Provide --body, --intro, or pipe body content to stdin.")
         new_content = sys.stdin.read()
 
     md_text = md_path.read_text()

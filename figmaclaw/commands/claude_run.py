@@ -269,15 +269,6 @@ def default_prompt_path() -> Path:
     return _prompt_path("figma-batch-enrich.md")
 
 
-def frames_prompt_path() -> Path:
-    """Return the path to the bundled ``figma-frames-enrich.md`` prompt."""
-    return _prompt_path("figma-frames-enrich.md")
-
-
-def section_prompt_path() -> Path:
-    """Return the path to the bundled ``figma-section-enrich.md`` prompt."""
-    return _prompt_path("figma-section-enrich.md")
-
 
 def finalize_prompt_path() -> Path:
     """Return the path to the bundled ``figma-section-finalize.md`` prompt."""

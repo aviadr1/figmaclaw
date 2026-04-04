@@ -349,6 +349,57 @@ def test_write_section_last_section_before_screen_flows(tmp_path: Path) -> None:
     assert "## Screen flows" in updated
 
 
+def test_write_section_intro_only(tmp_path: Path) -> None:
+    """INVARIANT: --section --intro updates only the intro, table untouched."""
+    md_path = tmp_path / "page.md"
+    md_path.write_text(_SECTION_TEST_MD)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, [
+        "--repo-dir", str(tmp_path),
+        "write-body", str(md_path),
+        "--section", "10:1",
+        "--intro", "Updated auth intro via --intro flag.",
+    ])
+    assert result.exit_code == 0, result.output
+
+    updated = md_path.read_text()
+    assert "Updated auth intro via --intro flag." in updated
+    # Frame table is untouched
+    assert "| Login | `11:1` | (no description yet) |" in updated
+    assert "| Signup | `11:2` | (no description yet) |" in updated
+    # Other sections untouched
+    assert "Dashboard intro." in updated
+    # Mermaid untouched
+    assert "```mermaid" in updated
+
+
+def test_write_section_intro_replaces_existing(tmp_path: Path) -> None:
+    """INVARIANT: --intro replaces existing intro, not appends."""
+    md_path = tmp_path / "page.md"
+    md_path.write_text(_SECTION_TEST_MD)
+
+    # First write
+    runner = CliRunner()
+    runner.invoke(cli, [
+        "--repo-dir", str(tmp_path),
+        "write-body", str(md_path),
+        "--section", "10:1",
+        "--intro", "First intro.",
+    ])
+    # Second write
+    runner.invoke(cli, [
+        "--repo-dir", str(tmp_path),
+        "write-body", str(md_path),
+        "--section", "10:1",
+        "--intro", "Second intro.",
+    ])
+
+    updated = md_path.read_text()
+    assert "Second intro." in updated
+    assert "First intro." not in updated
+
+
 def test_write_section_not_found(tmp_path: Path) -> None:
     """INVARIANT: --section with unknown node_id fails with UsageError."""
     md_path = tmp_path / "page.md"
