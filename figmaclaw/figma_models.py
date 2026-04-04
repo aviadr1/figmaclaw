@@ -97,8 +97,8 @@ def from_page_node(page_node: dict, *, file_key: str, file_name: str) -> FigmaPa
 
         if child_type == "SECTION":
             child_children = child.get("children", [])
-            frame_nodes = [c for c in child_children if c.get("type") == "FRAME"]
-            component_nodes = [c for c in child_children if c.get("type") in _COMPONENT_TYPES]
+            frame_nodes = [c for c in child_children if c.get("type") == "FRAME" and c.get("visible", True) is not False]
+            component_nodes = [c for c in child_children if c.get("type") in _COMPONENT_TYPES and c.get("visible", True) is not False]
             # Component library: section has components but no frames
             is_component_lib = bool(component_nodes) and not frame_nodes
             # Render nodes: frames take priority; fall back to component nodes for libs
@@ -111,7 +111,7 @@ def from_page_node(page_node: dict, *, file_key: str, file_name: str) -> FigmaPa
                 is_component_library=is_component_lib,
             ))
 
-        elif child_type == "FRAME":
+        elif child_type == "FRAME" and child.get("visible", True) is not False:
             all_frames_for_flows.append(child)
             ungrouped_frames.append(_node_to_frame(child, file_key))
 

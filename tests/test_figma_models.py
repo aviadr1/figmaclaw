@@ -241,3 +241,27 @@ def test_figma_section_is_component_library_defaults_to_false():
     """INVARIANT: FigmaSection.is_component_library defaults to False."""
     section = FigmaSection(node_id="1:1", name="Normal Section")
     assert section.is_component_library is False
+
+
+def test_hidden_frames_excluded():
+    """INVARIANT: Frames with visible=false are filtered out of the page model.
+
+    Hidden frames can't be rendered by the Figma image export API (returns null URL).
+    Including them causes infinite loops in enrichment (screenshots returns nothing,
+    but the frame stays as '(no description yet)' forever).
+    """
+    canvas = _canvas("0:1", "Page", [
+        _frame("1:1", "Visible frame"),
+        {**_frame("1:2", "Hidden frame"), "visible": False},
+        _section("2:1", "My Section", [
+            _frame("3:1", "Visible in section"),
+            {**_frame("3:2", "Hidden in section"), "visible": False},
+        ]),
+    ])
+    page = from_page_node(canvas, file_key="abc123", file_name="File")
+
+    all_frame_ids = [f.node_id for s in page.sections for f in s.frames]
+    assert "1:1" in all_frame_ids, "Visible top-level frame should be included"
+    assert "1:2" not in all_frame_ids, "Hidden top-level frame must be excluded"
+    assert "3:1" in all_frame_ids, "Visible frame in section should be included"
+    assert "3:2" not in all_frame_ids, "Hidden frame in section must be excluded"

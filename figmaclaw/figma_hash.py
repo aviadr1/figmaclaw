@@ -77,10 +77,10 @@ def compute_frame_hashes(page_node: dict) -> dict[str, str]:
     result: dict[str, str] = {}
     for child in page_node.get("children", []):
         child_type = child.get("type", "")
-        if child_type == "FRAME":
+        if child_type == "FRAME" and child.get("visible", True) is not False:
             result[child["id"]] = compute_frame_hash(child)
         elif child_type == "SECTION":
             for grandchild in child.get("children", []):
-                if grandchild.get("type") in _STRUCTURAL_TYPES:
+                if grandchild.get("type") in _STRUCTURAL_TYPES and grandchild.get("visible", True) is not False:
                     result[grandchild["id"]] = compute_frame_hash(grandchild)
     return result
