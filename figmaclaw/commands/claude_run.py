@@ -98,6 +98,10 @@ def enrichment_info(md_path: Path) -> tuple[bool, int]:
     except OSError:
         return False, 0
 
+    # Must have figmaclaw frontmatter to be enrichable
+    if "file_key:" not in text:
+        return False, 0
+
     # Fast frontmatter check — enriched files have this field
     if "enriched_hash:" in (text.split("\n---")[0] if "\n---" in text else ""):
         return False, 0

@@ -122,13 +122,19 @@ class TestEnrichmentInfo:
         assert needs is True
         assert count == 3
 
-    def test_empty_file_needs_enrichment(self, tmp_path: Path) -> None:
-        """Empty file → needs enrichment, 0 frames."""
+    def test_empty_file_skipped(self, tmp_path: Path) -> None:
+        """Empty file → no figmaclaw frontmatter → skip."""
         md = tmp_path / "page.md"
         md.write_text("")
         needs, count = enrichment_info(md)
-        assert needs is True
-        assert count == 0
+        assert needs is False
+
+    def test_no_frontmatter_skipped(self, tmp_path: Path) -> None:
+        """File without file_key → not a figmaclaw file → skip."""
+        md = tmp_path / "page.md"
+        md.write_text("# Just a README\nSome text\n")
+        needs, count = enrichment_info(md)
+        assert needs is False
 
     def test_enriched_hash_in_body_not_frontmatter_still_needs_enrichment(
         self, tmp_path: Path
@@ -152,12 +158,11 @@ class TestEnrichmentInfo:
         assert count == 1
 
     def test_no_frontmatter_delimiter(self, tmp_path: Path) -> None:
-        """File without --- delimiter → no frontmatter → needs enrichment."""
+        """File without --- delimiter → no figmaclaw frontmatter → skip."""
         md = tmp_path / "page.md"
         md.write_text("Just plain text, no frontmatter at all.")
         needs, count = enrichment_info(md)
-        assert needs is True
-        assert count == 0
+        assert needs is False
 
     def test_header_and_separator_rows_not_counted(self, tmp_path: Path) -> None:
         """Table header (Node ID) and separator (---) rows must not be counted as frames."""
