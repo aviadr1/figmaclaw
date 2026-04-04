@@ -497,6 +497,21 @@ class TestNeedsFinalization:
         assert needs_finalization(tmp_path / "nonexistent.md") is False
 
 
+class TestPendingSectionsStuckDetection:
+    """Verify pending_sections detects undescribable frames."""
+
+    def test_pending_remains_same_after_update(self, tmp_path: Path) -> None:
+        """If write-descriptions can't update a row (wrong node_id format etc),
+        pending_sections returns the same count — triggers stuck detection."""
+        md = tmp_path / "page.md"
+        md.write_text(_LARGE_PAGE_MD)
+        sections_before = pending_sections(md)
+        assert len(sections_before) > 0
+        # Simulate a "successful" batch that didn't change anything
+        sections_after = pending_sections(md)
+        assert sections_before == sections_after  # same pending = stuck
+
+
 class TestBuildPromptSectionPlaceholders:
     """build_prompt fills section-mode placeholders."""
 

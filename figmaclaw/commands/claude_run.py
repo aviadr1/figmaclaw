@@ -488,9 +488,30 @@ def claude_run_cmd(
             )
 
             chunk_num = 0
+            prev_pending_count = None
+            stale_retries = 0
             while sections:
                 chunk_num += 1
                 total_pending = sum(int(s["pending_frames"]) for s in sections)
+
+                # Detect stuck loop: if pending count hasn't decreased after
+                # a successful batch, the remaining frames are undescribable
+                # (e.g. screenshot download fails). Skip to next file after 2 retries.
+                if prev_pending_count is not None and total_pending >= prev_pending_count:
+                    stale_retries += 1
+                    if stale_retries >= 2:
+                        click.echo(
+                            f"[claude-run] [{i}/{total}] STUCK: {total_pending} frames "
+                            f"won't describe (likely unrenderable screenshots). "
+                            f"Moving to next file.",
+                            err=True,
+                        )
+                        _log_enrichment(repo_dir, file_path, "stuck", total_pending, 0, False)
+                        break
+                else:
+                    stale_retries = 0
+                prev_pending_count = total_pending
+
                 section_names = ", ".join(
                     str(s["name"]) for s in sections[:5]
                 ) + (f" +{len(sections)-5} more" if len(sections) > 5 else "")
