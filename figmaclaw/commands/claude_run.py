@@ -236,8 +236,9 @@ def build_prompt(
     files: list[Path],
     section_node_id: str = "",
     section_name: str = "",
+    section_list: str = "",
 ) -> str:
-    """Fill template placeholders for a single file or section."""
+    """Fill template placeholders for a single file, section, or batch."""
     file_path = files[0] if files else target
     content = file_path.read_text() if file_path.exists() else ""
     file_list = "\n".join(f"- {f}" for f in files)
@@ -250,6 +251,7 @@ def build_prompt(
         .replace("{target_dir}", str(target))
         .replace("{section_node_id}", section_node_id)
         .replace("{section_name}", section_name)
+        .replace("{section_list}", section_list)
     )
 
 
@@ -469,125 +471,87 @@ def claude_run_cmd(
             continue
 
         if section_mode and frame_count > SECTION_THRESHOLD:
-            # Section-by-section enrichment for large pages
+            # Batch mode: describe up to 80 pending frames per Claude invocation
+            # using write-descriptions (cross-section, mechanical row updates).
+            # Much faster than per-section invocations — eliminates startup overhead.
+            batch_template = _prompt_path("figma-sections-batch.md").read_text()
             sections = pending_sections(file_path)
-            if sections:
-                sec_template = section_prompt_path().read_text()
-                frames_template = frames_prompt_path().read_text()
+            total_pending = sum(int(s["pending_frames"]) for s in sections)
+            click.echo(
+                f"[claude-run] [{i}/{total}] batch-mode: {file_path} "
+                f"({total_pending} pending frames across {len(sections)} sections)",
+                err=True,
+            )
+
+            chunk_num = 0
+            while sections:
+                chunk_num += 1
+                total_pending = sum(int(s["pending_frames"]) for s in sections)
+                section_names = ", ".join(
+                    str(s["name"]) for s in sections[:5]
+                ) + (f" +{len(sections)-5} more" if len(sections) > 5 else "")
+
                 click.echo(
-                    f"[claude-run] [{i}/{total}] section-mode: {file_path} "
-                    f"({len(sections)} pending sections)",
+                    f"[claude-run] [{i}/{total}] batch {chunk_num} "
+                    f"({total_pending} pending): {section_names}",
                     err=True,
                 )
-                for si, section in enumerate(sections, 1):
-                    node_id = str(section["node_id"])
-                    name = str(section["name"])
-                    pending = int(section["pending_frames"])
+                t0 = time.monotonic()
+                prompt = build_prompt(
+                    batch_template, file_path, [file_path],
+                    section_list=section_names,
+                )
+                rc = _run_claude(
+                    prompt=prompt, model=model, max_turns=max_turns,
+                    skip_permissions=skip_permissions, extra_flags=[],
+                )
+                dur = time.monotonic() - t0
+                ok = rc == 0
+                _log_enrichment(repo_dir, file_path, "batch", total_pending, dur, ok)
+                if not ok:
+                    click.echo(
+                        f"[claude-run] [{i}/{total}] batch FAILED (exit {rc}, {dur:.0f}s): "
+                        f"{file_path}",
+                        err=True,
+                    )
+                    failed += 1
+                    break
+                click.echo(
+                    f"[claude-run] [{i}/{total}] batch OK ({dur:.0f}s): {file_path}",
+                    err=True,
+                )
+                succeeded += 1
 
-                    if pending > SECTION_THRESHOLD:
-                        # Large sections: frame-level mode (write-descriptions).
-                        # Calls Claude repeatedly, up to 80 frames per invocation.
-                        # Loop until no pending frames remain in this section.
-                        chunk_num = 0
-                        while pending > 0:
-                            chunk_num += 1
-                            click.echo(
-                                f"[claude-run] [{i}/{total}] frames [{si}/{len(sections)}] "
-                                f"chunk {chunk_num}: {name} ({node_id}, {pending} pending)",
-                                err=True,
-                            )
-                            t0 = time.monotonic()
-                            prompt = build_prompt(
-                                frames_template, file_path, [file_path],
-                                section_node_id=node_id, section_name=name,
-                            )
-                            rc = _run_claude(
-                                prompt=prompt, model=model, max_turns=max_turns,
-                                skip_permissions=skip_permissions, extra_flags=[],
-                            )
-                            dur = time.monotonic() - t0
-                            ok = rc == 0
-                            _log_enrichment(repo_dir, file_path, "frames", pending, dur, ok, name)
-                            if not ok:
-                                click.echo(
-                                    f"[claude-run] [{i}/{total}] frames FAILED (exit {rc}, {dur:.0f}s): "
-                                    f"{name} in {file_path}",
-                                    err=True,
-                                )
-                                failed += 1
-                                break
-                            click.echo(
-                                f"[claude-run] [{i}/{total}] frames OK ({dur:.0f}s): {name}",
-                                err=True,
-                            )
-                            succeeded += 1
+                # Re-check pending after commit
+                subprocess.run(["git", "pull", "--no-rebase"], capture_output=True)
+                sections = pending_sections(file_path)
 
-                            # Re-check pending count after this chunk
-                            subprocess.run(["git", "pull", "--no-rebase"], capture_output=True)
-                            new_sections = pending_sections(file_path)
-                            pending = 0
-                            for s in new_sections:
-                                if s["node_id"] == node_id:
-                                    pending = int(s["pending_frames"])
-                                    break
-                        else:
-                            continue  # while completed normally
-                        break  # while broke due to failure → stop this file
-                    else:
-                        # Small sections: section-level mode (write-body --section)
-                        click.echo(
-                            f"[claude-run] [{i}/{total}] section [{si}/{len(sections)}]: "
-                            f"{name} ({node_id}, {pending} pending)",
-                            err=True,
-                        )
-                        t0 = time.monotonic()
-                        prompt = build_prompt(
-                            sec_template, file_path, [file_path],
-                            section_node_id=node_id, section_name=name,
-                        )
-                        rc = _run_claude(
-                            prompt=prompt, model=model, max_turns=max_turns,
-                            skip_permissions=skip_permissions, extra_flags=[],
-                        )
-                        dur = time.monotonic() - t0
-                        ok = rc == 0
-                        _log_enrichment(repo_dir, file_path, "section", pending, dur, ok, name)
-                        if not ok:
-                            click.echo(
-                                f"[claude-run] [{i}/{total}] section FAILED (exit {rc}, {dur:.0f}s): "
-                                f"{name} in {file_path}",
-                                err=True,
-                            )
-                            failed += 1
-                            break  # stop this file, resume next CI run
-                        click.echo(
-                            f"[claude-run] [{i}/{total}] section OK ({dur:.0f}s, {pending} frames): "
-                            f"{name}",
-                            err=True,
-                        )
-                        succeeded += 1
-
-            # Check if all sections done → finalize
+            # All frames described → finalize (page summary + section intros + mermaid)
             if needs_finalization(file_path):
                 click.echo(
                     f"[claude-run] [{i}/{total}] finalizing: {file_path}",
                     err=True,
                 )
+                t0 = time.monotonic()
                 fin_template = finalize_prompt_path().read_text()
                 prompt = build_prompt(fin_template, file_path, [file_path])
                 rc = _run_claude(
                     prompt=prompt, model=model, max_turns=max_turns,
                     skip_permissions=skip_permissions, extra_flags=[],
                 )
-                if rc != 0:
+                dur = time.monotonic() - t0
+                ok = rc == 0
+                _log_enrichment(repo_dir, file_path, "finalize", frame_count, dur, ok)
+                if not ok:
                     click.echo(
-                        f"[claude-run] [{i}/{total}] finalize FAILED (exit {rc}): {file_path}",
+                        f"[claude-run] [{i}/{total}] finalize FAILED (exit {rc}, {dur:.0f}s): "
+                        f"{file_path}",
                         err=True,
                     )
                     failed += 1
                 else:
                     click.echo(
-                        f"[claude-run] [{i}/{total}] finalize OK: {file_path}",
+                        f"[claude-run] [{i}/{total}] finalize OK ({dur:.0f}s): {file_path}",
                         err=True,
                     )
                     succeeded += 1
