@@ -157,7 +157,11 @@ async def _run(
             all_urls: dict[str, str | None] = {}
             for i in range(0, len(node_ids), _FIGMA_IMAGE_BATCH):
                 batch = node_ids[i : i + _FIGMA_IMAGE_BATCH]
-                urls = await client.get_image_urls(file_key, batch)
+                try:
+                    urls = await client.get_image_urls(file_key, batch)
+                except Exception:
+                    # API error for this batch — mark all as failed
+                    urls = {nid: None for nid in batch}
                 all_urls.update(urls)
 
             semaphore = asyncio.Semaphore(_MAX_CONCURRENT_DOWNLOADS)
@@ -171,8 +175,15 @@ async def _run(
         await asyncio.to_thread(_release, lock_fd)
 
     screenshots = [r for r in results if isinstance(r, dict)]
-    # Report frames that Figma couldn't render (URL was None)
-    failed = [nid for nid, url in all_urls.items() if url is None]
+    # Frames where Figma returned null URL (hidden/deleted/unrenderable)
+    null_url = {nid for nid, url in all_urls.items() if url is None}
+    # Frames where download failed (URL existed but PNG download errored)
+    downloaded_ids = {r["node_id"] for r in screenshots}
+    download_failed = {
+        nid for nid, url in all_urls.items()
+        if url is not None and nid not in downloaded_ids
+    }
+    failed = sorted(null_url | download_failed)
     return {"file_key": file_key, "screenshots": screenshots, "failed": failed}
 
 
