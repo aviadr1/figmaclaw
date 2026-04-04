@@ -30,6 +30,7 @@ import time
 from pathlib import Path
 
 import click
+import pydantic
 
 from figmaclaw.figma_md_parse import section_line_ranges
 
@@ -41,16 +42,24 @@ def _log_enrichment(
     repo_dir: Path, file_path: Path, mode: str,
     frames: int, duration_s: float, success: bool,
     section_name: str = "",
+    claude: ClaudeResult | None = None,
 ) -> None:
     """Append one row to the enrichment log for empirical analysis."""
     log_path = repo_dir / ENRICHMENT_LOG
     log_path.parent.mkdir(parents=True, exist_ok=True)
     if not log_path.exists():
-        log_path.write_text("timestamp,file,mode,frames,duration_s,success,section\n")
+        log_path.write_text(
+            "timestamp,file,mode,frames,duration_s,success,section,"
+            "turns,cost_usd,claude_duration_ms,stop_reason\n"
+        )
     from datetime import datetime, timezone
     ts = datetime.now(timezone.utc).isoformat()
     rel = str(file_path.relative_to(repo_dir)) if file_path.is_relative_to(repo_dir) else str(file_path)
-    row = f"{ts},{rel},{mode},{frames},{duration_s:.0f},{success},{section_name}\n"
+    turns = claude.turns if claude else ""
+    cost = f"{claude.cost_usd:.4f}" if claude else ""
+    claude_dur = claude.duration_ms if claude else ""
+    stop = claude.stop_reason if claude else ""
+    row = f"{ts},{rel},{mode},{frames},{duration_s:.0f},{success},{section_name},{turns},{cost},{claude_dur},{stop}\n"
     with open(log_path, "a") as f:
         f.write(row)
 
@@ -280,14 +289,29 @@ def finalize_prompt_path() -> Path:
 # ---------------------------------------------------------------------------
 
 
+class ClaudeResult(pydantic.BaseModel):
+    """Metrics extracted from a ``claude -p`` stream-json run."""
+    exit_code: int = 0
+    turns: int = 0
+    cost_usd: float = 0.0
+    duration_ms: int = 0
+    is_error: bool = False
+    stop_reason: str = ""
+
+
 def _run_claude(
     prompt: str,
     model: str,
     max_turns: int,
     skip_permissions: bool,
     extra_flags: list[str],
-) -> int:
-    """Invoke ``claude -p`` and stream output to stdout/stderr."""
+) -> ClaudeResult:
+    """Invoke ``claude -p`` and stream output to stdout/stderr.
+
+    Returns a :class:`ClaudeResult` with metrics parsed from stream-json.
+    """
+    import json as _json
+
     cmd = [
         "claude", "-p",
         "--output-format", "stream-json",
@@ -319,12 +343,25 @@ def _run_claude(
     t = threading.Thread(target=_relay_stderr, daemon=True)
     t.start()
 
+    result = ClaudeResult()
     for line in proc.stdout:
         sys.stdout.buffer.write(line)
         sys.stdout.buffer.flush()
+        # Parse result event for metrics
+        try:
+            msg = _json.loads(line)
+            if msg.get("type") == "result":
+                result.turns = msg.get("num_turns", 0)
+                result.cost_usd = msg.get("total_cost_usd", 0.0)
+                result.duration_ms = msg.get("duration_ms", 0)
+                result.is_error = msg.get("is_error", False)
+                result.stop_reason = msg.get("stop_reason", "")
+        except (ValueError, KeyError):
+            pass
 
     t.join()
-    return proc.wait()
+    result.exit_code = proc.wait()
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -522,11 +559,11 @@ def claude_run_cmd(
                     skip_permissions=skip_permissions, extra_flags=[],
                 )
                 dur = time.monotonic() - t0
-                ok = rc == 0
-                _log_enrichment(repo_dir, file_path, "batch", total_pending, dur, ok)
+                ok = rc.exit_code == 0
+                _log_enrichment(repo_dir, file_path, "batch", total_pending, dur, ok, claude=rc)
                 if not ok:
                     click.echo(
-                        f"[claude-run] [{i}/{total}] batch FAILED (exit {rc}, {dur:.0f}s): "
+                        f"[claude-run] [{i}/{total}] batch FAILED (exit {rc.exit_code}, {dur:.0f}s): "
                         f"{file_path}",
                         err=True,
                     )
@@ -556,11 +593,11 @@ def claude_run_cmd(
                     skip_permissions=skip_permissions, extra_flags=[],
                 )
                 dur = time.monotonic() - t0
-                ok = rc == 0
-                _log_enrichment(repo_dir, file_path, "finalize", frame_count, dur, ok)
+                ok = rc.exit_code == 0
+                _log_enrichment(repo_dir, file_path, "finalize", frame_count, dur, ok, claude=rc)
                 if not ok:
                     click.echo(
-                        f"[claude-run] [{i}/{total}] finalize FAILED (exit {rc}, {dur:.0f}s): "
+                        f"[claude-run] [{i}/{total}] finalize FAILED (exit {rc.exit_code}, {dur:.0f}s): "
                         f"{file_path}",
                         err=True,
                     )
@@ -581,10 +618,10 @@ def claude_run_cmd(
                 skip_permissions=skip_permissions, extra_flags=[],
             )
             dur = time.monotonic() - t0
-            ok = rc == 0
-            _log_enrichment(repo_dir, file_path, "whole-page", frame_count, dur, ok)
+            ok = rc.exit_code == 0
+            _log_enrichment(repo_dir, file_path, "whole-page", frame_count, dur, ok, claude=rc)
             if not ok:
-                click.echo(f"[claude-run] [{i}/{total}] FAILED (exit {rc}, {dur:.0f}s): {file_path}", err=True)
+                click.echo(f"[claude-run] [{i}/{total}] FAILED (exit {rc.exit_code}, {dur:.0f}s): {file_path}", err=True)
                 failed += 1
             else:
                 click.echo(f"[claude-run] [{i}/{total}] OK ({dur:.0f}s, {frame_count} frames): {file_path}", err=True)

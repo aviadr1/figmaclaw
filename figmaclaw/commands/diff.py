@@ -1,115 +1,58 @@
-"""figmaclaw diff — show what designers actually changed in Figma design files.
+"""figmaclaw diff — show what designers actually changed in Figma.
 
-Analyzes git history of figma/ markdown files to surface structural design
-changes (new pages, added/removed frames, flow changes) while filtering out
-enrichment-only changes (body prose, enriched_hash, enriched_at, etc.).
+Compares the Figma file tree at two points in time using the Figma
+Versions API, then reports structural changes: new/removed frames,
+renames, and flow changes.
 
-The key insight: frontmatter fields ``frames:`` and ``flows:`` only change
-when ``figmaclaw pull`` syncs actual Figma design changes. Body descriptions
-and enrichment hashes change during enrichment and are not design changes.
+This is the **only reliable way** to detect design changes — the git
+history of .md files conflates initial sync, enrichment, and real
+designer work.  The Figma API is the source of truth.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 import re
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import click
 
-from figmaclaw.figma_md_parse import ParsedFrame, section_line_ranges
+from figmaclaw.figma_client import FigmaClient
+from figmaclaw.figma_models import FigmaFrame, from_page_node
 from figmaclaw.figma_parse import parse_frontmatter
 
-# ── Duration parsing ────────────────────────────────────────────────
+# ── Duration parsing ───────────────────────────────────────────────
 
 _DURATION_RE = re.compile(r"^(\d+)\s*([dwmy])$", re.IGNORECASE)
-
 _DURATION_DAYS = {"d": 1, "w": 7, "m": 30, "y": 365}
 
 
 def _parse_duration(since: str) -> timedelta:
-    """Convert ``7d``, ``2w``, ``1m``, ``1y`` to a timedelta."""
     m = _DURATION_RE.match(since.strip())
     if not m:
         raise click.BadParameter(
-            f"Cannot parse duration {since!r}. Use e.g. '7d', '2w', '1m', '1y'.",
+            f"Cannot parse duration {since!r}. Use e.g. '7d', '2w', '1m'.",
             param_hint="--since",
         )
     n, unit = int(m.group(1)), m.group(2).lower()
     return timedelta(days=_DURATION_DAYS[unit] * n)
 
 
-def _duration_to_git_since(since: str) -> str:
-    """Convert ``7d`` → ``7.days.ago``, ``2w`` → ``14.days.ago``, etc."""
-    delta = _parse_duration(since)
-    return f"{delta.days}.days.ago"
+# ── Data structures ────────────────────────────────────────────────
 
 
-# ── Git helpers ─────────────────────────────────────────────────────
-
-
-def _git(repo_dir: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    """Run a git command and return the result."""
-    return subprocess.run(
-        ["git", "-C", str(repo_dir), *args],
-        capture_output=True, text=True, check=False,
-    )
-
-
-def _changed_files(repo_dir: Path, git_since: str, target: str) -> list[str]:
-    """Return .md files under *target* that changed in git since *git_since*."""
-    result = _git(
-        repo_dir, "log", f"--since={git_since}", "--diff-filter=AMDRC",
-        "--name-only", "--pretty=format:", "--", target,
-    )
-    if result.returncode != 0:
-        return []
-    seen: set[str] = set()
-    paths: list[str] = []
-    for line in result.stdout.splitlines():
-        line = line.strip()
-        if line and line.endswith(".md") and line not in seen:
-            seen.add(line)
-            paths.append(line)
-    return paths
-
-
-def _file_at_ref(repo_dir: Path, ref: str, path: str) -> str | None:
-    """Return file contents at a git ref, or None if it doesn't exist."""
-    result = _git(repo_dir, "show", f"{ref}:{path}")
-    if result.returncode != 0:
-        return None
-    return result.stdout
-
-
-def _oldest_commit_since(repo_dir: Path, git_since: str, path: str) -> str | None:
-    """Return the oldest commit hash that touched *path* since *git_since*."""
-    result = _git(
-        repo_dir, "log", f"--since={git_since}", "--format=%H",
-        "--reverse", "--", path,
-    )
-    if result.returncode != 0 or not result.stdout.strip():
-        return None
-    return result.stdout.strip().splitlines()[0]
-
-
-# ── Frame name lookup ───────────────────────────────────────────────
-
-
-def _frame_names_from_body(md: str) -> dict[str, str]:
-    """Extract {node_id: frame_name} from body tables."""
-    names: dict[str, str] = {}
-    for section, _, _ in section_line_ranges(md):
-        for frame in section.frames:
-            names[frame.node_id] = frame.name
-    return names
-
-
-# ── Diff data structures ────────────────────────────────────────────
+@dataclass
+class VersionInfo:
+    id: str
+    created_at: str
+    label: str
+    user: str
 
 
 @dataclass
@@ -127,21 +70,23 @@ class FrameRename:
 
 @dataclass
 class PageDiff:
-    path: str
-    file_key: str = ""
-    page_node_id: str = ""
-    is_new: bool = False
-    total_frames: int = 0
+    page_node_id: str
+    page_name: str
+    file_key: str
+    figma_url: str = ""
+    frames_before: int = 0
+    frames_after: int = 0
     added_frames: list[FrameChange] = field(default_factory=list)
     removed_frames: list[FrameChange] = field(default_factory=list)
     renamed_frames: list[FrameRename] = field(default_factory=list)
     added_flows: list[list[str]] = field(default_factory=list)
     removed_flows: list[list[str]] = field(default_factory=list)
+    is_new_page: bool = False
 
     @property
     def has_changes(self) -> bool:
         return (
-            self.is_new
+            self.is_new_page
             or bool(self.added_frames)
             or bool(self.removed_frames)
             or bool(self.renamed_frames)
@@ -150,205 +95,306 @@ class PageDiff:
         )
 
 
-# ── Core diff logic ─────────────────────────────────────────────────
+@dataclass
+class FileDiff:
+    file_key: str
+    file_name: str
+    old_version: VersionInfo | None
+    new_version: VersionInfo | None
+    versions_in_range: list[VersionInfo]
+    pages: list[PageDiff]
 
 
-def compute_diff(
-    repo_dir: Path, target: str, since: str,
-) -> tuple[list[PageDiff], datetime, datetime]:
-    """Compute design-only diffs for all changed files.
+# ── Extract frames from Figma page node ────────────────────────────
 
-    Returns (diffs, since_date, until_date).
+
+def _extract_frames(page_node: dict, file_key: str) -> tuple[
+    dict[str, FigmaFrame], list[tuple[str, str]],
+]:
+    """Parse a CANVAS node and return (frames_by_id, flow_edges)."""
+    if not page_node:
+        return {}, []
+    page = from_page_node(page_node, file_key=file_key, file_name="")
+    frames: dict[str, FigmaFrame] = {}
+    for section in page.sections:
+        for f in section.frames:
+            frames[f.node_id] = f
+    return frames, list(page.flows)
+
+
+# ── Core logic ─────────────────────────────────────────────────────
+
+
+async def _find_version_before(
+    client: FigmaClient, file_key: str, cutoff: datetime,
+) -> tuple[VersionInfo | None, list[VersionInfo]]:
+    """Find the latest version before *cutoff* and all versions after it.
+
+    Returns (old_version_or_none, versions_in_range).
     """
-    git_since = _duration_to_git_since(since)
-    delta = _parse_duration(since)
-    now = datetime.now(timezone.utc)
-    since_date = now - delta
-    until_date = now
+    raw_versions = await client.get_versions(file_key)
+    old_version: VersionInfo | None = None
+    in_range: list[VersionInfo] = []
 
-    changed = _changed_files(repo_dir, git_since, target)
-    diffs: list[PageDiff] = []
-
-    for rel_path in changed:
-        abs_path = repo_dir / rel_path
-        if not abs_path.exists():
-            continue  # file was deleted
-
-        current_md = abs_path.read_text()
-        current_fm = parse_frontmatter(current_md)
-        if current_fm is None:
-            continue  # not a figmaclaw file
-
-        # Get old version
-        oldest = _oldest_commit_since(repo_dir, git_since, rel_path)
-        if oldest is None:
+    for v in raw_versions:
+        created = v.get("created_at", "")
+        user = v.get("user", {})
+        vi = VersionInfo(
+            id=v.get("id", ""),
+            created_at=created,
+            label=v.get("label", ""),
+            user=user.get("handle", "") if user else "",
+        )
+        # Parse the ISO timestamp
+        try:
+            ts = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
             continue
+        if ts < cutoff:
+            if old_version is None:
+                old_version = vi
+            break
+        in_range.append(vi)
 
-        # Get file at the commit before the oldest change
-        old_md = _file_at_ref(repo_dir, f"{oldest}~1", rel_path)
+    in_range.reverse()  # oldest first
+    return old_version, in_range
+
+
+async def _diff_file(
+    client: FigmaClient,
+    file_key: str,
+    file_name: str,
+    page_ids: list[str],
+    old_version: VersionInfo | None,
+    versions_in_range: list[VersionInfo],
+) -> FileDiff:
+    """Compare all pages in a file between old_version and current HEAD."""
+    pages: list[PageDiff] = []
+    new_version = versions_in_range[-1] if versions_in_range else None
+
+    for page_id in page_ids:
+        # Current state
+        current_node = await client.get_page(file_key, page_id)
+        cur_frames, cur_flows = _extract_frames(current_node, file_key)
+
+        # Old state
+        if old_version:
+            try:
+                old_node = await client.get_page_at_version(
+                    file_key, page_id, old_version.id,
+                )
+            except Exception:
+                old_node = {}
+        else:
+            old_node = {}
+
+        old_frames, old_flows = _extract_frames(old_node, file_key)
+        page_name = current_node.get("name", page_id)
 
         diff = PageDiff(
-            path=rel_path,
-            file_key=current_fm.file_key,
-            page_node_id=current_fm.page_node_id,
-            total_frames=len(current_fm.frames),
+            page_node_id=page_id,
+            page_name=page_name,
+            file_key=file_key,
+            figma_url=f"https://www.figma.com/design/{file_key}?node-id={page_id.replace(':', '-')}",
+            frames_before=len(old_frames),
+            frames_after=len(cur_frames),
+            is_new_page=not old_node,
         )
 
-        if old_md is None:
-            # New file — no old version exists
-            diff.is_new = True
-            current_names = _frame_names_from_body(current_md)
-            for nid in current_fm.frames:
-                diff.added_frames.append(FrameChange(
-                    node_id=nid, name=current_names.get(nid, ""),
+        old_ids = set(old_frames)
+        cur_ids = set(cur_frames)
+
+        for nid in sorted(cur_ids - old_ids):
+            f = cur_frames[nid]
+            diff.added_frames.append(FrameChange(node_id=nid, name=f.name))
+        for nid in sorted(old_ids - cur_ids):
+            f = old_frames[nid]
+            diff.removed_frames.append(FrameChange(node_id=nid, name=f.name))
+        for nid in sorted(old_ids & cur_ids):
+            old_name = old_frames[nid].name
+            new_name = cur_frames[nid].name
+            if old_name != new_name:
+                diff.renamed_frames.append(FrameRename(
+                    node_id=nid, old_name=old_name, new_name=new_name,
                 ))
-            diff.added_flows = [list(edge) for edge in current_fm.flows]
-        else:
-            old_fm = parse_frontmatter(old_md)
-            if old_fm is None:
-                # File existed but wasn't a figmaclaw file before — treat as new
-                diff.is_new = True
-                current_names = _frame_names_from_body(current_md)
-                for nid in current_fm.frames:
-                    diff.added_frames.append(FrameChange(
-                        node_id=nid, name=current_names.get(nid, ""),
-                    ))
-                diff.added_flows = [list(edge) for edge in current_fm.flows]
-            else:
-                # Compare frames
-                old_set = set(old_fm.frames)
-                new_set = set(current_fm.frames)
-                current_names = _frame_names_from_body(current_md)
-                old_names = _frame_names_from_body(old_md)
 
-                for nid in sorted(new_set - old_set):
-                    diff.added_frames.append(FrameChange(
-                        node_id=nid, name=current_names.get(nid, ""),
-                    ))
-                for nid in sorted(old_set - new_set):
-                    diff.removed_frames.append(FrameChange(
-                        node_id=nid, name=old_names.get(nid, ""),
-                    ))
-
-                # Detect renames (same node_id, different name)
-                for nid in sorted(old_set & new_set):
-                    old_name = old_names.get(nid, "")
-                    new_name = current_names.get(nid, "")
-                    if old_name and new_name and old_name != new_name:
-                        diff.renamed_frames.append(FrameRename(
-                            node_id=nid, old_name=old_name, new_name=new_name,
-                        ))
-
-                # Compare flows
-                old_flows = {tuple(e) for e in old_fm.flows if len(e) == 2}
-                new_flows = {tuple(e) for e in current_fm.flows if len(e) == 2}
-                for edge in sorted(new_flows - old_flows):
-                    diff.added_flows.append(list(edge))
-                for edge in sorted(old_flows - new_flows):
-                    diff.removed_flows.append(list(edge))
+        old_flow_set = set(old_flows)
+        cur_flow_set = set(cur_flows)
+        for edge in sorted(cur_flow_set - old_flow_set):
+            diff.added_flows.append(list(edge))
+        for edge in sorted(old_flow_set - cur_flow_set):
+            diff.removed_flows.append(list(edge))
 
         if diff.has_changes:
-            diffs.append(diff)
+            pages.append(diff)
 
-    return diffs, since_date, until_date
+    return FileDiff(
+        file_key=file_key,
+        file_name=file_name,
+        old_version=old_version,
+        new_version=new_version,
+        versions_in_range=versions_in_range,
+        pages=pages,
+    )
 
 
-# ── Output formatting ───────────────────────────────────────────────
+async def _run(
+    api_key: str,
+    target: Path,
+    since: str,
+) -> tuple[list[FileDiff], datetime, datetime]:
+    """Main async entry point. Scans .md files to discover tracked Figma files,
+    then uses the Figma API to compute real diffs."""
+    delta = _parse_duration(since)
+    now = datetime.now(timezone.utc)
+    cutoff = now - delta
+
+    # Discover tracked files from .md frontmatter
+    file_pages: dict[str, tuple[str, list[str]]] = {}  # file_key → (file_name, [page_ids])
+    for md_path in sorted(target.rglob("*.md")):
+        content = md_path.read_text()
+        fm = parse_frontmatter(content)
+        if fm is None or not fm.file_key:
+            continue
+        fk = fm.file_key
+        if fk not in file_pages:
+            # Derive file name from directory structure
+            rel = md_path.relative_to(target)
+            file_name = rel.parts[0] if rel.parts else ""
+            file_pages[fk] = (file_name, [])
+        if fm.page_node_id and fm.page_node_id not in file_pages[fk][1]:
+            file_pages[fk][1].append(fm.page_node_id)
+
+    results: list[FileDiff] = []
+
+    async with FigmaClient(api_key) as client:
+        for fk, (file_name, page_ids) in file_pages.items():
+            old_ver, in_range = await _find_version_before(client, fk, cutoff)
+            if not in_range:
+                continue  # no versions in the window → no changes
+
+            diff = await _diff_file(
+                client, fk, file_name, page_ids, old_ver, in_range,
+            )
+            if diff.pages:
+                results.append(diff)
+
+    return results, cutoff, now
 
 
-def _format_text(diffs: list[PageDiff], since_date: datetime, until_date: datetime) -> str:
-    """Render a human-readable report."""
+# ── Output formatting ──────────────────────────────────────────────
+
+
+def _format_text(
+    results: list[FileDiff], since_date: datetime, until_date: datetime,
+) -> str:
     since_str = since_date.strftime("%b %d, %Y")
     until_str = until_date.strftime("%b %d, %Y")
-    lines: list[str] = [f"Figma changes ({since_str} \u2013 {until_str})", ""]
+    lines: list[str] = [f"Figma design changes ({since_str} \u2013 {until_str})", ""]
 
-    new_pages = [d for d in diffs if d.is_new]
-    modified = [d for d in diffs if not d.is_new]
-
-    if new_pages:
-        lines.append("## New Pages")
-        for d in new_pages:
-            lines.append(f"  + {d.path} ({d.total_frames} frames)")
+    for fd in results:
+        ver_count = len(fd.versions_in_range)
+        users = sorted({v.user for v in fd.versions_in_range if v.user})
+        user_str = ", ".join(users) if users else "unknown"
+        lines.append(f"## {fd.file_name} ({ver_count} version{'s' if ver_count != 1 else ''} by {user_str})")
+        if fd.old_version:
+            lines.append(f"  Comparing: {fd.old_version.created_at[:16]} \u2192 now")
+        else:
+            lines.append(f"  No version before window \u2014 showing all current frames")
         lines.append("")
 
-    if modified:
-        lines.append("## Modified Pages")
-        lines.append("")
-        for d in modified:
-            lines.append(f"### {d.path}")
+        for p in fd.pages:
+            lines.append(f"### {p.page_name}")
+            lines.append(f"  \U0001f4d0 {p.figma_url}")
+            if p.is_new_page:
+                lines.append(f"  NEW PAGE ({p.frames_after} frames)")
+            else:
+                lines.append(f"  Frames: {p.frames_before} \u2192 {p.frames_after}")
+
             parts: list[str] = []
-            if d.added_frames:
-                parts.append(f"+{len(d.added_frames)} added")
-            if d.removed_frames:
-                parts.append(f"-{len(d.removed_frames)} removed")
-            if d.renamed_frames:
-                parts.append(f"{len(d.renamed_frames)} renamed")
+            if p.added_frames:
+                parts.append(f"+{len(p.added_frames)} added")
+            if p.removed_frames:
+                parts.append(f"-{len(p.removed_frames)} removed")
+            if p.renamed_frames:
+                parts.append(f"{len(p.renamed_frames)} renamed")
             if parts:
-                lines.append(f"  Frames: {', '.join(parts)}")
-                for f in d.added_frames:
-                    name_suffix = f"  {f.name}" if f.name else ""
-                    lines.append(f"    + {f.node_id}{name_suffix}")
-                for f in d.removed_frames:
-                    name_suffix = f"  {f.name}" if f.name else ""
-                    lines.append(f"    - {f.node_id}{name_suffix}")
-                for r in d.renamed_frames:
-                    lines.append(f"    ~ {r.node_id}  {r.old_name!r} -> {r.new_name!r}")
+                lines.append(f"  Changes: {', '.join(parts)}")
+                for f in p.added_frames:
+                    name_sfx = f"  {f.name}" if f.name else ""
+                    lines.append(f"    + {f.node_id}{name_sfx}")
+                for f in p.removed_frames:
+                    name_sfx = f"  {f.name}" if f.name else ""
+                    lines.append(f"    - {f.node_id}{name_sfx}")
+                for r in p.renamed_frames:
+                    lines.append(f"    ~ {r.node_id}  {r.old_name!r} \u2192 {r.new_name!r}")
 
             flow_parts: list[str] = []
-            if d.added_flows:
-                flow_parts.append(f"+{len(d.added_flows)} new connections")
-            if d.removed_flows:
-                flow_parts.append(f"-{len(d.removed_flows)} removed connections")
+            if p.added_flows:
+                flow_parts.append(f"+{len(p.added_flows)} new")
+            if p.removed_flows:
+                flow_parts.append(f"-{len(p.removed_flows)} removed")
             if flow_parts:
                 lines.append(f"  Flows: {', '.join(flow_parts)}")
-                for edge in d.added_flows:
-                    lines.append(f"    + {edge[0]} \u2192 {edge[1]}")
-                for edge in d.removed_flows:
-                    lines.append(f"    - {edge[0]} \u2192 {edge[1]}")
+
             lines.append("")
 
-    if not new_pages and not modified:
-        lines.append("No design changes detected.")
+        # Version timeline
+        lines.append(f"  Versions:")
+        for v in fd.versions_in_range:
+            label = f"  \"{v.label}\"" if v.label else ""
+            lines.append(f"    {v.created_at[:16]}  {v.user}{label}")
+        lines.append("")
+
+    if not results:
+        lines.append("No design changes detected in any tracked Figma file.")
         lines.append("")
 
     return "\n".join(lines)
 
 
-def _format_json(diffs: list[PageDiff], since_date: datetime, until_date: datetime) -> str:
-    """Render a machine-readable JSON report."""
-    new_pages = []
-    modified_pages = []
-
-    for d in diffs:
-        entry = {
-            "path": d.path,
-            "file_key": d.file_key,
-            "page_node_id": d.page_node_id,
-            "added_frames": [{"node_id": f.node_id, "name": f.name} for f in d.added_frames],
-            "removed_frames": [{"node_id": f.node_id, "name": f.name} for f in d.removed_frames],
-            "renamed_frames": [
-                {"node_id": r.node_id, "old_name": r.old_name, "new_name": r.new_name}
-                for r in d.renamed_frames
-            ],
-            "added_flows": d.added_flows,
-            "removed_flows": d.removed_flows,
-        }
-        if d.is_new:
-            entry["total_frames"] = d.total_frames
-            new_pages.append(entry)
-        else:
-            modified_pages.append(entry)
-
-    output = {
+def _format_json(
+    results: list[FileDiff], since_date: datetime, until_date: datetime,
+) -> str:
+    output: dict[str, Any] = {
         "since": since_date.strftime("%Y-%m-%d"),
         "until": until_date.strftime("%Y-%m-%d"),
-        "new_pages": new_pages,
-        "modified_pages": modified_pages,
+        "files": [],
     }
+    for fd in results:
+        file_entry: dict[str, Any] = {
+            "file_key": fd.file_key,
+            "file_name": fd.file_name,
+            "versions_in_range": [
+                {"id": v.id, "created_at": v.created_at, "label": v.label, "user": v.user}
+                for v in fd.versions_in_range
+            ],
+            "pages": [],
+        }
+        for p in fd.pages:
+            page_entry: dict[str, Any] = {
+                "page_node_id": p.page_node_id,
+                "page_name": p.page_name,
+                "figma_url": p.figma_url,
+                "is_new_page": p.is_new_page,
+                "frames_before": p.frames_before,
+                "frames_after": p.frames_after,
+                "added_frames": [{"node_id": f.node_id, "name": f.name} for f in p.added_frames],
+                "removed_frames": [{"node_id": f.node_id, "name": f.name} for f in p.removed_frames],
+                "renamed_frames": [
+                    {"node_id": r.node_id, "old_name": r.old_name, "new_name": r.new_name}
+                    for r in p.renamed_frames
+                ],
+                "added_flows": p.added_flows,
+                "removed_flows": p.removed_flows,
+            }
+            file_entry["pages"].append(page_entry)
+        output["files"].append(file_entry)
+
     return json.dumps(output, indent=2)
 
 
-# ── Click command ───────────────────────────────────────────────────
+# ── Click command ──────────────────────────────────────────────────
 
 
 @click.command("diff")
@@ -364,26 +410,27 @@ def _format_json(diffs: list[PageDiff], since_date: datetime, until_date: dateti
 )
 @click.pass_context
 def diff_cmd(ctx: click.Context, target: str, since: str, fmt: str) -> None:
-    """Show what designers changed in Figma by analyzing git history.
+    """Show what designers changed in Figma using the Figma Versions API.
 
-    Surfaces structural design changes (new pages, added/removed frames,
-    flow changes) while filtering out enrichment-only changes.
+    Compares Figma file trees at two points in time to detect structural
+    design changes: new/removed frames, renames, and flow changes.
 
-    TARGET is the directory to scan (default: figma/).
+    Requires FIGMA_API_KEY environment variable.
+
+    TARGET is the directory with tracked .md files (default: figma/).
     """
-    repo_dir = Path(ctx.obj["repo_dir"])
-    resolved_target = (repo_dir / target).as_posix()
-    # Use relative target for git log
-    try:
-        rel_target = str(Path(resolved_target).relative_to(repo_dir))
-    except ValueError:
-        rel_target = target
+    api_key = os.environ.get("FIGMA_API_KEY", "")
+    if not api_key:
+        raise click.ClickException("FIGMA_API_KEY environment variable is not set.")
 
-    diffs, since_date, until_date = compute_diff(repo_dir, rel_target, since)
+    repo_dir = Path(ctx.obj["repo_dir"])
+    resolved = repo_dir / target
+    if not resolved.is_dir():
+        raise click.ClickException(f"Target directory not found: {resolved}")
+
+    results, since_date, until_date = asyncio.run(_run(api_key, resolved, since))
 
     if fmt == "json":
-        click.echo(_format_json(diffs, since_date, until_date))
+        click.echo(_format_json(results, since_date, until_date))
     else:
-        click.echo(_format_text(diffs, since_date, until_date))
-
-    sys.exit(0)
+        click.echo(_format_text(results, since_date, until_date))

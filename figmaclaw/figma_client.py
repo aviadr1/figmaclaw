@@ -103,6 +103,32 @@ class FigmaClient:
         """GET /v1/files/{file_key} — full file tree. Use only for initial track."""
         return await self._get(f"/v1/files/{file_key}")
 
+    async def get_versions(self, file_key: str) -> list[dict[str, Any]]:
+        """GET /v1/files/{file_key}/versions — version history.
+
+        Returns list of ``{"id", "created_at", "label", "description", "user"}``.
+        Ordered newest-first by the Figma API.
+        """
+        data = await self._get(f"/v1/files/{file_key}/versions")
+        result: list[dict[str, Any]] = data.get("versions", [])
+        return result
+
+    async def get_page_at_version(
+        self, file_key: str, page_node_id: str, version: str,
+    ) -> dict[str, Any]:
+        """GET /v1/files/{file_key}/nodes?ids={id}&version={v} — page tree at a version.
+
+        Same as get_page() but for a historical version.
+        """
+        data = await self._get(
+            f"/v1/files/{file_key}/nodes",
+            params={"ids": page_node_id, "version": version},
+        )
+        nodes: dict[str, Any] = data.get("nodes", {})
+        entry = nodes.get(page_node_id, {})
+        doc: dict[str, Any] = entry.get("document", {})
+        return doc
+
     async def list_team_projects(self, team_id: str) -> list[dict[str, Any]]:
         """GET /v1/teams/{team_id}/projects — list projects for a team."""
         data = await self._get(f"/v1/teams/{team_id}/projects")

@@ -1,416 +1,420 @@
-"""Tests for commands/diff.py — figmaclaw diff.
+"""Tests for commands/diff.py — figmaclaw diff (Figma API-based).
 
-Tests use a temporary git repo with figmaclaw-style .md files to verify
-that the diff command correctly detects structural design changes and
-ignores enrichment-only changes.
+Tests mock the FigmaClient to verify that the diff command correctly
+compares Figma file versions and detects structural design changes.
 """
 
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from click.testing import CliRunner
 
-from figmaclaw.main import cli
+from figmaclaw.commands import diff as diff_module
+from figmaclaw.commands.diff import (
+    FileDiff,
+    FrameChange,
+    PageDiff,
+    VersionInfo,
+    _extract_frames,
+    _find_version_before,
+    _run,
+)
+from figmaclaw.figma_client import FigmaClient
 
-# ── Helpers ──────────────────────────────────────────────────────────
+# ── Fixtures ────────────────────────────────────────────────────────
 
-_BASIC_PAGE = """\
+_PAGE_MD = """\
 ---
 file_key: abc123
 page_node_id: '100:1'
 frames: ['11:1', '11:2']
-flows: [['11:1', '11:2']]
-enriched_hash: null
-enriched_frame_hashes: {}
----
-
-# Test Page
-
-## Section (`10:1`)
-
-| Name | Node ID | Description |
-| --- | --- | --- |
-| Welcome | `11:1` | A welcome screen |
-| Login | `11:2` | Login form |
-
-## Screen Flow
-
-```mermaid
-graph LR
-  11:1 --> 11:2
-```
-"""
-
-_FRAMES_ADDED_PAGE = """\
----
-file_key: abc123
-page_node_id: '100:1'
-frames: ['11:1', '11:2', '11:3', '11:4']
-flows: [['11:1', '11:2'], ['11:2', '11:3']]
-enriched_hash: null
-enriched_frame_hashes: {}
----
-
-# Test Page
-
-## Section (`10:1`)
-
-| Name | Node ID | Description |
-| --- | --- | --- |
-| Welcome | `11:1` | A welcome screen |
-| Login | `11:2` | Login form |
-| Dashboard | `11:3` | Main dashboard |
-| Settings | `11:4` | Settings panel |
-
-## Screen Flow
-
-```mermaid
-graph LR
-  11:1 --> 11:2
-  11:2 --> 11:3
-```
-"""
-
-_FRAMES_REMOVED_PAGE = """\
----
-file_key: abc123
-page_node_id: '100:1'
-frames: ['11:1']
 flows: []
-enriched_hash: null
-enriched_frame_hashes: {}
 ---
 
 # Test Page
-
-## Section (`10:1`)
-
-| Name | Node ID | Description |
-| --- | --- | --- |
-| Welcome | `11:1` | A welcome screen |
 """
 
-_ENRICHMENT_ONLY_CHANGE = """\
+_PAGE_MD_2 = """\
 ---
 file_key: abc123
-page_node_id: '100:1'
-frames: ['11:1', '11:2']
-flows: [['11:1', '11:2']]
-enriched_hash: deadbeef12345678
-enriched_at: '2026-04-01T12:00:00Z'
-enriched_frame_hashes: {'11:1': a3f2b7c1, '11:2': e4d9f8a2}
+page_node_id: '200:1'
+frames: ['21:1']
+flows: []
 ---
 
-# Test Page
-
-This page shows the onboarding flow with enriched descriptions.
-
-## Section (`10:1`)
-
-| Name | Node ID | Description |
-| --- | --- | --- |
-| Welcome | `11:1` | A beautifully designed welcome screen with branding |
-| Login | `11:2` | Login form with email and password fields |
-
-## Screen Flow
-
-```mermaid
-graph LR
-  11:1 --> 11:2
-```
+# Page 2
 """
 
-_RENAMED_FRAME_PAGE = """\
+_PAGE_MD_OTHER_FILE = """\
 ---
-file_key: abc123
-page_node_id: '100:1'
-frames: ['11:1', '11:2']
-flows: [['11:1', '11:2']]
-enriched_hash: null
-enriched_frame_hashes: {}
+file_key: xyz789
+page_node_id: '300:1'
+frames: ['31:1']
+flows: []
 ---
 
-# Test Page
-
-## Section (`10:1`)
-
-| Name | Node ID | Description |
-| --- | --- | --- |
-| Welcome v2 | `11:1` | A welcome screen |
-| Sign In | `11:2` | Login form |
+# Other File Page
 """
 
 
-def _git(repo: Path, *args: str) -> None:
-    subprocess.run(
-        ["git", "-C", str(repo), *args],
-        check=True, capture_output=True, text=True,
-    )
+def _make_canvas(page_id: str, frames: list[dict]) -> dict:
+    """Build a minimal CANVAS node dict for from_page_node()."""
+    return {
+        "id": page_id,
+        "name": f"Page {page_id}",
+        "type": "CANVAS",
+        "children": frames,
+    }
 
 
-def _init_repo(repo: Path) -> None:
-    """Create a git repo with initial config and an initial commit."""
-    _git(repo, "init")
-    _git(repo, "config", "user.email", "test@test.com")
-    _git(repo, "config", "user.name", "Test")
-    # Create a .gitkeep so we can always make an initial commit
-    (repo / ".gitkeep").write_text("")
+def _make_frame(node_id: str, name: str, reactions: list | None = None) -> dict:
+    return {
+        "id": node_id,
+        "name": name,
+        "type": "FRAME",
+        "visible": True,
+        "children": [],
+        "reactions": reactions or [],
+    }
 
 
-def _commit(repo: Path, message: str) -> None:
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-m", message, "--allow-empty")
+# ── Unit tests: _extract_frames ─────────────────────────────────────
 
 
-def _backdate_commit(repo: Path, days_ago: int, message: str) -> None:
-    """Stage and commit with a date in the past."""
-    import os
-    from datetime import datetime, timedelta, timezone
-    dt = datetime.now(timezone.utc) - timedelta(days=days_ago)
-    date_str = dt.strftime("%Y-%m-%dT%H:%M:%S %z")
-    env = os.environ.copy()
-    env["GIT_AUTHOR_DATE"] = date_str
-    env["GIT_COMMITTER_DATE"] = date_str
-    subprocess.run(
-        ["git", "-C", str(repo), "add", "."],
-        check=True, capture_output=True, text=True,
-    )
-    subprocess.run(
-        ["git", "-C", str(repo), "commit", "-m", message],
-        check=True, capture_output=True, text=True, env=env,
-    )
-
-
-# ── Tests ────────────────────────────────────────────────────────────
-
-
-def test_new_page_detected(tmp_path: Path) -> None:
-    """A new .md file should appear as a new page."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_repo(repo)
-
-    # Initial empty commit
-    _backdate_commit(repo, 10, "init")
-
-    # Add a new page recently
-    figma_dir = repo / "figma" / "app" / "pages"
-    figma_dir.mkdir(parents=True)
-    (figma_dir / "test-page-100-1.md").write_text(_BASIC_PAGE)
-    _backdate_commit(repo, 2, "add page")
-
-    runner = CliRunner()
-    result = runner.invoke(cli, ["--repo-dir", str(repo), "diff", "figma/", "--since", "7d"])
-    assert result.exit_code == 0, result.output
-    assert "New Pages" in result.output
-    assert "test-page-100-1.md" in result.output
-
-
-def test_added_frames_detected(tmp_path: Path) -> None:
-    """Frames added to the frames: list should be reported."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_repo(repo)
-
-    figma_dir = repo / "figma" / "app" / "pages"
-    figma_dir.mkdir(parents=True)
-    (figma_dir / "test-page-100-1.md").write_text(_BASIC_PAGE)
-    _backdate_commit(repo, 10, "initial page")
-
-    # Add frames
-    (figma_dir / "test-page-100-1.md").write_text(_FRAMES_ADDED_PAGE)
-    _backdate_commit(repo, 2, "add frames")
-
-    runner = CliRunner()
-    result = runner.invoke(cli, ["--repo-dir", str(repo), "diff", "figma/", "--since", "7d"])
-    assert result.exit_code == 0, result.output
-    assert "Modified Pages" in result.output
-    assert "+2 added" in result.output
-    assert "11:3" in result.output
-    assert "Dashboard" in result.output
-    assert "11:4" in result.output
-
-
-def test_removed_frames_detected(tmp_path: Path) -> None:
-    """Frames removed from the frames: list should be reported."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_repo(repo)
-
-    figma_dir = repo / "figma" / "app" / "pages"
-    figma_dir.mkdir(parents=True)
-    (figma_dir / "test-page-100-1.md").write_text(_BASIC_PAGE)
-    _backdate_commit(repo, 10, "initial page")
-
-    # Remove a frame
-    (figma_dir / "test-page-100-1.md").write_text(_FRAMES_REMOVED_PAGE)
-    _backdate_commit(repo, 2, "remove frame")
-
-    runner = CliRunner()
-    result = runner.invoke(cli, ["--repo-dir", str(repo), "diff", "figma/", "--since", "7d"])
-    assert result.exit_code == 0, result.output
-    assert "-1 removed" in result.output
-    assert "11:2" in result.output
-
-
-def test_flow_changes_detected(tmp_path: Path) -> None:
-    """Changes to flows: should be reported."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_repo(repo)
-
-    figma_dir = repo / "figma" / "app" / "pages"
-    figma_dir.mkdir(parents=True)
-    (figma_dir / "test-page-100-1.md").write_text(_BASIC_PAGE)
-    _backdate_commit(repo, 10, "initial page")
-
-    # Add frames and flows
-    (figma_dir / "test-page-100-1.md").write_text(_FRAMES_ADDED_PAGE)
-    _backdate_commit(repo, 2, "add flows")
-
-    runner = CliRunner()
-    result = runner.invoke(cli, ["--repo-dir", str(repo), "diff", "figma/", "--since", "7d"])
-    assert result.exit_code == 0, result.output
-    assert "+1 new connections" in result.output
-    assert "11:3" in result.output
-
-
-def test_enrichment_only_changes_ignored(tmp_path: Path) -> None:
-    """Changes to enriched_hash, enriched_at, body descriptions should NOT appear."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_repo(repo)
-
-    figma_dir = repo / "figma" / "app" / "pages"
-    figma_dir.mkdir(parents=True)
-    (figma_dir / "test-page-100-1.md").write_text(_BASIC_PAGE)
-    _backdate_commit(repo, 10, "initial page")
-
-    # Only change enrichment fields and body descriptions
-    (figma_dir / "test-page-100-1.md").write_text(_ENRICHMENT_ONLY_CHANGE)
-    _backdate_commit(repo, 2, "enrich page")
-
-    runner = CliRunner()
-    result = runner.invoke(cli, ["--repo-dir", str(repo), "diff", "figma/", "--since", "7d"])
-    assert result.exit_code == 0, result.output
-    assert "No design changes detected." in result.output
-    assert "New Pages" not in result.output
-    assert "Modified Pages" not in result.output
-
-
-def test_renamed_frames_detected(tmp_path: Path) -> None:
-    """Frame renames (same node_id, different name in body table) should be detected."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_repo(repo)
-
-    figma_dir = repo / "figma" / "app" / "pages"
-    figma_dir.mkdir(parents=True)
-    (figma_dir / "test-page-100-1.md").write_text(_BASIC_PAGE)
-    _backdate_commit(repo, 10, "initial page")
-
-    # Rename frames
-    (figma_dir / "test-page-100-1.md").write_text(_RENAMED_FRAME_PAGE)
-    _backdate_commit(repo, 2, "rename frames")
-
-    runner = CliRunner()
-    result = runner.invoke(cli, ["--repo-dir", str(repo), "diff", "figma/", "--since", "7d"])
-    assert result.exit_code == 0, result.output
-    assert "2 renamed" in result.output
-    assert "Welcome v2" in result.output
-    assert "Sign In" in result.output
-
-
-def test_json_output_format(tmp_path: Path) -> None:
-    """--format json should produce valid JSON with expected structure."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_repo(repo)
-
-    figma_dir = repo / "figma" / "app" / "pages"
-    figma_dir.mkdir(parents=True)
-    (figma_dir / "test-page-100-1.md").write_text(_BASIC_PAGE)
-    _backdate_commit(repo, 10, "initial page")
-
-    (figma_dir / "test-page-100-1.md").write_text(_FRAMES_ADDED_PAGE)
-    _backdate_commit(repo, 2, "add frames")
-
-    runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(repo), "diff", "figma/", "--since", "7d", "--format", "json",
+def test_extract_frames_from_canvas() -> None:
+    """Frames are extracted from a CANVAS node."""
+    canvas = _make_canvas("100:1", [
+        _make_frame("11:1", "Welcome"),
+        _make_frame("11:2", "Login"),
     ])
+    frames, flows = _extract_frames(canvas, "abc123")
+    assert set(frames.keys()) == {"11:1", "11:2"}
+    assert frames["11:1"].name == "Welcome"
+    assert flows == []
+
+
+def test_extract_frames_empty_node() -> None:
+    """Empty node returns empty results."""
+    frames, flows = _extract_frames({}, "abc123")
+    assert frames == {}
+    assert flows == []
+
+
+def test_extract_flows() -> None:
+    """Prototype NAVIGATE reactions produce flow edges."""
+    canvas = _make_canvas("100:1", [
+        _make_frame("11:1", "A", reactions=[
+            {"action": {"destinationId": "11:2", "navigation": "NAVIGATE"}},
+        ]),
+        _make_frame("11:2", "B"),
+    ])
+    frames, flows = _extract_frames(canvas, "abc123")
+    assert ("11:1", "11:2") in flows
+
+
+# ── Unit tests: _find_version_before ────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_find_version_before_splits_correctly() -> None:
+    """Versions before cutoff go to old_version, after go to in_range."""
+    from datetime import datetime, timezone
+
+    client = MagicMock(spec=FigmaClient)
+    client.get_versions = AsyncMock(return_value=[
+        {"id": "v3", "created_at": "2026-04-03T12:00:00Z", "label": "", "user": {"handle": "bart"}},
+        {"id": "v2", "created_at": "2026-04-01T12:00:00Z", "label": "milestone", "user": {"handle": "bart"}},
+        {"id": "v1", "created_at": "2026-03-25T12:00:00Z", "label": "", "user": {"handle": "jakub"}},
+    ])
+
+    cutoff = datetime(2026, 3, 28, tzinfo=timezone.utc)
+    old, in_range = await _find_version_before(client, "abc123", cutoff)
+
+    assert old is not None
+    assert old.id == "v1"
+    assert old.user == "jakub"
+    assert len(in_range) == 2
+    assert in_range[0].id == "v2"  # oldest first
+    assert in_range[1].id == "v3"
+
+
+@pytest.mark.asyncio
+async def test_find_version_no_old_version() -> None:
+    """If all versions are in the window, old_version is None."""
+    from datetime import datetime, timezone
+
+    client = MagicMock(spec=FigmaClient)
+    client.get_versions = AsyncMock(return_value=[
+        {"id": "v2", "created_at": "2026-04-02T12:00:00Z", "label": "", "user": {"handle": "bart"}},
+        {"id": "v1", "created_at": "2026-04-01T12:00:00Z", "label": "", "user": {"handle": "bart"}},
+    ])
+
+    cutoff = datetime(2026, 3, 28, tzinfo=timezone.utc)
+    old, in_range = await _find_version_before(client, "abc123", cutoff)
+
+    assert old is None
+    assert len(in_range) == 2
+
+
+# ── Integration tests: _run ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_run_detects_added_frames(tmp_path: Path) -> None:
+    """Frames added between old version and current should be reported."""
+    # Set up tracked .md file
+    figma_dir = tmp_path / "figma" / "app"
+    figma_dir.mkdir(parents=True)
+    (figma_dir / "page-100-1.md").write_text(_PAGE_MD)
+
+    old_canvas = _make_canvas("100:1", [
+        _make_frame("11:1", "Welcome"),
+        _make_frame("11:2", "Login"),
+    ])
+    new_canvas = _make_canvas("100:1", [
+        _make_frame("11:1", "Welcome"),
+        _make_frame("11:2", "Login"),
+        _make_frame("11:3", "Dashboard"),
+    ])
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_versions = AsyncMock(return_value=[
+        {"id": "v2", "created_at": "2026-04-03T12:00:00Z", "label": "", "user": {"handle": "bart"}},
+        {"id": "v1", "created_at": "2026-03-25T12:00:00Z", "label": "", "user": {"handle": "bart"}},
+    ])
+    mock_client.get_page = AsyncMock(return_value=new_canvas)
+    mock_client.get_page_at_version = AsyncMock(return_value=old_canvas)
+
+    with patch.object(diff_module, "FigmaClient") as MockCls:
+        MockCls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockCls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        results, _, _ = await _run("fake-key", tmp_path / "figma", "7d")
+
+    assert len(results) == 1
+    fd = results[0]
+    assert fd.file_key == "abc123"
+    assert len(fd.pages) == 1
+    p = fd.pages[0]
+    assert len(p.added_frames) == 1
+    assert p.added_frames[0].node_id == "11:3"
+    assert p.added_frames[0].name == "Dashboard"
+    assert p.frames_before == 2
+    assert p.frames_after == 3
+
+
+@pytest.mark.asyncio
+async def test_run_detects_removed_frames(tmp_path: Path) -> None:
+    """Frames removed between versions should be reported."""
+    figma_dir = tmp_path / "figma" / "app"
+    figma_dir.mkdir(parents=True)
+    (figma_dir / "page-100-1.md").write_text(_PAGE_MD)
+
+    old_canvas = _make_canvas("100:1", [
+        _make_frame("11:1", "Welcome"),
+        _make_frame("11:2", "Login"),
+    ])
+    new_canvas = _make_canvas("100:1", [
+        _make_frame("11:1", "Welcome"),
+    ])
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_versions = AsyncMock(return_value=[
+        {"id": "v2", "created_at": "2026-04-03T12:00:00Z", "label": "", "user": {"handle": "bart"}},
+        {"id": "v1", "created_at": "2026-03-25T12:00:00Z", "label": "", "user": {"handle": "bart"}},
+    ])
+    mock_client.get_page = AsyncMock(return_value=new_canvas)
+    mock_client.get_page_at_version = AsyncMock(return_value=old_canvas)
+
+    with patch.object(diff_module, "FigmaClient") as MockCls:
+        MockCls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockCls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        results, _, _ = await _run("fake-key", tmp_path / "figma", "7d")
+
+    p = results[0].pages[0]
+    assert len(p.removed_frames) == 1
+    assert p.removed_frames[0].node_id == "11:2"
+
+
+@pytest.mark.asyncio
+async def test_run_detects_renames(tmp_path: Path) -> None:
+    """Frame renames should be detected."""
+    figma_dir = tmp_path / "figma" / "app"
+    figma_dir.mkdir(parents=True)
+    (figma_dir / "page-100-1.md").write_text(_PAGE_MD)
+
+    old_canvas = _make_canvas("100:1", [
+        _make_frame("11:1", "Welcome"),
+    ])
+    new_canvas = _make_canvas("100:1", [
+        _make_frame("11:1", "Onboarding"),
+    ])
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_versions = AsyncMock(return_value=[
+        {"id": "v2", "created_at": "2026-04-03T12:00:00Z", "label": "", "user": {}},
+        {"id": "v1", "created_at": "2026-03-25T12:00:00Z", "label": "", "user": {}},
+    ])
+    mock_client.get_page = AsyncMock(return_value=new_canvas)
+    mock_client.get_page_at_version = AsyncMock(return_value=old_canvas)
+
+    with patch.object(diff_module, "FigmaClient") as MockCls:
+        MockCls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockCls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        results, _, _ = await _run("fake-key", tmp_path / "figma", "7d")
+
+    p = results[0].pages[0]
+    assert len(p.renamed_frames) == 1
+    assert p.renamed_frames[0].old_name == "Welcome"
+    assert p.renamed_frames[0].new_name == "Onboarding"
+
+
+@pytest.mark.asyncio
+async def test_run_no_changes_skips_file(tmp_path: Path) -> None:
+    """Files with no changes in the window should not appear."""
+    figma_dir = tmp_path / "figma" / "app"
+    figma_dir.mkdir(parents=True)
+    (figma_dir / "page-100-1.md").write_text(_PAGE_MD)
+
+    # No versions in range
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_versions = AsyncMock(return_value=[
+        {"id": "v1", "created_at": "2026-03-20T12:00:00Z", "label": "", "user": {}},
+    ])
+
+    with patch.object(diff_module, "FigmaClient") as MockCls:
+        MockCls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockCls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        results, _, _ = await _run("fake-key", tmp_path / "figma", "7d")
+
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_run_multiple_pages_in_file(tmp_path: Path) -> None:
+    """Multiple pages in the same file are compared."""
+    figma_dir = tmp_path / "figma" / "app"
+    figma_dir.mkdir(parents=True)
+    (figma_dir / "page-100-1.md").write_text(_PAGE_MD)
+    (figma_dir / "page-200-1.md").write_text(_PAGE_MD_2)
+
+    canvas_100 = _make_canvas("100:1", [_make_frame("11:1", "A"), _make_frame("11:2", "B")])
+    canvas_200 = _make_canvas("200:1", [_make_frame("21:1", "X"), _make_frame("21:2", "Y")])
+    old_canvas_100 = _make_canvas("100:1", [_make_frame("11:1", "A")])
+    old_canvas_200 = _make_canvas("200:1", [_make_frame("21:1", "X")])
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_versions = AsyncMock(return_value=[
+        {"id": "v2", "created_at": "2026-04-03T12:00:00Z", "label": "", "user": {"handle": "bart"}},
+        {"id": "v1", "created_at": "2026-03-25T12:00:00Z", "label": "", "user": {}},
+    ])
+
+    async def _get_page(fk, pid):
+        return canvas_100 if pid == "100:1" else canvas_200
+
+    async def _get_page_ver(fk, pid, ver):
+        return old_canvas_100 if pid == "100:1" else old_canvas_200
+
+    mock_client.get_page = AsyncMock(side_effect=_get_page)
+    mock_client.get_page_at_version = AsyncMock(side_effect=_get_page_ver)
+
+    with patch.object(diff_module, "FigmaClient") as MockCls:
+        MockCls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockCls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        results, _, _ = await _run("fake-key", tmp_path / "figma", "7d")
+
+    assert len(results) == 1
+    assert len(results[0].pages) == 2
+
+
+@pytest.mark.asyncio
+async def test_run_version_users_tracked(tmp_path: Path) -> None:
+    """Version authors should be captured."""
+    figma_dir = tmp_path / "figma" / "app"
+    figma_dir.mkdir(parents=True)
+    (figma_dir / "page-100-1.md").write_text(_PAGE_MD)
+
+    canvas = _make_canvas("100:1", [_make_frame("11:1", "A"), _make_frame("11:3", "New")])
+    old_canvas = _make_canvas("100:1", [_make_frame("11:1", "A")])
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_versions = AsyncMock(return_value=[
+        {"id": "v3", "created_at": "2026-04-03T12:00:00Z", "label": "", "user": {"handle": "bart"}},
+        {"id": "v2", "created_at": "2026-04-02T12:00:00Z", "label": "checkpoint", "user": {"handle": "jakub"}},
+        {"id": "v1", "created_at": "2026-03-25T12:00:00Z", "label": "", "user": {"handle": "bart"}},
+    ])
+    mock_client.get_page = AsyncMock(return_value=canvas)
+    mock_client.get_page_at_version = AsyncMock(return_value=old_canvas)
+
+    with patch.object(diff_module, "FigmaClient") as MockCls:
+        MockCls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockCls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        results, _, _ = await _run("fake-key", tmp_path / "figma", "7d")
+
+    fd = results[0]
+    assert len(fd.versions_in_range) == 2
+    users = {v.user for v in fd.versions_in_range}
+    assert "bart" in users
+    assert "jakub" in users
+
+
+# ── CLI tests ──────────────────────────────────────────────────────
+
+
+def test_cli_missing_api_key(tmp_path: Path) -> None:
+    """Command fails with clear error when FIGMA_API_KEY is not set."""
+    from click.testing import CliRunner
+    from figmaclaw.main import cli
+
+    figma_dir = tmp_path / "figma"
+    figma_dir.mkdir()
+
+    runner = CliRunner(env={"FIGMA_API_KEY": ""})
+    result = runner.invoke(cli, ["--repo-dir", str(tmp_path), "diff", "figma/"])
+    assert result.exit_code != 0
+    assert "FIGMA_API_KEY" in result.output
+
+
+def test_cli_json_output(tmp_path: Path) -> None:
+    """--format json produces valid JSON."""
+    from click.testing import CliRunner
+    from figmaclaw.main import cli
+
+    figma_dir = tmp_path / "figma" / "app"
+    figma_dir.mkdir(parents=True)
+    (figma_dir / "page-100-1.md").write_text(_PAGE_MD)
+
+    canvas = _make_canvas("100:1", [_make_frame("11:1", "A"), _make_frame("11:3", "New")])
+    old_canvas = _make_canvas("100:1", [_make_frame("11:1", "A")])
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_versions = AsyncMock(return_value=[
+        {"id": "v2", "created_at": "2026-04-03T12:00:00Z", "label": "", "user": {"handle": "bart"}},
+        {"id": "v1", "created_at": "2026-03-25T12:00:00Z", "label": "", "user": {}},
+    ])
+    mock_client.get_page = AsyncMock(return_value=canvas)
+    mock_client.get_page_at_version = AsyncMock(return_value=old_canvas)
+
+    with patch.object(diff_module, "FigmaClient") as MockCls:
+        MockCls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockCls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        runner = CliRunner(env={"FIGMA_API_KEY": "fake"})
+        result = runner.invoke(cli, [
+            "--repo-dir", str(tmp_path), "diff", "figma/", "--format", "json",
+        ])
+
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
-    assert "since" in data
-    assert "until" in data
-    assert "modified_pages" in data
-    assert "new_pages" in data
-    assert len(data["modified_pages"]) == 1
-    page = data["modified_pages"][0]
-    assert page["file_key"] == "abc123"
-    assert len(page["added_frames"]) == 2
-    assert any(f["node_id"] == "11:3" for f in page["added_frames"])
-
-
-def test_json_new_page(tmp_path: Path) -> None:
-    """New pages appear in the new_pages list in JSON format."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_repo(repo)
-
-    _backdate_commit(repo, 10, "init")
-
-    figma_dir = repo / "figma" / "app" / "pages"
-    figma_dir.mkdir(parents=True)
-    (figma_dir / "test-page-100-1.md").write_text(_BASIC_PAGE)
-    _backdate_commit(repo, 2, "add page")
-
-    runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(repo), "diff", "figma/", "--since", "7d", "--format", "json",
-    ])
-    assert result.exit_code == 0, result.output
-    data = json.loads(result.output)
-    assert len(data["new_pages"]) == 1
-    assert data["new_pages"][0]["total_frames"] == 2
-
-
-def test_default_since(tmp_path: Path) -> None:
-    """Command works with default --since (7d)."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_repo(repo)
-
-    _backdate_commit(repo, 10, "init")
-
-    figma_dir = repo / "figma" / "app" / "pages"
-    figma_dir.mkdir(parents=True)
-    (figma_dir / "test-page-100-1.md").write_text(_BASIC_PAGE)
-    _backdate_commit(repo, 2, "add page")
-
-    runner = CliRunner()
-    # No --since flag — should use default 7d
-    result = runner.invoke(cli, ["--repo-dir", str(repo), "diff", "figma/"])
-    assert result.exit_code == 0, result.output
-    assert "New Pages" in result.output
-
-
-def test_no_changes(tmp_path: Path) -> None:
-    """When nothing changed, report says so."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_repo(repo)
-
-    figma_dir = repo / "figma" / "app" / "pages"
-    figma_dir.mkdir(parents=True)
-    (figma_dir / "test-page-100-1.md").write_text(_BASIC_PAGE)
-    _backdate_commit(repo, 20, "old page")
-
-    runner = CliRunner()
-    result = runner.invoke(cli, ["--repo-dir", str(repo), "diff", "figma/", "--since", "7d"])
-    assert result.exit_code == 0, result.output
-    assert "No design changes detected." in result.output
+    assert "files" in data
+    assert len(data["files"]) == 1
+    assert len(data["files"][0]["pages"]) == 1
+    assert data["files"][0]["pages"][0]["added_frames"][0]["node_id"] == "11:3"
