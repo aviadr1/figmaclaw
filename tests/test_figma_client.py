@@ -187,6 +187,59 @@ async def test_retries_on_5xx():
 
 
 @pytest.mark.asyncio
+async def test_retries_on_connection_drop():
+    """INVARIANT: Client retries on RemoteProtocolError (connection drops mid-transfer).
+
+    Large file tree downloads sometimes fail with 'peer closed connection without
+    sending complete message body'. The client should retry instead of failing.
+    """
+    import httpcore
+    call_count = 0
+
+    with respx.mock:
+        def conn_drop_then_ok(request: httpx.Request) -> httpx.Response:
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise httpx.RemoteProtocolError(
+                    "peer closed connection without sending complete message body",
+                )
+            return httpx.Response(200, json=_meta_response())
+
+        respx.get(f"https://api.figma.com/v1/files/{FILE_KEY}").mock(side_effect=conn_drop_then_ok)
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            async with FigmaClient(api_key="figd_test") as client:
+                meta = await client.get_file_meta(FILE_KEY)
+
+    assert call_count == 3
+    assert meta["version"] == "123456"
+
+
+@pytest.mark.asyncio
+async def test_retries_on_read_timeout():
+    """INVARIANT: Client retries on ReadTimeout (slow responses that time out)."""
+    call_count = 0
+
+    with respx.mock:
+        def timeout_then_ok(request: httpx.Request) -> httpx.Response:
+            nonlocal call_count
+            call_count += 1
+            if call_count < 2:
+                raise httpx.ReadTimeout("read timeout")
+            return httpx.Response(200, json=_meta_response())
+
+        respx.get(f"https://api.figma.com/v1/files/{FILE_KEY}").mock(side_effect=timeout_then_ok)
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            async with FigmaClient(api_key="figd_test") as client:
+                meta = await client.get_file_meta(FILE_KEY)
+
+    assert call_count == 2
+    assert meta["version"] == "123456"
+
+
+@pytest.mark.asyncio
 async def test_list_webhooks_returns_list():
     """INVARIANT: list_webhooks returns a list (possibly empty) via team endpoint."""
     team_id = "team123"

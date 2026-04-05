@@ -61,12 +61,23 @@ class FigmaClient:
         self._last_request_time = time.monotonic()
 
     async def _get(self, path: str, params: dict[str, str] | None = None) -> dict[str, Any]:
-        """GET request with proactive pacing and retry on 429 / 5xx."""
+        """GET request with proactive pacing and retry on 429 / 5xx / connection errors."""
         client = await self._ensure_client()
         url = f"{self._base_url}{path}"
+        last_exc: Exception | None = None
         for attempt in range(10):
             await self._pace()
-            response = await client.get(url, params=params)
+            try:
+                response = await client.get(url, params=params)
+            except (httpx.RemoteProtocolError, httpx.ReadError,
+                    httpx.ReadTimeout, httpx.ConnectError) as e:
+                # Connection dropped mid-transfer — retry with backoff.
+                # Large file trees (e.g. 50+ pages) sometimes get truncated.
+                last_exc = e
+                if attempt < 9:
+                    await asyncio.sleep(2 * (attempt + 1))
+                    continue
+                raise
             if response.status_code == 429:
                 retry_after = int(response.headers.get("retry-after", "10"))
                 await asyncio.sleep(max(retry_after, 5))
@@ -77,6 +88,8 @@ class FigmaClient:
             response.raise_for_status()
             result: dict[str, Any] = response.json()
             return result
+        if last_exc:
+            raise last_exc
         response.raise_for_status()
         return {}
 
@@ -113,17 +126,20 @@ class FigmaClient:
 
     async def _get_url(self, url: str) -> dict[str, Any]:
         """GET an absolute Figma API URL (used for pagination)."""
-        # Strip the base URL prefix if present
-        if url.startswith(self._base_url):
-            path_with_query = url[len(self._base_url):]
-        else:
-            path_with_query = url
-        # httpx will handle the query string if embedded in the path
         client = await self._ensure_client()
-        full_url = f"{self._base_url}{path_with_query}" if not url.startswith("http") else url
+        full_url = url if url.startswith("http") else f"{self._base_url}{url}"
+        last_exc: Exception | None = None
         for attempt in range(10):
             await self._pace()
-            response = await client.get(full_url)
+            try:
+                response = await client.get(full_url)
+            except (httpx.RemoteProtocolError, httpx.ReadError,
+                    httpx.ReadTimeout, httpx.ConnectError) as e:
+                last_exc = e
+                if attempt < 9:
+                    await asyncio.sleep(2 * (attempt + 1))
+                    continue
+                raise
             if response.status_code == 429:
                 retry_after = int(response.headers.get("retry-after", "10"))
                 await asyncio.sleep(max(retry_after, 5))
@@ -134,6 +150,8 @@ class FigmaClient:
             response.raise_for_status()
             result: dict[str, Any] = response.json()
             return result
+        if last_exc:
+            raise last_exc
         response.raise_for_status()
         return {}
 

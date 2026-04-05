@@ -351,11 +351,22 @@ async def _run(
             ]
             diffs = await asyncio.gather(*diff_tasks, return_exceptions=True)
 
-            for d in diffs:
+            for (fk, fn, _, _, _), d in zip(active_files, diffs):
                 if isinstance(d, BaseException):
+                    click.echo(
+                        f"  WARNING: failed to diff {fn} ({fk}): "
+                        f"{type(d).__name__}: {d}",
+                        err=True,
+                    )
                     continue
                 if d.pages:
                     results.append(d)
+                elif progress:
+                    click.echo(
+                        f"  {fn}: {len(d.versions_in_range)} versions but no "
+                        f"structural frame changes (edits only)",
+                        err=True,
+                    )
 
     return results, cutoff, now
 
