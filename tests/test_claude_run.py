@@ -512,6 +512,40 @@ class TestPendingSectionsStuckDetection:
         assert sections_before == sections_after  # same pending = stuck
 
 
+class TestPendingSectionsEmptyNameRegression:
+    """figmaclaw#25: empty-name sections must not silently hide their pending frames."""
+
+    def test_legacy_empty_name_section_frames_counted(self, tmp_path: Path) -> None:
+        """A file written before the normalization fix has ``##  (`id`)``
+        headings — two spaces, no name. pending_sections MUST enumerate the
+        frames beneath such a section. Before figmaclaw#25 was fixed this
+        silently returned an empty list and the file stalled forever.
+        """
+        md = tmp_path / "page.md"
+        md.write_text(
+            "---\n"
+            "file_key: abc\n"
+            "page_node_id: '1:1'\n"
+            "---\n"
+            "\n"
+            "# File / Page\n"
+            "\n"
+            "##  (`20:1`)\n"  # empty name — the figmaclaw#25 shape
+            "\n"
+            "| Screen | Node ID | Description |\n"
+            "|--------|---------|-------------|\n"
+            "| Frame A | `21:1` | (no description yet) |\n"
+            "| Frame B | `21:2` | (no description yet) |\n"
+            "| Frame C | `21:3` | (no description yet) |\n"
+        )
+        sections = pending_sections(md)
+        assert len(sections) == 1, (
+            "Empty-name section was dropped — the bug is back"
+        )
+        assert sections[0]["node_id"] == "20:1"
+        assert sections[0]["pending_frames"] == 3
+
+
 class TestBuildPromptSectionPlaceholders:
     """build_prompt fills section-mode placeholders."""
 
