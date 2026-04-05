@@ -33,6 +33,7 @@ import click
 import pydantic
 
 from figmaclaw.figma_md_parse import section_line_ranges
+from figmaclaw.figma_schema import PLACEHOLDER_DESCRIPTION, is_placeholder_row
 
 SECTION_THRESHOLD = 80  # pages/sections above this use incremental mode
 ENRICHMENT_LOG = ".figma-sync/enrichment-log.csv"
@@ -202,10 +203,9 @@ def pending_sections(md_path: Path) -> list[dict[str, str | int]]:
     result: list[dict[str, str | int]] = []
     for section, start, end in section_line_ranges(text):
         if not section.node_id:
-            continue  # skip Screen flows etc.
+            continue  # prose sections (Screen Flow) have no node_id
         pending = sum(
-            1 for line in lines[start:end]
-            if "| (no description yet) |" in line
+            1 for line in lines[start:end] if is_placeholder_row(line)
         )
         if pending > 0:
             result.append({
@@ -227,8 +227,8 @@ def needs_finalization(md_path: Path) -> bool:
     except OSError:
         return False
 
-    # If there are still pending placeholders, not ready
-    if "| (no description yet) |" in text:
+    # If there are still pending placeholders anywhere, not ready.
+    if f"| {PLACEHOLDER_DESCRIPTION} |" in text:
         return False
 
     # If already marked as enriched, no need to finalize

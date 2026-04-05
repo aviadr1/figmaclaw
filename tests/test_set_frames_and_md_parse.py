@@ -244,3 +244,91 @@ def test_parse_sections_still_skips_screen_flows():
     names = [s.name for s in sections]
     assert "Screen flows" not in names
     assert len(sections) == 2
+
+
+# --- figmaclaw#25 regression: empty-name sections ---
+
+
+_LEGACY_EMPTY_NAME_SECTION_MD = """\
+---
+file_key: abc
+page_node_id: '1:1'
+---
+
+# File / Page
+
+## Normal Section (`10:1`)
+
+| Screen | Node ID | Description |
+|--------|---------|-------------|
+| Welcome | `11:1` | described |
+
+##  (`20:1`)
+
+| Screen | Node ID | Description |
+|--------|---------|-------------|
+| Hidden frame | `21:1` | (no description yet) |
+| Another | `21:2` | (no description yet) |
+
+## Screen Flow
+"""
+
+
+def test_empty_name_section_heading_preserves_node_id():
+    """figmaclaw#25: a legacy file with ``##  (`20:1`)`` — two spaces, no name —
+    must parse as a real frame section with node_id="20:1", NOT be silently
+    dropped as a prose section.
+    """
+    sections = parse_sections(_LEGACY_EMPTY_NAME_SECTION_MD)
+    by_id = {s.node_id: s for s in sections}
+    assert "20:1" in by_id, (
+        "Empty-name section was dropped — this is the figmaclaw#25 regression"
+    )
+
+
+def test_empty_name_section_frames_are_enumerable():
+    """Frames inside an empty-name section must be visible to downstream
+    enrichment code — this is what makes pending_sections return the right
+    count instead of 0.
+    """
+    sections = parse_sections(_LEGACY_EMPTY_NAME_SECTION_MD)
+    by_id = {s.node_id: s for s in sections}
+    section = by_id["20:1"]
+    frame_ids = {f.node_id for f in section.frames}
+    assert frame_ids == {"21:1", "21:2"}
+
+
+def test_empty_name_section_normalizes_to_unnamed():
+    """Legacy empty-name sections parse with the canonical (Unnamed) placeholder."""
+    sections = parse_sections(_LEGACY_EMPTY_NAME_SECTION_MD)
+    by_id = {s.node_id: s for s in sections}
+    assert by_id["20:1"].name == "(Unnamed)"
+
+
+def test_render_then_parse_preserves_all_frames_even_with_empty_section_name():
+    """End-to-end: ingest a Figma page with an empty-name section, render it
+    via scaffold_page, then parse it back. Every frame must survive.
+    """
+    frames_in_empty = [
+        FigmaFrame(node_id=f"21:{i}", name=f"Frame {i}", description="")
+        for i in range(1, 6)
+    ]
+    frames_in_named = [
+        FigmaFrame(node_id="11:1", name="Welcome", description=""),
+    ]
+    sections = [
+        FigmaSection(node_id="10:1", name="Named Section", frames=frames_in_named),
+        FigmaSection(node_id="20:1", name="", frames=frames_in_empty),  # empty name!
+    ]
+    md = scaffold_page(_make_page(sections=sections), _make_entry())
+
+    parsed = parse_sections(md)
+    by_id = {s.node_id: s for s in parsed}
+    assert set(by_id.keys()) == {"10:1", "20:1"}
+    assert len(by_id["10:1"].frames) == 1
+    assert len(by_id["20:1"].frames) == 5
+    # And the empty section heading renders with the canonical (Unnamed)
+    # placeholder so later reads don't rely on parser tolerance of two-space
+    # legacy headings.
+    assert "## (Unnamed) (`20:1`)" in md
+    assert "##  (`20:1`)" not in md  # the legacy two-space form is NOT emitted
