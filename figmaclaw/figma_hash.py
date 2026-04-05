@@ -11,6 +11,14 @@ while ignoring visual noise (position, size, style). Used for surgical enrichmen
 only re-screenshot and re-describe frames whose content actually changed.
 
 compute_frame_hashes() — batch computation for all frames in a page.
+
+IMPORTANT — hash stability: the hash bytes depend on the exact string
+representation of raw Figma names (``node.get("name", "")``). We intentionally
+do NOT pass these through :func:`figma_schema.normalize_name` here, because
+that would change every stored ``enriched_hash`` value and trigger mass
+re-enrichment. Use :func:`figma_schema.is_visible` for the visibility
+predicate so all call sites agree on what "visible" means, but keep name
+handling raw.
 """
 
 from __future__ import annotations
@@ -18,8 +26,10 @@ from __future__ import annotations
 import hashlib
 import json
 
+from figmaclaw.figma_schema import STRUCTURAL_NODE_TYPES, is_visible
 
-_STRUCTURAL_TYPES = frozenset({"FRAME", "SECTION"})
+# Alias kept for any external importer of the old name.
+_STRUCTURAL_TYPES = STRUCTURAL_NODE_TYPES
 
 
 def compute_page_hash(page_node: dict) -> str:
@@ -77,10 +87,10 @@ def compute_frame_hashes(page_node: dict) -> dict[str, str]:
     result: dict[str, str] = {}
     for child in page_node.get("children", []):
         child_type = child.get("type", "")
-        if child_type == "FRAME" and child.get("visible", True) is not False:
+        if child_type == "FRAME" and is_visible(child):
             result[child["id"]] = compute_frame_hash(child)
         elif child_type == "SECTION":
             for grandchild in child.get("children", []):
-                if grandchild.get("type") in _STRUCTURAL_TYPES and grandchild.get("visible", True) is not False:
+                if grandchild.get("type") in STRUCTURAL_NODE_TYPES and is_visible(grandchild):
                     result[grandchild["id"]] = compute_frame_hash(grandchild)
     return result

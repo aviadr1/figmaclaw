@@ -19,8 +19,9 @@ from pathlib import Path
 
 import click
 
-from figmaclaw.figma_md_parse import _ANY_H2_RE, _SECTION_RE, section_line_ranges
+from figmaclaw.figma_md_parse import section_line_ranges  # noqa: F401  (re-exported for tests)
 from figmaclaw.figma_parse import parse_frontmatter, split_frontmatter
+from figmaclaw.figma_schema import is_h2, parse_section_heading
 from figmaclaw.git_utils import git_commit
 
 
@@ -55,12 +56,12 @@ def _write_section(md: str, section_node_id: str, new_section_text: str) -> str:
     section_end: int | None = None
 
     for i, line in enumerate(lines):
-        m = _SECTION_RE.match(line)
-        if m and m.group(2) == section_node_id:
+        parsed = parse_section_heading(line)
+        if parsed is not None and parsed.node_id == section_node_id:
             section_start = i
             continue
-        # After finding our section, the next ## heading marks the end
-        if section_start is not None and section_end is None and _ANY_H2_RE.match(line):
+        # After finding our section, the next ## heading marks the end.
+        if section_start is not None and section_end is None and is_h2(line):
             section_end = i
             break
 
@@ -95,16 +96,16 @@ def _write_section_intro(md: str, section_node_id: str, intro: str) -> str:
     table_line: int | None = None
 
     for i, line in enumerate(lines):
-        m = _SECTION_RE.match(line)
-        if m and m.group(2) == section_node_id:
+        parsed = parse_section_heading(line)
+        if parsed is not None and parsed.node_id == section_node_id:
             heading_line = i
             continue
         if heading_line is not None and table_line is None:
             if line.startswith("| "):
                 table_line = i
                 break
-            if _ANY_H2_RE.match(line):
-                # Next section before we found a table — no table in this section
+            if is_h2(line):
+                # Next section before we found a table — no table in this section.
                 table_line = i
                 break
 

@@ -20,17 +20,18 @@ import click
 
 from figmaclaw.figma_md_parse import section_line_ranges
 from figmaclaw.figma_parse import parse_frontmatter
+from figmaclaw.figma_schema import is_placeholder_row
 
 SECTION_THRESHOLD = 80
 
 
 def _count_pending_in_range(lines: list[str], start: int, end: int) -> int:
-    """Count ``(no description yet)`` placeholders in table rows within a line range."""
-    count = 0
-    for line in lines[start:end]:
-        if "| (no description yet) |" in line:
-            count += 1
-    return count
+    """Count placeholder frame rows within a line range.
+
+    Uses :func:`figma_schema.is_placeholder_row` as the canonical check so
+    this and the enrichment dispatcher agree on what "pending" means.
+    """
+    return sum(1 for line in lines[start:end] if is_placeholder_row(line))
 
 
 def _stale_frame_ids(
