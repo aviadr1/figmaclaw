@@ -176,12 +176,12 @@ jobs:
           "
 
       - name: Upload raw stream-json artifact
-        if: always()
+        if: always()  # success, failure, cancelled, or timeout
         uses: actions/upload-artifact@v5
         with:
           name: claude-run-raw-${{ github.run_id }}-${{ inputs.section_mode && 'large' || 'bulk' }}
           path: .figma-sync/claude-stream.jsonl
-          retention-days: 14
+          retention-days: 0  # use repo max (up to 400 days on GH Enterprise, 90 days default)
           if-no-files-found: warn
 
       - name: Show formatted output in step summary
