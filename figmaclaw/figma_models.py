@@ -115,6 +115,13 @@ def from_page_node(page_node: dict, *, file_key: str, file_name: str) -> FigmaPa
     all_frames_for_flows: list[dict] = []
 
     for child in children:
+        # Inherited visibility: a hidden parent hides all descendants, so
+        # we skip the whole subtree before looking at its children. This
+        # matches Figma's canvas rendering semantics — hiding a group
+        # hides everything underneath it.
+        if not is_visible(child):
+            continue
+
         if is_structural(child) and child.get("type") == "SECTION":
             child_children = child.get("children", [])
             # Frames: visible structural FRAME children.
@@ -141,7 +148,9 @@ def from_page_node(page_node: dict, *, file_key: str, file_name: str) -> FigmaPa
                 is_component_library=is_component_lib,
             ))
 
-        elif child.get("type") == "FRAME" and is_visible(child):
+        elif child.get("type") == "FRAME":
+            # Visibility for FRAMEs already guarded by the outer
+            # ``is_visible(child)`` check above.
             all_frames_for_flows.append(child)
             ungrouped_frames.append(_node_to_frame(child, file_key))
 
