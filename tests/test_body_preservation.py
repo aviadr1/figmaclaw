@@ -42,6 +42,7 @@ from click.testing import CliRunner
 
 from figmaclaw.commands import sync as sync_module
 from figmaclaw.commands.set_flows import _apply_flows
+from figmaclaw.figma_api_models import FileMetaResponse
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_frontmatter import FigmaPageFrontmatter
 from figmaclaw.figma_hash import compute_page_hash
@@ -154,17 +155,17 @@ def _fake_page_node(extra_children: list[dict] | None = None) -> dict:
     }
 
 
-def _fake_file_meta() -> dict:
-    return {
+def _fake_file_meta() -> "FileMetaResponse":
+    return FileMetaResponse.model_validate({
         "name": "Web App",
         "version": "v2",
         "lastModified": "2026-03-31T12:00:00Z",
         "document": {
             "children": [
-                {"id": "7741:45837", "name": "Onboarding", "type": "CANVAS"}
-            ]
+                {"id": "7741:45837", "name": "Onboarding", "type": "CANVAS"},
+            ],
         },
-    }
+    })
 
 
 def _setup_state(tmp_path: Path) -> FigmaSyncState:

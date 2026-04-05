@@ -63,14 +63,14 @@ async def _run(
         newly_tracked = 0
 
         for project in projects:
-            project_name: str = project.get("name", "")
-            project_id: str = str(project.get("id", ""))
+            project_name = project.name
+            project_id = str(project.id)
             files = await client.list_project_files(project_id)
 
             for file_info in files:
-                file_key: str = file_info.get("key", "")
-                file_name: str = file_info.get("name", "")
-                last_modified: str = file_info.get("last_modified", "")
+                file_key = file_info.key
+                file_name = file_info.name
+                last_modified = file_info.last_modified
 
                 if since_dt and last_modified:
                     try:

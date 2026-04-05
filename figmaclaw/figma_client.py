@@ -14,6 +14,18 @@ from typing import Any, Callable
 
 import httpx
 
+from figmaclaw.figma_api_models import (
+    FileMetaResponse,
+    FileSummary,
+    NodesResponse,
+    ProjectFilesResponse,
+    ProjectSummary,
+    TeamProjectsResponse,
+    VersionsPage,
+    VersionSummary,
+    _validate,
+)
+
 
 class FigmaClient:
     """Async client for the Figma REST API.
@@ -93,24 +105,46 @@ class FigmaClient:
         response.raise_for_status()
         return {}
 
-    async def get_file_meta(self, file_key: str) -> dict[str, Any]:
-        """GET /v1/files/{file_key}?depth=1 — cheap version + page list check."""
-        return await self._get(f"/v1/files/{file_key}", params={"depth": "1"})
+    async def get_file_meta(self, file_key: str) -> FileMetaResponse:
+        """GET /v1/files/{file_key}?depth=1 — cheap version + page list check.
+
+        Returns a validated :class:`FileMetaResponse`. If Figma's response
+        is missing a required field (``name``, ``version``, ``lastModified``)
+        the call raises :class:`figma_api_models.FigmaAPIValidationError`
+        with the file_key in the message — figmaclaw#11.
+        """
+        data = await self._get(f"/v1/files/{file_key}", params={"depth": "1"})
+        return _validate(
+            FileMetaResponse, data,
+            endpoint="GET /v1/files/{key}?depth=1",
+            context=f"file_key={file_key}",
+        )
 
     async def get_page(self, file_key: str, page_node_id: str) -> dict[str, Any]:
         """GET /v1/files/{file_key}/nodes?ids={page_node_id} — single page tree.
 
         Returns the document node for the requested page (the CANVAS node),
-        not the full wrapper response.
+        not the full wrapper response. The recursive document tree stays as
+        :class:`dict` because :func:`figmaclaw.figma_models.from_page_node`
+        walks it with its own conventions — see the design note in
+        :mod:`figmaclaw.figma_api_models`.
+
+        The wrapper envelope *is* validated so a Figma schema drift on the
+        ``nodes`` map surfaces loudly (figmaclaw#11).
         """
         data = await self._get(
             f"/v1/files/{file_key}/nodes",
             params={"ids": page_node_id},
         )
-        nodes: dict[str, Any] = data.get("nodes", {})
-        entry = nodes.get(page_node_id, {})
-        doc: dict[str, Any] = entry.get("document", {})
-        return doc
+        validated = _validate(
+            NodesResponse, data,
+            endpoint="GET /v1/files/{key}/nodes",
+            context=f"file_key={file_key} ids={page_node_id}",
+        )
+        entry = validated.nodes.get(page_node_id)
+        if entry is None or entry.document is None:
+            return {}
+        return entry.document
 
     async def get_file_full(
         self, file_key: str, *, version: str | None = None,
@@ -120,9 +154,23 @@ class FigmaClient:
         If *version* is given, fetches the file state at that historical version.
         Use for initial tracking or version diffs — one call returns all pages
         and all frames, which is far cheaper than per-page fetches.
+
+        Returns the raw dict: the full recursive file tree is consumed by
+        :func:`figmaclaw.commands.diff._extract_all_pages` which walks it
+        directly, and typing the whole recursion is out of scope for
+        figmaclaw#11. The top-level shape is the same as ``get_file_meta``
+        but with ``depth=unlimited``, so a lightweight sanity check via
+        :class:`FileMetaResponse` catches the common schema drift modes.
         """
         params = {"version": version} if version else None
-        return await self._get(f"/v1/files/{file_key}", params=params)
+        data = await self._get(f"/v1/files/{file_key}", params=params)
+        # Sanity validation on the top-level envelope; recursive children stay raw.
+        _validate(
+            FileMetaResponse, data,
+            endpoint="GET /v1/files/{key}" + (f"?version={version}" if version else ""),
+            context=f"file_key={file_key}",
+        )
+        return data
 
     async def _get_url(self, url: str) -> dict[str, Any]:
         """GET an absolute Figma API URL (used for pagination)."""
@@ -160,34 +208,41 @@ class FigmaClient:
         file_key: str,
         *,
         max_pages: int = 20,
-        stop_when: Callable[[dict[str, Any]], bool] | None = None,
-    ) -> list[dict[str, Any]]:
+        stop_when: Callable[[VersionSummary], bool] | None = None,
+    ) -> list[VersionSummary]:
         """GET /v1/files/{file_key}/versions — paginated version history.
 
-        Returns all versions ordered newest-first. Follows pagination up to
-        *max_pages* pages (default 20 pages × 50 per page = 1000 versions).
+        Returns typed :class:`VersionSummary` instances ordered
+        newest-first. Follows pagination up to *max_pages* pages
+        (default 20 pages × 50 per page = 1000 versions).
 
         If *stop_when* is provided, it should be a callable that takes a
-        version dict and returns True when pagination should stop (e.g. when
-        a version is older than a desired cutoff). The matching version and
-        all newer ones are included in the result.
+        version and returns True when pagination should stop (e.g. when
+        a version is older than a desired cutoff). The matching version
+        and all newer ones are included in the result.
+
+        Schema drift on individual version entries surfaces as a
+        :class:`figma_api_models.FigmaAPIValidationError` at the first
+        offending page — figmaclaw#11.
         """
-        all_versions: list[dict[str, Any]] = []
+        all_versions: list[VersionSummary] = []
         url: str | None = f"/v1/files/{file_key}/versions?page_size=50"
         for _ in range(max_pages):
             if not url:
                 break
             data = await self._get_url(url)
-            versions: list[dict[str, Any]] = data.get("versions", [])
-            if not versions:
+            page = _validate(
+                VersionsPage, data,
+                endpoint="GET /v1/files/{key}/versions",
+                context=f"file_key={file_key}",
+            )
+            if not page.versions:
                 break
-            all_versions.extend(versions)
+            all_versions.extend(page.versions)
             # Check if we've found a version older than the cutoff
-            if stop_when and any(stop_when(v) for v in versions):
+            if stop_when and any(stop_when(v) for v in page.versions):
                 break
-            pagination = data.get("pagination", {})
-            next_page = pagination.get("next_page")
-            url = next_page if next_page else None
+            url = page.pagination.next_page if page.pagination else None
         return all_versions
 
     async def get_page_at_version(
@@ -206,17 +261,34 @@ class FigmaClient:
         doc: dict[str, Any] = entry.get("document", {})
         return doc
 
-    async def list_team_projects(self, team_id: str) -> list[dict[str, Any]]:
-        """GET /v1/teams/{team_id}/projects — list projects for a team."""
-        data = await self._get(f"/v1/teams/{team_id}/projects")
-        result: list[dict[str, Any]] = data.get("projects", [])
-        return result
+    async def list_team_projects(self, team_id: str) -> list[ProjectSummary]:
+        """GET /v1/teams/{team_id}/projects — list projects for a team.
 
-    async def list_project_files(self, project_id: str) -> list[dict[str, Any]]:
-        """GET /v1/projects/{project_id}/files — list files in a project."""
+        Returns typed :class:`ProjectSummary` instances; callers access
+        ``.id`` and ``.name`` via attribute access (figmaclaw#11).
+        """
+        data = await self._get(f"/v1/teams/{team_id}/projects")
+        resp = _validate(
+            TeamProjectsResponse, data,
+            endpoint="GET /v1/teams/{team_id}/projects",
+            context=f"team_id={team_id}",
+        )
+        return resp.projects
+
+    async def list_project_files(self, project_id: str) -> list[FileSummary]:
+        """GET /v1/projects/{project_id}/files — list files in a project.
+
+        Returns typed :class:`FileSummary` instances; callers access
+        ``.key``, ``.name``, ``.last_modified`` via attribute access
+        (figmaclaw#11).
+        """
         data = await self._get(f"/v1/projects/{project_id}/files")
-        result: list[dict[str, Any]] = data.get("files", [])
-        return result
+        resp = _validate(
+            ProjectFilesResponse, data,
+            endpoint="GET /v1/projects/{project_id}/files",
+            context=f"project_id={project_id}",
+        )
+        return resp.files
 
     async def get_image_urls(
         self,

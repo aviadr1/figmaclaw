@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from figmaclaw.commands import sync as sync_module
+from figmaclaw.figma_api_models import FileMetaResponse
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_hash import compute_page_hash
 from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection
@@ -73,12 +74,12 @@ def _fake_page_node() -> dict:
     }
 
 
-def _fake_file_meta() -> dict:
-    return {
+def _fake_file_meta() -> "FileMetaResponse":
+    return FileMetaResponse.model_validate({
         "name": "Web App",
         "version": "v2",
         "lastModified": "2026-03-31T12:00:00Z",
-    }
+    })
 
 
 @pytest.mark.asyncio

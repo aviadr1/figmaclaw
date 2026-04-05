@@ -34,7 +34,7 @@ async def _run(api_key: str, repo_dir: Path, file_key: str, no_pull: bool) -> No
     async with FigmaClient(api_key) as client:
         # Validate the file exists and get its name
         meta = await client.get_file_meta(file_key)
-        file_name = meta.get("name", file_key)
+        file_name = meta.name
 
         state.add_tracked_file(file_key, file_name)
         state.save()
