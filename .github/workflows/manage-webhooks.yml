@@ -1,0 +1,77 @@
+# Reusable workflow — called by host repos via:
+#   uses: aviadr1/figmaclaw/.github/workflows/manage-webhooks.yml@main
+#
+# Manages Figma file-level webhooks for every file listed in
+# .figma-sync/manifest.json. The 'sync' command enforces the invariant:
+# exactly ONE active webhook per tracked file pointing to ENDPOINT.
+# Safe to run repeatedly (idempotent).
+
+name: figmaclaw — manage webhooks
+
+on:
+  workflow_call:
+    inputs:
+      command:
+        description: 'sync | validate | list | delete-all | register'
+        required: true
+        type: string
+      endpoint:
+        description: 'Webhook delivery endpoint URL'
+        required: true
+        type: string
+      dry_run:
+        description: 'Preview changes without mutating Figma (sync/register only)'
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      FIGMA_API_KEY:
+        required: true
+      FIGMA_WEBHOOK_SECRET:
+        required: false
+
+jobs:
+  manage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install figmaclaw
+        run: pip install uv && uv tool install git+https://github.com/aviadr1/figmaclaw
+
+      - name: Run figmaclaw webhooks ${{ inputs.command }}
+        env:
+          FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+          FIGMA_WEBHOOK_SECRET: ${{ secrets.FIGMA_WEBHOOK_SECRET }}
+          CMD: ${{ inputs.command }}
+          ENDPOINT: ${{ inputs.endpoint }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          DRY_FLAG=""
+          if [ "$DRY_RUN" = "true" ]; then
+            DRY_FLAG="--dry-run"
+          fi
+          case "$CMD" in
+            list)
+              figmaclaw webhooks list
+              ;;
+            delete-all)
+              figmaclaw webhooks delete-all --endpoint "$ENDPOINT"
+              ;;
+            validate)
+              figmaclaw webhooks validate --endpoint "$ENDPOINT"
+              ;;
+            sync)
+              figmaclaw webhooks sync --endpoint "$ENDPOINT" $DRY_FLAG
+              ;;
+            register)
+              figmaclaw webhooks register --endpoint "$ENDPOINT" $DRY_FLAG
+              ;;
+            *)
+              echo "Unknown command: $CMD"
+              exit 1
+              ;;
+          esac

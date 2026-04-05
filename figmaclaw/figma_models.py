@@ -9,7 +9,7 @@ can't drift.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from figmaclaw.figma_schema import (
     UNGROUPED_NODE_ID,
@@ -65,6 +65,33 @@ class FigmaFile(BaseModel):
     version: str
     last_modified: str
     pages: list[FigmaPage] = Field(default_factory=list)
+
+
+class Webhook(BaseModel):
+    """A Figma file-level webhook as returned by the v2 webhooks API.
+
+    Only the fields this project cares about are modelled; unknown fields
+    (e.g. team_id on team-scoped webhooks) are ignored.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    context_id: str
+    endpoint: str
+    status: str = "ACTIVE"
+
+
+class ValidationReport(BaseModel):
+    """Result of checking the exactly-one-webhook-per-file invariant."""
+
+    missing: list[str] = Field(default_factory=list)
+    duplicates: list[tuple[str, list[Webhook]]] = Field(default_factory=list)
+    stale: list[Webhook] = Field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not (self.missing or self.duplicates or self.stale)
 
 
 def _extract_flows(frames: list[dict]) -> list[tuple[str, str]]:

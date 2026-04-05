@@ -21,6 +21,7 @@ from figmaclaw.commands.image_urls import image_urls_cmd
 from figmaclaw.commands.screenshots import screenshots_cmd
 from figmaclaw.commands.set_flows import set_flows_cmd
 from figmaclaw.commands.track import track_cmd
+from figmaclaw.commands.webhooks import webhooks_group
 from figmaclaw.commands.workflows_cmd import workflows_group
 from figmaclaw.commands.write_body import write_body_cmd
 from figmaclaw.commands.write_descriptions import write_descriptions_cmd
@@ -81,6 +82,7 @@ cli.add_command(stream_format_cmd)
 cli.add_command(set_flows_cmd)
 cli.add_command(sync_cmd)
 cli.add_command(track_cmd)
+cli.add_command(webhooks_group)
 cli.add_command(workflows_group)
 cli.add_command(write_body_cmd)
 cli.add_command(write_descriptions_cmd)
