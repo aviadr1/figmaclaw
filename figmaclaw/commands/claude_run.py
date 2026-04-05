@@ -32,8 +32,16 @@ from pathlib import Path
 import click
 import pydantic
 
+from figmaclaw.budget import BudgetDecision, decide_next_batch, load_per_frame_history
 from figmaclaw.figma_md_parse import section_line_ranges
 from figmaclaw.figma_schema import PLACEHOLDER_DESCRIPTION, is_placeholder_row
+from figmaclaw.verdict import (
+    compute_verdict,
+    count_commits_since,
+    format_step_summary,
+    head_sha,
+    write_step_summary,
+)
 
 SECTION_THRESHOLD = 80  # pages/sections above this use incremental mode
 ENRICHMENT_LOG = ".figma-sync/enrichment-log.csv"
@@ -505,149 +513,337 @@ def claude_run_cmd(
                 click.echo(f"  {f} ({fc} frames)")
         sys.exit(0)
 
+    # ---- figmaclaw#26+#27: adaptive budget + explicit verdict counters ----
+    #
+    # Counters are observable end-of-run state. Every exit path computes the
+    # verdict from these and only these — no hidden state, no inference from
+    # logs. See figmaclaw.verdict for the full decision table.
     total = len(files)
-    succeeded = 0
-    failed = 0
+    files_selected = total
+    work_attempted = 0
+    errors = 0
+    skipped_no_work = 0
+    budget_exhausted = False
+    budget_stop_reason: str | None = None
+    phantom_files: list[str] = []
 
-    for i, file_path in enumerate(files, 1):
-        # Pull latest to avoid re-enriching files another run already handled.
-        # Each Claude invocation pushes after commit, so concurrent/sequential
-        # runs may have enriched files since our initial checkout.
-        subprocess.run(["git", "pull", "--no-rebase"], capture_output=True)
+    # Sha snapshot before any work — used to count commits that actually
+    # landed, which is the only honest signal that useful work was done.
+    start_sha = head_sha(repo_dir)
+    run_start = time.monotonic()
 
-        # Re-check after pull — file may now have enriched_hash
-        needs_it, frame_count = enrichment_info(file_path)
-        if not needs_it:
-            click.echo(f"[claude-run] [{i}/{total}] skip (already enriched): {file_path}", err=True)
-            continue
+    # Load per-mode rolling histories from the enrichment log. These are
+    # "prior knowledge" from past runs; within this run we append to them
+    # after each successful batch so the next decision uses the freshest
+    # per-frame time.
+    enrich_log_path = repo_dir / ENRICHMENT_LOG
+    history_batch = load_per_frame_history(enrich_log_path, "batch")
+    history_whole = load_per_frame_history(enrich_log_path, "whole-page")
+    history_finalize = load_per_frame_history(enrich_log_path, "finalize")
 
-        if section_mode and frame_count > SECTION_THRESHOLD:
-            # Batch mode: describe up to 80 pending frames per Claude invocation
-            # using write-descriptions (cross-section, mechanical row updates).
-            # Much faster than per-section invocations — eliminates startup overhead.
-            batch_template = _prompt_path("figma-sections-batch.md").read_text()
-            sections = pending_sections(file_path)
-            total_pending = sum(int(s["pending_frames"]) for s in sections)
-            click.echo(
-                f"[claude-run] [{i}/{total}] batch-mode: {file_path} "
-                f"({total_pending} pending frames across {len(sections)} sections)",
-                err=True,
-            )
+    def _budget_check(planned_frames: int, mode: str) -> BudgetDecision:
+        """Call the pure budget function with the right history for *mode*."""
+        if mode == "batch":
+            hist = history_batch
+        elif mode == "whole-page":
+            hist = history_whole
+        else:
+            hist = history_finalize
+        return decide_next_batch(
+            elapsed_seconds=time.monotonic() - run_start,
+            planned_frames=max(planned_frames, 1),
+            per_frame_history=hist,
+        )
 
-            chunk_num = 0
-            prev_pending_count = None
-            stale_retries = 0
-            while sections:
-                chunk_num += 1
+    def _record_success(mode: str, frames: int, dur_s: float) -> None:
+        """Append this batch's per-frame time to the in-run rolling history."""
+        nonlocal work_attempted
+        work_attempted += 1
+        if frames <= 0 or dur_s <= 0:
+            return
+        per_frame = dur_s / frames
+        if mode == "batch":
+            history_batch.append(per_frame)
+        elif mode == "whole-page":
+            history_whole.append(per_frame)
+        else:
+            history_finalize.append(per_frame)
+
+    try:
+        for i, file_path in enumerate(files, 1):
+            if budget_exhausted:
+                break
+
+            # Pull latest to avoid re-enriching files another run already handled.
+            # Each Claude invocation pushes after commit, so concurrent/sequential
+            # runs may have enriched files since our initial checkout.
+            subprocess.run(["git", "pull", "--no-rebase"], capture_output=True)
+
+            # Re-check after pull — file may now have enriched_hash
+            needs_it, frame_count = enrichment_info(file_path)
+            if not needs_it:
+                click.echo(
+                    f"[claude-run] [{i}/{total}] skip (already enriched): {file_path}",
+                    err=True,
+                )
+                continue
+
+            if section_mode and frame_count > SECTION_THRESHOLD:
+                # Batch mode: describe up to 80 pending frames per Claude invocation
+                # using write-descriptions (cross-section, mechanical row updates).
+                batch_template = _prompt_path("figma-sections-batch.md").read_text()
+                sections = pending_sections(file_path)
+                fin_needed = needs_finalization(file_path)
+
+                # figmaclaw#27 row 5: selector said this file needs enrichment,
+                # but the dispatcher has no work for it. That is ALWAYS a bug —
+                # a selector/dispatcher disagreement that must surface as RED.
+                if not sections and not fin_needed:
+                    click.echo(
+                        f"[claude-run] [{i}/{total}] PHANTOM SELECTION: "
+                        f"{file_path} — enrichment_info says needs_enrichment=True "
+                        f"(frame_count={frame_count}) but pending_sections is empty "
+                        f"AND finalization not needed. Selector/dispatcher "
+                        f"disagreement — see figmaclaw#27 row 5.",
+                        err=True,
+                    )
+                    skipped_no_work += 1
+                    phantom_files.append(str(file_path))
+                    continue
+
                 total_pending = sum(int(s["pending_frames"]) for s in sections)
+                click.echo(
+                    f"[claude-run] [{i}/{total}] batch-mode: {file_path} "
+                    f"({total_pending} pending frames across {len(sections)} sections)",
+                    err=True,
+                )
 
-                # Detect stuck loop: if pending count hasn't decreased after
-                # a successful batch, the remaining frames are undescribable
-                # (e.g. screenshot download fails). Skip to next file after 2 retries.
-                if prev_pending_count is not None and total_pending >= prev_pending_count:
-                    stale_retries += 1
-                    if stale_retries >= 2:
+                chunk_num = 0
+                prev_pending_count = None
+                stale_retries = 0
+                while sections:
+                    chunk_num += 1
+                    total_pending = sum(int(s["pending_frames"]) for s in sections)
+
+                    # Detect stuck loop: if pending count hasn't decreased after
+                    # a successful batch, the remaining frames are undescribable
+                    # (e.g. screenshot download fails). Skip to next file.
+                    if prev_pending_count is not None and total_pending >= prev_pending_count:
+                        stale_retries += 1
+                        if stale_retries >= 2:
+                            click.echo(
+                                f"[claude-run] [{i}/{total}] STUCK: "
+                                f"{total_pending} frames won't describe "
+                                f"(likely unrenderable screenshots). "
+                                f"Moving to next file.",
+                                err=True,
+                            )
+                            _log_enrichment(
+                                repo_dir, file_path, "stuck",
+                                total_pending, 0, False,
+                            )
+                            break
+                    else:
+                        stale_retries = 0
+                    prev_pending_count = total_pending
+
+                    # figmaclaw#26: adaptive budget check BEFORE the expensive call
+                    decision = _budget_check(total_pending, mode="batch")
+                    click.echo(decision.reason, err=True)
+                    if not decision.should_start:
+                        budget_exhausted = True
+                        budget_stop_reason = decision.reason
                         click.echo(
-                            f"[claude-run] [{i}/{total}] STUCK: {total_pending} frames "
-                            f"won't describe (likely unrenderable screenshots). "
-                            f"Moving to next file.",
+                            f"[claude-run] [{i}/{total}] budget exhausted — "
+                            f"stopping cleanly before hard cap",
                             err=True,
                         )
-                        _log_enrichment(repo_dir, file_path, "stuck", total_pending, 0, False)
                         break
-                else:
-                    stale_retries = 0
-                prev_pending_count = total_pending
 
-                section_names = ", ".join(
-                    str(s["name"]) for s in sections[:5]
-                ) + (f" +{len(sections)-5} more" if len(sections) > 5 else "")
+                    section_names = ", ".join(
+                        str(s["name"]) for s in sections[:5]
+                    ) + (f" +{len(sections)-5} more" if len(sections) > 5 else "")
 
-                click.echo(
-                    f"[claude-run] [{i}/{total}] batch {chunk_num} "
-                    f"({total_pending} pending): {section_names}",
-                    err=True,
-                )
-                t0 = time.monotonic()
-                prompt = build_prompt(
-                    batch_template, file_path, [file_path],
-                    section_list=section_names,
-                )
-                rc = _run_claude(
-                    prompt=prompt, model=model, max_turns=max_turns,
-                    skip_permissions=skip_permissions, extra_flags=[],
-                    stream_log_path=stream_log,
-                )
-                dur = time.monotonic() - t0
-                ok = rc.exit_code == 0
-                _log_enrichment(repo_dir, file_path, "batch", total_pending, dur, ok, claude=rc)
-                if not ok:
                     click.echo(
-                        f"[claude-run] [{i}/{total}] batch FAILED (exit {rc.exit_code}, {dur:.0f}s): "
-                        f"{file_path}",
+                        f"[claude-run] [{i}/{total}] batch {chunk_num} "
+                        f"({total_pending} pending): {section_names}",
                         err=True,
                     )
-                    failed += 1
-                    break
-                click.echo(
-                    f"[claude-run] [{i}/{total}] batch OK ({dur:.0f}s): {file_path}",
-                    err=True,
-                )
-                succeeded += 1
-
-                # Re-check pending after commit
-                subprocess.run(["git", "pull", "--no-rebase"], capture_output=True)
-                sections = pending_sections(file_path)
-
-            # All frames described → finalize (page summary + section intros + mermaid)
-            if needs_finalization(file_path):
-                click.echo(
-                    f"[claude-run] [{i}/{total}] finalizing: {file_path}",
-                    err=True,
-                )
-                t0 = time.monotonic()
-                fin_template = finalize_prompt_path().read_text()
-                prompt = build_prompt(fin_template, file_path, [file_path])
-                rc = _run_claude(
-                    prompt=prompt, model=model, max_turns=max_turns,
-                    skip_permissions=skip_permissions, extra_flags=[],
-                    stream_log_path=stream_log,
-                )
-                dur = time.monotonic() - t0
-                ok = rc.exit_code == 0
-                _log_enrichment(repo_dir, file_path, "finalize", frame_count, dur, ok, claude=rc)
-                if not ok:
+                    t0 = time.monotonic()
+                    prompt = build_prompt(
+                        batch_template, file_path, [file_path],
+                        section_list=section_names,
+                    )
+                    rc = _run_claude(
+                        prompt=prompt, model=model, max_turns=max_turns,
+                        skip_permissions=skip_permissions, extra_flags=[],
+                        stream_log_path=stream_log,
+                    )
+                    dur = time.monotonic() - t0
+                    ok = rc.exit_code == 0
+                    _log_enrichment(
+                        repo_dir, file_path, "batch",
+                        total_pending, dur, ok, claude=rc,
+                    )
+                    if not ok:
+                        click.echo(
+                            f"[claude-run] [{i}/{total}] batch FAILED "
+                            f"(exit {rc.exit_code}, {dur:.0f}s): {file_path}",
+                            err=True,
+                        )
+                        work_attempted += 1
+                        errors += 1
+                        break
                     click.echo(
-                        f"[claude-run] [{i}/{total}] finalize FAILED (exit {rc.exit_code}, {dur:.0f}s): "
-                        f"{file_path}",
+                        f"[claude-run] [{i}/{total}] batch OK ({dur:.0f}s): {file_path}",
                         err=True,
                     )
-                    failed += 1
-                else:
+                    _record_success("batch", total_pending, dur)
+
+                    # Re-check pending after commit
+                    subprocess.run(["git", "pull", "--no-rebase"], capture_output=True)
+                    sections = pending_sections(file_path)
+
+                if budget_exhausted:
+                    break  # out of outer for
+
+                # All frames described → finalize (page summary + intros + mermaid)
+                if needs_finalization(file_path):
+                    decision = _budget_check(frame_count, mode="finalize")
+                    click.echo(decision.reason, err=True)
+                    if not decision.should_start:
+                        budget_exhausted = True
+                        budget_stop_reason = decision.reason
+                        click.echo(
+                            f"[claude-run] [{i}/{total}] budget exhausted "
+                            f"before finalize — stopping cleanly",
+                            err=True,
+                        )
+                        break
+
                     click.echo(
-                        f"[claude-run] [{i}/{total}] finalize OK ({dur:.0f}s): {file_path}",
+                        f"[claude-run] [{i}/{total}] finalizing: {file_path}",
                         err=True,
                     )
-                    succeeded += 1
-        else:
-            # Standard whole-page enrichment
-            click.echo(f"[claude-run] [{i}/{total}] enriching: {file_path} ({frame_count} frames)", err=True)
-            t0 = time.monotonic()
-            prompt = build_prompt(template, file_path, [file_path])
-            rc = _run_claude(
-                prompt=prompt, model=model, max_turns=max_turns,
-                skip_permissions=skip_permissions, extra_flags=[],
-                stream_log_path=stream_log,
-            )
-            dur = time.monotonic() - t0
-            ok = rc.exit_code == 0
-            _log_enrichment(repo_dir, file_path, "whole-page", frame_count, dur, ok, claude=rc)
-            if not ok:
-                click.echo(f"[claude-run] [{i}/{total}] FAILED (exit {rc.exit_code}, {dur:.0f}s): {file_path}", err=True)
-                failed += 1
+                    t0 = time.monotonic()
+                    fin_template = finalize_prompt_path().read_text()
+                    prompt = build_prompt(fin_template, file_path, [file_path])
+                    rc = _run_claude(
+                        prompt=prompt, model=model, max_turns=max_turns,
+                        skip_permissions=skip_permissions, extra_flags=[],
+                        stream_log_path=stream_log,
+                    )
+                    dur = time.monotonic() - t0
+                    ok = rc.exit_code == 0
+                    _log_enrichment(
+                        repo_dir, file_path, "finalize",
+                        frame_count, dur, ok, claude=rc,
+                    )
+                    if not ok:
+                        click.echo(
+                            f"[claude-run] [{i}/{total}] finalize FAILED "
+                            f"(exit {rc.exit_code}, {dur:.0f}s): {file_path}",
+                            err=True,
+                        )
+                        work_attempted += 1
+                        errors += 1
+                    else:
+                        click.echo(
+                            f"[claude-run] [{i}/{total}] finalize OK "
+                            f"({dur:.0f}s): {file_path}",
+                            err=True,
+                        )
+                        _record_success("finalize", frame_count, dur)
             else:
-                click.echo(f"[claude-run] [{i}/{total}] OK ({dur:.0f}s, {frame_count} frames): {file_path}", err=True)
-                succeeded += 1
+                # Standard whole-page enrichment
+                decision = _budget_check(frame_count, mode="whole-page")
+                click.echo(decision.reason, err=True)
+                if not decision.should_start:
+                    budget_exhausted = True
+                    budget_stop_reason = decision.reason
+                    click.echo(
+                        f"[claude-run] [{i}/{total}] budget exhausted — "
+                        f"stopping cleanly before hard cap",
+                        err=True,
+                    )
+                    break
 
-    click.echo(f"[claude-run] Done: {succeeded} succeeded, {failed} failed out of {total}", err=True)
-    sys.exit(1 if failed > 0 and succeeded == 0 else 0)
+                click.echo(
+                    f"[claude-run] [{i}/{total}] enriching: {file_path} "
+                    f"({frame_count} frames)",
+                    err=True,
+                )
+                t0 = time.monotonic()
+                prompt = build_prompt(template, file_path, [file_path])
+                rc = _run_claude(
+                    prompt=prompt, model=model, max_turns=max_turns,
+                    skip_permissions=skip_permissions, extra_flags=[],
+                    stream_log_path=stream_log,
+                )
+                dur = time.monotonic() - t0
+                ok = rc.exit_code == 0
+                _log_enrichment(
+                    repo_dir, file_path, "whole-page",
+                    frame_count, dur, ok, claude=rc,
+                )
+                if not ok:
+                    click.echo(
+                        f"[claude-run] [{i}/{total}] FAILED "
+                        f"(exit {rc.exit_code}, {dur:.0f}s): {file_path}",
+                        err=True,
+                    )
+                    work_attempted += 1
+                    errors += 1
+                else:
+                    click.echo(
+                        f"[claude-run] [{i}/{total}] OK "
+                        f"({dur:.0f}s, {frame_count} frames): {file_path}",
+                        err=True,
+                    )
+                    _record_success("whole-page", frame_count, dur)
+    except Exception as exc:
+        # figmaclaw#27 row 8: unhandled exception escapes the dispatch loop.
+        # Surface as RED but still compute + write the verdict so the step
+        # summary has as much context as possible.
+        import traceback
+        click.echo(
+            f"[claude-run] CRASH in dispatch loop: {type(exc).__name__}: {exc}",
+            err=True,
+        )
+        traceback.print_exc(file=sys.stderr)
+        errors += 1
+
+    # ---- Compute verdict and exit ----
+    commits_made = count_commits_since(start_sha, repo_dir)
+    verdict = compute_verdict(
+        files_selected=files_selected,
+        work_attempted=work_attempted,
+        commits_made=commits_made,
+        errors=errors,
+        budget_exhausted=budget_exhausted,
+        skipped_no_work=skipped_no_work,
+    )
+
+    click.echo(
+        f"[claude-run] Done: files_selected={files_selected} "
+        f"work_attempted={work_attempted} commits_made={commits_made} "
+        f"errors={errors} budget_exhausted={str(budget_exhausted).lower()} "
+        f"skipped_no_work={skipped_no_work}",
+        err=True,
+    )
+    click.echo(f"[claude-run] Verdict ({verdict.row}): {verdict.label}", err=True)
+
+    summary = format_step_summary(
+        verdict=verdict,
+        files_selected=files_selected,
+        work_attempted=work_attempted,
+        commits_made=commits_made,
+        errors=errors,
+        budget_exhausted=budget_exhausted,
+        skipped_no_work=skipped_no_work,
+        phantom_files=phantom_files or None,
+        budget_stop_reason=budget_stop_reason,
+    )
+    write_step_summary(summary)
+
+    sys.exit(verdict.exit_code)
