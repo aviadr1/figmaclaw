@@ -1,0 +1,18 @@
+name = "figma-webhook-proxy"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+[vars]
+# TODO: replace with your GitHub org/repo
+GITHUB_REPO = "OWNER/REPO"
+DEBOUNCE_SECONDS = "600"
+
+[[kv_namespaces]]
+binding = "DEBOUNCE"
+# TODO: create a KV namespace and paste its ID here:
+#   wrangler kv namespace create DEBOUNCE
+id = "YOUR_KV_NAMESPACE_ID"
+
+# Secrets (set via `wrangler secret put`):
+#   FIGMA_WEBHOOK_SECRET
+#   GITHUB_TOKEN
