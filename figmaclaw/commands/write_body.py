@@ -19,7 +19,6 @@ from pathlib import Path
 
 import click
 
-from figmaclaw.figma_md_parse import section_line_ranges  # noqa: F401  (re-exported for tests)
 from figmaclaw.figma_parse import parse_frontmatter, split_frontmatter
 from figmaclaw.figma_schema import is_h2, parse_section_heading
 from figmaclaw.git_utils import git_commit

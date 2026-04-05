@@ -1,21 +1,52 @@
-"""Parse the human-readable body of a figmaclaw-rendered markdown file.
+"""Multi-line document parser for figmaclaw-rendered markdown files.
 
-This module is a **thin facade** over :mod:`figmaclaw.figma_schema`, which
-holds the canonical render/parse primitives. It preserves the
-``section_line_ranges`` / ``parse_sections`` / ``ParsedSection`` /
-``ParsedFrame`` API for backward compatibility with existing callers
-(``inspect``, ``claude_run``, ``screenshots``, ``write_body``).
+This module is the **document-level parser**: it walks a whole markdown
+body and assembles higher-level structures (``ParsedSection`` with its
+contained frames, line ranges for surgical edits) from the single-line
+primitives provided by :mod:`figmaclaw.figma_schema`.
 
-New code should import directly from :mod:`figmaclaw.figma_schema`.
+Two-layer design:
 
-Policy reminder (unchanged): structured data lives in the YAML frontmatter
-(``figma_parse.py``). This module parses the body for section structure and
-frame node ids only — **never** prose (page summary, section intros,
-Mermaid). Frame descriptions come from frontmatter, not from the body.
+=====================  ==================================================
+Layer                  Responsibility
+=====================  ==================================================
+``figma_schema``       Parse / render **one** line at a time. Regex
+                       patterns, format constants, escape rules, single-
+                       item dataclasses (``SectionHeading``, ``FrameRow``).
 
-The Screen Flow section has no node_id in its heading and is excluded by
-:func:`parse_sections` but included as a boundary by
-:func:`section_line_ranges`.
+``figma_md_parse``     Walk a whole body, detect H2 section boundaries,
+                       attach frame rows to their enclosing section,
+                       return line ranges that downstream code uses for
+                       surgical ``write-body --section`` edits.
+=====================  ==================================================
+
+Keep these responsibilities separate. Concretely, **do not add any of
+the following to this module**:
+
+* ``re`` imports or :func:`re.compile` calls — regex primitives live in
+  :mod:`figma_schema`.
+* String literals for ``## ``, ``| ... | `` ... ` | ... |``, ``(Unnamed)``,
+  ``(Ungrouped)``, ``Screen Flow``, or ``(no description yet)`` — those
+  are canonical constants in :mod:`figma_schema`. Import them.
+* Visibility or node-type predicates — use
+  :func:`figma_schema.is_visible`, :func:`figma_schema.is_structural`,
+  etc.
+
+If you need a new line-level primitive (a predicate, a renderer, a
+format string), add it to :mod:`figma_schema` first and import it here.
+There is a CI guardrail test in ``tests/test_figma_md_parse_guardrails.py``
+that enforces these rules.
+
+Policy reminders
+----------------
+* Structured data (frontmatter) is owned by :mod:`figmaclaw.figma_parse`,
+  not this module. This module parses the **body** only.
+* This module reads section structure and frame node ids from the body.
+  It never parses prose — no page summary, no section intros, no Mermaid.
+  Frame descriptions come from the YAML frontmatter, not the table cells.
+* The ``## Screen Flow`` section has no node_id in its heading. It is
+  included by :func:`section_line_ranges` as a boundary (so callers can
+  slice around it) but excluded by :func:`parse_sections`.
 """
 
 from __future__ import annotations
