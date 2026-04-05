@@ -83,6 +83,22 @@ uv run pytest --cov=figmaclaw --cov-report=term-missing
 ./install.sh
 ```
 
+## Code conventions
+
+- **Use pydantic, not dataclass**, for structured values (decisions, results, model
+  rows, anything with named fields). Use `pydantic.BaseModel` with
+  `model_config = pydantic.ConfigDict(frozen=True)` when immutability matters.
+  Rationale: validation, JSON-serialization, and consistency with existing
+  models (`ClaudeResult`, figma models) all come for free. `@dataclass` should
+  only appear if there is a concrete reason pydantic cannot meet (there almost
+  never is).
+- **Pure functions for decisions.** Budget decisions, verdict computation, and
+  other branching logic should be pure functions with explicit inputs. No
+  clock reads, no environment variables, no I/O inside the decision function.
+  Callers pass the observable state in; the decision function maps it to a
+  frozen pydantic model. This is what makes the logic testable with golden-log
+  assertions (see `figmaclaw/budget.py`, `figmaclaw/verdict.py`).
+
 ## Testing conventions
 
 - Write invariant-based tests (what should always be true), not bug-affirming tests

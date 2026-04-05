@@ -106,9 +106,9 @@ async def _run(
         except Exception as exc:
             raise click.ClickException(f"Failed to fetch file meta for {file_key!r}: {exc}") from exc
 
-        file_name: str = file_meta.get("name", file_key)
-        api_version: str = file_meta.get("version", "")
-        api_last_modified: str = file_meta.get("lastModified", "")
+        file_name = file_meta.name
+        api_version = file_meta.version
+        api_last_modified = file_meta.lastModified
 
         click.echo("  fetching page from Figma...")
         try:

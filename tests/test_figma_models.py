@@ -265,3 +265,40 @@ def test_hidden_frames_excluded():
     assert "1:2" not in all_frame_ids, "Hidden top-level frame must be excluded"
     assert "3:1" in all_frame_ids, "Visible frame in section should be included"
     assert "3:2" not in all_frame_ids, "Hidden frame in section must be excluded"
+
+
+def test_hidden_section_excludes_all_children_inherited_visibility():
+    """INVARIANT: Hiding a SECTION in Figma hides all its descendants,
+    regardless of the descendants' own visibility flags.
+
+    This matches Figma's canvas rendering: clicking the eye icon on a
+    parent hides the whole subtree. A visible frame inside a hidden
+    section must NOT appear in the rendered page model.
+    """
+    canvas = _canvas("0:1", "Page", [
+        _frame("1:1", "Top visible"),
+        {
+            **_section("2:1", "Hidden section", [
+                _frame("3:1", "Visible frame inside hidden section"),
+                _frame("3:2", "Another"),
+            ]),
+            "visible": False,
+        },
+        _section("4:1", "Visible section", [
+            _frame("5:1", "Visible in visible section"),
+        ]),
+    ])
+    page = from_page_node(canvas, file_key="abc123", file_name="File")
+
+    all_frame_ids = {f.node_id for s in page.sections for f in s.frames}
+    assert "1:1" in all_frame_ids
+    assert "5:1" in all_frame_ids
+    assert "3:1" not in all_frame_ids, (
+        "Frame inside a hidden SECTION must be excluded (inherited visibility)"
+    )
+    assert "3:2" not in all_frame_ids
+
+    # The hidden section itself must NOT appear in the model.
+    section_ids = {s.node_id for s in page.sections}
+    assert "2:1" not in section_ids, "Hidden SECTION must be dropped entirely"
+    assert "4:1" in section_ids

@@ -195,9 +195,9 @@ async def pull_file(
         log.error("Failed to fetch file meta for %r: %s — skipping file", file_key, exc)
         result.skipped_file = True
         return result
-    api_version = meta.get("version", "")
-    api_last_modified = meta.get("lastModified", "")
-    file_name = meta.get("name", file_key)
+    api_version = meta.version
+    api_last_modified = meta.lastModified
+    file_name = meta.name
 
     stored = state.manifest.files.get(file_key)
     if not force and stored and stored.version == api_version and stored.last_modified == api_last_modified:
@@ -213,8 +213,7 @@ async def pull_file(
         last_checked_at=now,
     )
 
-    doc = meta.get("document", {})
-    page_stubs = [c for c in doc.get("children", []) if c.get("type") == "CANVAS"]
+    page_stubs = meta.canvas_pages
     file_slug = slugify(file_name, fallback=file_key)
     total_pages = len(page_stubs)
     pages_written_this_call = 0
@@ -224,24 +223,24 @@ async def pull_file(
     # will never process in this batch.
     # skip_pages stubs are excluded from the parallel fetch to avoid wasted API calls.
     if max_pages is None:
-        fetch_stubs = [s for s in page_stubs if not state.should_skip_page(s.get("name", ""))]
+        fetch_stubs = [s for s in page_stubs if not state.should_skip_page(s.name)]
 
-        async def _fetch(stub: dict) -> dict | Exception:
+        async def _fetch(node_id: str) -> dict | Exception:
             try:
-                return await client.get_page(file_key, stub["id"])
+                return await client.get_page(file_key, node_id)
             except Exception as exc:
                 return exc
 
-        fetched = await asyncio.gather(*[_fetch(stub) for stub in fetch_stubs])
+        fetched = await asyncio.gather(*[_fetch(s.id) for s in fetch_stubs])
         page_nodes_map: dict[str, dict | Exception] = {
-            stub["id"]: result for stub, result in zip(fetch_stubs, fetched)
+            stub.id: result for stub, result in zip(fetch_stubs, fetched)
         }
     else:
         page_nodes_map = {}  # populated lazily below
 
     for page_idx, page_stub in enumerate(page_stubs, 1):
-        page_node_id: str = page_stub["id"]
-        page_name: str = page_stub.get("name", "")
+        page_node_id: str = page_stub.id
+        page_name: str = page_stub.name
 
         if state.should_skip_page(page_name):
             _progress(f"  [{page_idx}/{total_pages}] {page_name} — skipped (matches skip_pages pattern)")

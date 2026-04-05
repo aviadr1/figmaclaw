@@ -39,10 +39,24 @@ from __future__ import annotations
 import yaml
 
 from figmaclaw.figma_models import FigmaPage, FigmaSection
+from figmaclaw.figma_schema import (
+    PLACEHOLDER_DESCRIPTION,
+    SCREEN_FLOW_SECTION,
+    VARIANTS_SECTION,
+    normalize_name,
+    render_frame_row,
+    render_frame_table_header,
+    render_prose_heading,
+    render_section_heading,
+    render_variant_table_header,
+)
 from figmaclaw.figma_sync_state import PageEntry
 
-# NOTE: skill docs (figma-enrich-page.md) reference this string — update them if changed.
-PLACEHOLDER = "(no description yet)"
+# Backward-compat alias — :data:`figma_schema.PLACEHOLDER_DESCRIPTION` is the
+# canonical constant, but external callers (skill docs, downstream code) may
+# still import ``PLACEHOLDER`` from this module. NOTE: skill docs
+# (figma-enrich-page.md) reference this string — update them if changed.
+PLACEHOLDER = PLACEHOLDER_DESCRIPTION
 
 
 # --- Flow-style YAML helpers ---
@@ -161,8 +175,9 @@ def scaffold_page(page: FigmaPage, entry: PageEntry) -> str:
     parts.append(build_page_frontmatter(page))
     parts.append("")
 
-    # H1 header
-    parts.append(f"# {page.file_name} / {page.page_name}")
+    # H1 header — normalize empty file/page names to (Unnamed) so the
+    # rendered breadcrumb is never ``# /`` or similar.
+    parts.append(f"# {normalize_name(page.file_name)} / {normalize_name(page.page_name)}")
     parts.append("")
 
     # Figma URL
@@ -177,34 +192,35 @@ def scaffold_page(page: FigmaPage, entry: PageEntry) -> str:
     parts.append("")
 
     # Per-section: optional intro + table.
-    # NOTE: figma_md_parse._SECTION_RE and _FRAME_ROW_RE are coupled to this format:
-    #   section header: "## {name} (`{node_id}`)"
-    #   frame row:      "| {name} | `{node_id}` | {desc} |"
-    # Keep those patterns in sync if either format changes.
+    # Format primitives live in :mod:`figmaclaw.figma_schema`. This section
+    # MUST NOT inline section/row string formatting — the schema module is
+    # the only place that knows the exact byte-level shape, and it's
+    # bijectively paired with the parser.
     screen_sections = [s for s in page.sections if not s.is_component_library]
+    table_header, table_separator = render_frame_table_header()
     for section in screen_sections:
-        parts.append(f"## {section.name} (`{section.node_id}`)")
+        parts.append(render_section_heading(section.name, section.node_id))
         parts.append("")
         if section.intro:
             parts.append(section.intro)
         else:
             parts.append("<!-- LLM: Write a 1-sentence section intro if the section has a distinct theme -->")
         parts.append("")
-        parts.append("| Screen | Node ID | Description |")
-        parts.append("|--------|---------|-------------|")
+        parts.append(table_header)
+        parts.append(table_separator)
         for frame in section.frames:
-            desc = frame.description if frame.description else PLACEHOLDER
-            parts.append(f"| {frame.name} | `{frame.node_id}` | {desc} |")
+            desc = frame.description if frame.description else PLACEHOLDER_DESCRIPTION
+            parts.append(render_frame_row(frame.name, frame.node_id, desc))
         parts.append("")
 
     # Mermaid flowchart
     if page.flows:
         node_labels: dict[str, str] = {
-            frame.node_id: frame.name
+            frame.node_id: normalize_name(frame.name)
             for section in screen_sections
             for frame in section.frames
         }
-        parts.append("## Screen Flow")
+        parts.append(render_prose_heading(SCREEN_FLOW_SECTION))
         parts.append("")
         parts.append("```mermaid")
         parts.append("flowchart LR")
@@ -245,8 +261,13 @@ def render_component_section(
     ))
     parts.append("")
 
-    # H1: file / page / section
-    parts.append(f"# {page.file_name} / {page.page_name} / {section.name}")
+    # H1: file / page / section — normalized so empty names don't leak
+    # through as bare slashes.
+    parts.append(
+        f"# {normalize_name(page.file_name)} / "
+        f"{normalize_name(page.page_name)} / "
+        f"{normalize_name(section.name)}"
+    )
     parts.append("")
 
     # Deep link to the section node
@@ -257,14 +278,16 @@ def render_component_section(
     parts.append(f"[Open in Figma]({section_url})")
     parts.append("")
 
-    # Variants table
-    parts.append(f"## Variants (`{section.node_id}`)")
+    # Variants table — uses the fixed "Variants" name for the section
+    # heading regardless of the source section's name in Figma.
+    parts.append(render_section_heading(VARIANTS_SECTION, section.node_id))
     parts.append("")
-    parts.append("| Variant | Node ID | Description |")
-    parts.append("|---------|---------|-------------|")
+    variant_header, variant_separator = render_variant_table_header()
+    parts.append(variant_header)
+    parts.append(variant_separator)
     for frame in section.frames:
-        desc = frame.description if frame.description else PLACEHOLDER
-        parts.append(f"| {frame.name} | `{frame.node_id}` | {desc} |")
+        desc = frame.description if frame.description else PLACEHOLDER_DESCRIPTION
+        parts.append(render_frame_row(frame.name, frame.node_id, desc))
     parts.append("")
 
     return "\n".join(parts)
