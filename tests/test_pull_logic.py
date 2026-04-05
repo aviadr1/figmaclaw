@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from figmaclaw.figma_api_models import FileMetaResponse, FileSummary, ProjectSummary
 from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection  # noqa: F401 — used in tests
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
 from figmaclaw.pull_logic import PullResult, pull_file, write_new_page
@@ -81,17 +82,19 @@ def test_write_new_page_returns_path(tmp_path: Path):
 
 # --- pull_file ---
 
-def _fake_file_meta(version: str = "v2", last_modified: str = "2026-03-31T12:00:00Z") -> dict:
-    return {
+def _fake_file_meta(
+    version: str = "v2", last_modified: str = "2026-03-31T12:00:00Z",
+) -> "FileMetaResponse":
+    return FileMetaResponse.model_validate({
         "version": version,
         "lastModified": last_modified,
         "name": "Web App",
         "document": {
             "children": [
-                {"id": "7741:45837", "name": "Onboarding", "type": "CANVAS"}
-            ]
+                {"id": "7741:45837", "name": "Onboarding", "type": "CANVAS"},
+            ],
         },
-    }
+    })
 
 
 def _fake_component_page_node(page_id: str = "7741:45837") -> dict:
@@ -379,9 +382,9 @@ async def test_pull_file_preserves_existing_descriptions(tmp_path: Path):
 
 # --- max_pages / has_more ---
 
-def _fake_file_meta_multi(n_pages: int) -> dict:
+def _fake_file_meta_multi(n_pages: int) -> "FileMetaResponse":
     """File meta with n_pages CANVAS children."""
-    return {
+    return FileMetaResponse.model_validate({
         "version": "v2",
         "lastModified": "2026-03-31T12:00:00Z",
         "name": "Web App",
@@ -389,9 +392,9 @@ def _fake_file_meta_multi(n_pages: int) -> dict:
             "children": [
                 {"id": f"100:{i}", "name": f"Page {i}", "type": "CANVAS"}
                 for i in range(1, n_pages + 1)
-            ]
+            ],
         },
-    }
+    })
 
 
 def _fake_page_node_for_id(page_id: str, page_name: str) -> dict:
@@ -535,8 +538,8 @@ async def test_pull_file_continues_after_page_fetch_error(tmp_path: Path):
 
 # --- skip_pages ---
 
-def _fake_file_meta_with_pages(*page_names: str) -> dict:
-    return {
+def _fake_file_meta_with_pages(*page_names: str) -> "FileMetaResponse":
+    return FileMetaResponse.model_validate({
         "version": "v2",
         "lastModified": "2026-03-31T12:00:00Z",
         "name": "Web App",
@@ -544,9 +547,9 @@ def _fake_file_meta_with_pages(*page_names: str) -> dict:
             "children": [
                 {"id": f"100:{i}", "name": name, "type": "CANVAS"}
                 for i, name in enumerate(page_names, 1)
-            ]
+            ],
         },
-    }
+    })
 
 
 @pytest.mark.asyncio
@@ -785,10 +788,10 @@ async def test_listing_prefilter_returns_last_modified_for_each_file(tmp_path: P
     state = FigmaSyncState(tmp_path)
     state.load()
     client = MagicMock(spec=FigmaClient)
-    client.list_team_projects = AsyncMock(return_value=[{"id": "p1", "name": "Web"}])
+    client.list_team_projects = AsyncMock(return_value=[ProjectSummary(id="p1", name="Web")])
     client.list_project_files = AsyncMock(return_value=[
-        {"key": "fileA", "name": "App", "last_modified": "2026-03-01T00:00:00Z"},
-        {"key": "fileB", "name": "DS",  "last_modified": "2026-02-01T00:00:00Z"},
+        FileSummary(key="fileA", name="App", last_modified="2026-03-01T00:00:00Z"),
+        FileSummary(key="fileB", name="DS",  last_modified="2026-02-01T00:00:00Z"),
     ])
 
     result = await _listing_prefilter(client, "team123", state, "all")
@@ -805,9 +808,9 @@ async def test_listing_prefilter_tracks_new_files(tmp_path: Path):
     state = FigmaSyncState(tmp_path)
     state.load()
     client = MagicMock(spec=FigmaClient)
-    client.list_team_projects = AsyncMock(return_value=[{"id": "p1", "name": "Web"}])
+    client.list_team_projects = AsyncMock(return_value=[ProjectSummary(id="p1", name="Web")])
     client.list_project_files = AsyncMock(return_value=[
-        {"key": "fileA", "name": "New File", "last_modified": "2026-03-01T00:00:00Z"},
+        FileSummary(key="fileA", name="New File", last_modified="2026-03-01T00:00:00Z"),
     ])
 
     await _listing_prefilter(client, "team123", state, "all")
@@ -820,9 +823,9 @@ async def test_listing_prefilter_does_not_duplicate_existing_tracked_files(tmp_p
     """INVARIANT: _listing_prefilter is idempotent for already-tracked files."""
     state = _make_state_with_file(tmp_path, "fileA", "2026-03-01T00:00:00Z")
     client = MagicMock(spec=FigmaClient)
-    client.list_team_projects = AsyncMock(return_value=[{"id": "p1", "name": "Web"}])
+    client.list_team_projects = AsyncMock(return_value=[ProjectSummary(id="p1", name="Web")])
     client.list_project_files = AsyncMock(return_value=[
-        {"key": "fileA", "name": "App", "last_modified": "2026-03-01T00:00:00Z"},
+        FileSummary(key="fileA", name="App", last_modified="2026-03-01T00:00:00Z"),
     ])
 
     await _listing_prefilter(client, "team123", state, "all")
@@ -836,10 +839,10 @@ async def test_listing_prefilter_applies_since_filter_to_new_files(tmp_path: Pat
     state = FigmaSyncState(tmp_path)
     state.load()
     client = MagicMock(spec=FigmaClient)
-    client.list_team_projects = AsyncMock(return_value=[{"id": "p1", "name": "Web"}])
+    client.list_team_projects = AsyncMock(return_value=[ProjectSummary(id="p1", name="Web")])
     client.list_project_files = AsyncMock(return_value=[
-        {"key": "old_file", "name": "Old",  "last_modified": "2020-01-01T00:00:00Z"},
-        {"key": "new_file", "name": "New",  "last_modified": "2026-03-01T00:00:00Z"},
+        FileSummary(key="old_file", name="Old", last_modified="2020-01-01T00:00:00Z"),
+        FileSummary(key="new_file", name="New", last_modified="2026-03-01T00:00:00Z"),
     ])
 
     result = await _listing_prefilter(client, "team123", state, "3m")
@@ -862,9 +865,9 @@ async def test_pull_cmd_skips_unchanged_files_via_listing(tmp_path: Path):
     mock_client = MagicMock(spec=FigmaClient)
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.list_team_projects = AsyncMock(return_value=[{"id": "p1", "name": "Web"}])
+    mock_client.list_team_projects = AsyncMock(return_value=[ProjectSummary(id="p1", name="Web")])
     mock_client.list_project_files = AsyncMock(return_value=[
-        {"key": "fileA", "name": "App", "last_modified": "2026-03-01T00:00:00Z"},  # unchanged
+        FileSummary(key="fileA", name="App", last_modified="2026-03-01T00:00:00Z"),  # unchanged
     ])
     mock_client.get_file_meta = AsyncMock()
 
@@ -885,9 +888,9 @@ async def test_pull_cmd_pulls_files_whose_listing_last_modified_changed(tmp_path
     mock_client = MagicMock(spec=FigmaClient)
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.list_team_projects = AsyncMock(return_value=[{"id": "p1", "name": "Web"}])
+    mock_client.list_team_projects = AsyncMock(return_value=[ProjectSummary(id="p1", name="Web")])
     mock_client.list_project_files = AsyncMock(return_value=[
-        {"key": "fileA", "name": "App", "last_modified": "2026-03-01T00:00:00Z"},  # changed
+        FileSummary(key="fileA", name="App", last_modified="2026-03-01T00:00:00Z"),  # changed
     ])
     mock_client.get_file_meta = AsyncMock(return_value={
         "version": "v2", "lastModified": "2026-03-01T00:00:00Z",
@@ -912,7 +915,7 @@ async def test_pull_cmd_skips_figjam_files_not_in_listing(tmp_path: Path):
     mock_client = MagicMock(spec=FigmaClient)
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.list_team_projects = AsyncMock(return_value=[{"id": "p1", "name": "Web"}])
+    mock_client.list_team_projects = AsyncMock(return_value=[ProjectSummary(id="p1", name="Web")])
     mock_client.list_project_files = AsyncMock(return_value=[])  # FigJam not in listing
     mock_client.get_file_meta = AsyncMock()
 
@@ -937,9 +940,9 @@ async def test_pull_cmd_stamps_listing_last_modified_after_failed_get_file_meta(
     mock_client = MagicMock(spec=FigmaClient)
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.list_team_projects = AsyncMock(return_value=[{"id": "p1", "name": "Web"}])
+    mock_client.list_team_projects = AsyncMock(return_value=[ProjectSummary(id="p1", name="Web")])
     mock_client.list_project_files = AsyncMock(return_value=[
-        {"key": "restricted_key", "name": "Restricted", "last_modified": "2026-03-01T00:00:00Z"},
+        FileSummary(key="restricted_key", name="Restricted", last_modified="2026-03-01T00:00:00Z"),
     ])
     # get_file_meta fails (400 / permission error) → pull_file returns skipped_file=True
     failed_result = PullResult(file_key="restricted_key", skipped_file=True)

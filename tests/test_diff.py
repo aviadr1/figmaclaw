@@ -22,7 +22,16 @@ from figmaclaw.commands.diff import (
     _find_version_before,
     _run,
 )
+from figmaclaw.figma_api_models import VersionSummary, VersionUser
 from figmaclaw.figma_client import FigmaClient
+
+
+def _vs(*, id: str, created_at: str, label: str = "", handle: str = "") -> VersionSummary:
+    """Test helper: build a VersionSummary from keyword args."""
+    return VersionSummary(
+        id=id, created_at=created_at, label=label,
+        user=VersionUser(handle=handle),
+    )
 
 # ── Fixtures ────────────────────────────────────────────────────────
 
@@ -125,9 +134,9 @@ async def test_find_version_before_splits_correctly() -> None:
 
     client = MagicMock(spec=FigmaClient)
     client.get_versions = AsyncMock(return_value=[
-        {"id": "v3", "created_at": "2026-04-03T12:00:00Z", "label": "", "user": {"handle": "bart"}},
-        {"id": "v2", "created_at": "2026-04-01T12:00:00Z", "label": "milestone", "user": {"handle": "bart"}},
-        {"id": "v1", "created_at": "2026-03-25T12:00:00Z", "label": "", "user": {"handle": "jakub"}},
+        _vs(id="v3", created_at="2026-04-03T12:00:00Z", handle="bart"),
+        _vs(id="v2", created_at="2026-04-01T12:00:00Z", label="milestone", handle="bart"),
+        _vs(id="v1", created_at="2026-03-25T12:00:00Z", handle="jakub"),
     ])
 
     cutoff = datetime(2026, 3, 28, tzinfo=timezone.utc)
@@ -148,8 +157,8 @@ async def test_find_version_no_old_version() -> None:
 
     client = MagicMock(spec=FigmaClient)
     client.get_versions = AsyncMock(return_value=[
-        {"id": "v2", "created_at": "2026-04-02T12:00:00Z", "label": "", "user": {"handle": "bart"}},
-        {"id": "v1", "created_at": "2026-04-01T12:00:00Z", "label": "", "user": {"handle": "bart"}},
+        _vs(id="v2", created_at="2026-04-02T12:00:00Z", handle="bart"),
+        _vs(id="v1", created_at="2026-04-01T12:00:00Z", handle="bart"),
     ])
 
     cutoff = datetime(2026, 3, 28, tzinfo=timezone.utc)
@@ -182,12 +191,17 @@ async def test_run_detects_added_frames(tmp_path: Path) -> None:
 
     mock_client = MagicMock(spec=FigmaClient)
     mock_client.get_versions = AsyncMock(return_value=[
-        {"id": "v2", "created_at": "2026-04-03T12:00:00Z", "label": "", "user": {"handle": "bart"}},
-        {"id": "v1", "created_at": "2026-03-25T12:00:00Z", "label": "", "user": {"handle": "bart"}},
+        _vs(id="v2", created_at="2026-04-03T12:00:00Z", handle="bart"),
+        _vs(id="v1", created_at="2026-03-25T12:00:00Z", handle="bart"),
     ])
     # New implementation uses get_file_full instead of get_page per page
     def _make_file_tree(canvases: list[dict]) -> dict:
-        return {"document": {"children": canvases}}
+        return {
+            "name": "Test File",
+            "version": "v2",
+            "lastModified": "2026-04-03T12:00:00Z",
+            "document": {"children": canvases},
+        }
 
     async def _get_file_full(fk, *, version=None):
         if version:
@@ -231,12 +245,17 @@ async def test_run_detects_removed_frames(tmp_path: Path) -> None:
 
     mock_client = MagicMock(spec=FigmaClient)
     mock_client.get_versions = AsyncMock(return_value=[
-        {"id": "v2", "created_at": "2026-04-03T12:00:00Z", "label": "", "user": {"handle": "bart"}},
-        {"id": "v1", "created_at": "2026-03-25T12:00:00Z", "label": "", "user": {"handle": "bart"}},
+        _vs(id="v2", created_at="2026-04-03T12:00:00Z", handle="bart"),
+        _vs(id="v1", created_at="2026-03-25T12:00:00Z", handle="bart"),
     ])
     # New implementation uses get_file_full instead of get_page per page
     def _make_file_tree(canvases: list[dict]) -> dict:
-        return {"document": {"children": canvases}}
+        return {
+            "name": "Test File",
+            "version": "v2",
+            "lastModified": "2026-04-03T12:00:00Z",
+            "document": {"children": canvases},
+        }
 
     async def _get_file_full(fk, *, version=None):
         if version:
@@ -272,12 +291,17 @@ async def test_run_detects_renames(tmp_path: Path) -> None:
 
     mock_client = MagicMock(spec=FigmaClient)
     mock_client.get_versions = AsyncMock(return_value=[
-        {"id": "v2", "created_at": "2026-04-03T12:00:00Z", "label": "", "user": {}},
-        {"id": "v1", "created_at": "2026-03-25T12:00:00Z", "label": "", "user": {}},
+        _vs(id="v2", created_at="2026-04-03T12:00:00Z"),
+        _vs(id="v1", created_at="2026-03-25T12:00:00Z"),
     ])
     # New implementation uses get_file_full instead of get_page per page
     def _make_file_tree(canvases: list[dict]) -> dict:
-        return {"document": {"children": canvases}}
+        return {
+            "name": "Test File",
+            "version": "v2",
+            "lastModified": "2026-04-03T12:00:00Z",
+            "document": {"children": canvases},
+        }
 
     async def _get_file_full(fk, *, version=None):
         if version:
@@ -308,7 +332,7 @@ async def test_run_no_changes_skips_file(tmp_path: Path) -> None:
     # No versions in range
     mock_client = MagicMock(spec=FigmaClient)
     mock_client.get_versions = AsyncMock(return_value=[
-        {"id": "v1", "created_at": "2026-03-20T12:00:00Z", "label": "", "user": {}},
+        _vs(id="v1", created_at="2026-03-20T12:00:00Z"),
     ])
 
     with patch.object(diff_module, "FigmaClient") as MockCls:
@@ -335,14 +359,14 @@ async def test_run_multiple_pages_in_file(tmp_path: Path) -> None:
 
     mock_client = MagicMock(spec=FigmaClient)
     mock_client.get_versions = AsyncMock(return_value=[
-        {"id": "v2", "created_at": "2026-04-03T12:00:00Z", "label": "", "user": {"handle": "bart"}},
-        {"id": "v1", "created_at": "2026-03-25T12:00:00Z", "label": "", "user": {}},
+        _vs(id="v2", created_at="2026-04-03T12:00:00Z", handle="bart"),
+        _vs(id="v1", created_at="2026-03-25T12:00:00Z"),
     ])
 
     async def _get_file_full(fk, *, version=None):
         if version:
-            return {"document": {"children": [old_canvas_100, old_canvas_200]}}
-        return {"document": {"children": [canvas_100, canvas_200]}}
+            return {"name": "Test File", "version": "v2", "lastModified": "2026-04-03T12:00:00Z", "document": {"children": [old_canvas_100, old_canvas_200]}}
+        return {"name": "Test File", "version": "v2", "lastModified": "2026-04-03T12:00:00Z", "document": {"children": [canvas_100, canvas_200]}}
 
     mock_client.get_file_full = AsyncMock(side_effect=_get_file_full)
 
@@ -368,15 +392,15 @@ async def test_run_version_users_tracked(tmp_path: Path) -> None:
 
     mock_client = MagicMock(spec=FigmaClient)
     mock_client.get_versions = AsyncMock(return_value=[
-        {"id": "v3", "created_at": "2026-04-03T12:00:00Z", "label": "", "user": {"handle": "bart"}},
-        {"id": "v2", "created_at": "2026-04-02T12:00:00Z", "label": "checkpoint", "user": {"handle": "jakub"}},
-        {"id": "v1", "created_at": "2026-03-25T12:00:00Z", "label": "", "user": {"handle": "bart"}},
+        _vs(id="v3", created_at="2026-04-03T12:00:00Z", handle="bart"),
+        _vs(id="v2", created_at="2026-04-02T12:00:00Z", label="checkpoint", handle="jakub"),
+        _vs(id="v1", created_at="2026-03-25T12:00:00Z", handle="bart"),
     ])
 
     async def _get_file_full(fk, *, version=None):
         if version:
-            return {"document": {"children": [old_canvas]}}
-        return {"document": {"children": [canvas]}}
+            return {"name": "Test File", "version": "v2", "lastModified": "2026-04-03T12:00:00Z", "document": {"children": [old_canvas]}}
+        return {"name": "Test File", "version": "v2", "lastModified": "2026-04-03T12:00:00Z", "document": {"children": [canvas]}}
 
     mock_client.get_file_full = AsyncMock(side_effect=_get_file_full)
 
@@ -424,14 +448,14 @@ def test_cli_json_output(tmp_path: Path) -> None:
 
     mock_client = MagicMock(spec=FigmaClient)
     mock_client.get_versions = AsyncMock(return_value=[
-        {"id": "v2", "created_at": "2026-04-03T12:00:00Z", "label": "", "user": {"handle": "bart"}},
-        {"id": "v1", "created_at": "2026-03-25T12:00:00Z", "label": "", "user": {}},
+        _vs(id="v2", created_at="2026-04-03T12:00:00Z", handle="bart"),
+        _vs(id="v1", created_at="2026-03-25T12:00:00Z"),
     ])
 
     async def _get_file_full(fk, *, version=None):
         if version:
-            return {"document": {"children": [old_canvas]}}
-        return {"document": {"children": [canvas]}}
+            return {"name": "Test File", "version": "v2", "lastModified": "2026-04-03T12:00:00Z", "document": {"children": [old_canvas]}}
+        return {"name": "Test File", "version": "v2", "lastModified": "2026-04-03T12:00:00Z", "document": {"children": [canvas]}}
 
     mock_client.get_file_full = AsyncMock(side_effect=_get_file_full)
 

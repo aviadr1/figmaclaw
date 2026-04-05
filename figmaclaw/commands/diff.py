@@ -23,6 +23,7 @@ from typing import Any
 
 import click
 
+from figmaclaw.figma_api_models import VersionSummary
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_models import FigmaFrame, from_page_node
 from figmaclaw.figma_parse import parse_frontmatter
@@ -125,9 +126,9 @@ def _extract_frames(page_node: dict, file_key: str) -> tuple[
 # ── Core logic ─────────────────────────────────────────────────────
 
 
-def _parse_version_ts(v: dict) -> datetime | None:
+def _parse_version_ts(v: VersionSummary) -> datetime | None:
     try:
-        return datetime.fromisoformat(v.get("created_at", "").replace("Z", "+00:00"))
+        return datetime.fromisoformat(v.created_at.replace("Z", "+00:00"))
     except (ValueError, AttributeError):
         return None
 
@@ -142,7 +143,7 @@ async def _find_version_before(
     Uses pagination with early termination: stops fetching as soon as a
     version older than the cutoff is found.
     """
-    def _is_before_cutoff(v: dict) -> bool:
+    def _is_before_cutoff(v: VersionSummary) -> bool:
         ts = _parse_version_ts(v)
         return ts is not None and ts < cutoff
 
@@ -155,12 +156,11 @@ async def _find_version_before(
         ts = _parse_version_ts(v)
         if ts is None:
             continue
-        user = v.get("user", {})
         vi = VersionInfo(
-            id=v.get("id", ""),
-            created_at=v.get("created_at", ""),
-            label=v.get("label", ""),
-            user=user.get("handle", "") if user else "",
+            id=v.id,
+            created_at=v.created_at,
+            label=v.label,
+            user=v.user.handle,
         )
         if ts < cutoff:
             if old_version is None:
