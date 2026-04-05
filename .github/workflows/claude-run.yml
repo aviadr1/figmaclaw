@@ -132,13 +132,15 @@ jobs:
           # If no prompt_file, figmaclaw uses its bundled default
 
           echo "::group::claude-run raw stream-json"
+          # claude-run writes stream-json to .figma-sync/claude-stream.jsonl
+          # directly (flushed per line, resilient to timeout). We only need
+          # stream-format here for human-readable CI log output.
           figmaclaw claude-run \
             "${{ inputs.target }}" \
             --model "${{ inputs.model }}" \
             --max-turns "${{ inputs.max_turns }}" \
             $PROMPT_FLAG \
             $FLAGS \
-            | tee /tmp/claude-raw.jsonl \
             | figmaclaw stream-format
           echo "::endgroup::"
 
@@ -177,8 +179,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v5
         with:
-          name: claude-run-raw-${{ github.run_id }}
-          path: /tmp/claude-raw.jsonl
+          name: claude-run-raw-${{ github.run_id }}-${{ inputs.section_mode && 'large' || 'bulk' }}
+          path: .figma-sync/claude-stream.jsonl
           retention-days: 14
           if-no-files-found: warn
 
@@ -193,4 +195,3 @@ jobs:
           echo "| model  | \`${{ inputs.model }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| max_turns | ${{ inputs.max_turns }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          cat /tmp/claude-raw.jsonl 2>/dev/null | figmaclaw stream-format > /dev/null || true
