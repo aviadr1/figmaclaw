@@ -252,6 +252,41 @@ class FigmaClient:
         result: list[dict[str, Any]] = data.get("webhooks", [])
         return result
 
+    async def list_file_webhooks(self, file_key: str) -> list[dict[str, Any]]:
+        """GET /v2/webhooks?context=file&context_id={file_key} — list file-scoped webhooks."""
+        data = await self._get(
+            "/v2/webhooks",
+            params={"context": "file", "context_id": file_key},
+        )
+        result: list[dict[str, Any]] = data.get("webhooks", [])
+        return result
+
+    async def create_file_webhook(
+        self,
+        file_key: str,
+        endpoint: str,
+        passcode: str,
+        *,
+        event_type: str = "FILE_UPDATE",
+        description: str = "figmaclaw sync",
+    ) -> dict[str, Any]:
+        """POST /v2/webhooks — register a file-scoped webhook."""
+        client = await self._ensure_client()
+        response = await client.post(
+            f"{self._base_url}/v2/webhooks",
+            json={
+                "event_type": event_type,
+                "context": "file",
+                "context_id": file_key,
+                "endpoint": endpoint,
+                "passcode": passcode,
+                "description": description,
+            },
+        )
+        response.raise_for_status()
+        result: dict[str, Any] = response.json()
+        return result
+
     async def create_webhook(
         self,
         team_id: str,
