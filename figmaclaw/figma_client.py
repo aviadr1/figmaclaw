@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -99,19 +99,78 @@ class FigmaClient:
         doc: dict[str, Any] = entry.get("document", {})
         return doc
 
-    async def get_file_full(self, file_key: str) -> dict[str, Any]:
-        """GET /v1/files/{file_key} — full file tree. Use only for initial track."""
-        return await self._get(f"/v1/files/{file_key}")
+    async def get_file_full(
+        self, file_key: str, *, version: str | None = None,
+    ) -> dict[str, Any]:
+        """GET /v1/files/{file_key}[?version=...] — full file tree.
 
-    async def get_versions(self, file_key: str) -> list[dict[str, Any]]:
-        """GET /v1/files/{file_key}/versions — version history.
-
-        Returns list of ``{"id", "created_at", "label", "description", "user"}``.
-        Ordered newest-first by the Figma API.
+        If *version* is given, fetches the file state at that historical version.
+        Use for initial tracking or version diffs — one call returns all pages
+        and all frames, which is far cheaper than per-page fetches.
         """
-        data = await self._get(f"/v1/files/{file_key}/versions")
-        result: list[dict[str, Any]] = data.get("versions", [])
-        return result
+        params = {"version": version} if version else None
+        return await self._get(f"/v1/files/{file_key}", params=params)
+
+    async def _get_url(self, url: str) -> dict[str, Any]:
+        """GET an absolute Figma API URL (used for pagination)."""
+        # Strip the base URL prefix if present
+        if url.startswith(self._base_url):
+            path_with_query = url[len(self._base_url):]
+        else:
+            path_with_query = url
+        # httpx will handle the query string if embedded in the path
+        client = await self._ensure_client()
+        full_url = f"{self._base_url}{path_with_query}" if not url.startswith("http") else url
+        for attempt in range(10):
+            await self._pace()
+            response = await client.get(full_url)
+            if response.status_code == 429:
+                retry_after = int(response.headers.get("retry-after", "10"))
+                await asyncio.sleep(max(retry_after, 5))
+                continue
+            if response.status_code >= 500 and attempt < 9:
+                await asyncio.sleep(2 * (attempt + 1))
+                continue
+            response.raise_for_status()
+            result: dict[str, Any] = response.json()
+            return result
+        response.raise_for_status()
+        return {}
+
+    async def get_versions(
+        self,
+        file_key: str,
+        *,
+        max_pages: int = 20,
+        stop_when: Callable[[dict[str, Any]], bool] | None = None,
+    ) -> list[dict[str, Any]]:
+        """GET /v1/files/{file_key}/versions — paginated version history.
+
+        Returns all versions ordered newest-first. Follows pagination up to
+        *max_pages* pages (default 20 pages × 50 per page = 1000 versions).
+
+        If *stop_when* is provided, it should be a callable that takes a
+        version dict and returns True when pagination should stop (e.g. when
+        a version is older than a desired cutoff). The matching version and
+        all newer ones are included in the result.
+        """
+        all_versions: list[dict[str, Any]] = []
+        url: str | None = f"/v1/files/{file_key}/versions?page_size=50"
+        for _ in range(max_pages):
+            if not url:
+                break
+            data = await self._get_url(url)
+            versions: list[dict[str, Any]] = data.get("versions", [])
+            if not versions:
+                break
+            all_versions.extend(versions)
+            # Check if we've found a version older than the cutoff
+            if stop_when and any(stop_when(v) for v in versions):
+                break
+            pagination = data.get("pagination", {})
+            next_page = pagination.get("next_page")
+            url = next_page if next_page else None
+        return all_versions
 
     async def get_page_at_version(
         self, file_key: str, page_node_id: str, version: str,

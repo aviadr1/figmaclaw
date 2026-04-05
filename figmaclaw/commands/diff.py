@@ -125,31 +125,43 @@ def _extract_frames(page_node: dict, file_key: str) -> tuple[
 # ── Core logic ─────────────────────────────────────────────────────
 
 
+def _parse_version_ts(v: dict) -> datetime | None:
+    try:
+        return datetime.fromisoformat(v.get("created_at", "").replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+
+
 async def _find_version_before(
     client: FigmaClient, file_key: str, cutoff: datetime,
 ) -> tuple[VersionInfo | None, list[VersionInfo]]:
     """Find the latest version before *cutoff* and all versions after it.
 
     Returns (old_version_or_none, versions_in_range).
+
+    Uses pagination with early termination: stops fetching as soon as a
+    version older than the cutoff is found.
     """
-    raw_versions = await client.get_versions(file_key)
+    def _is_before_cutoff(v: dict) -> bool:
+        ts = _parse_version_ts(v)
+        return ts is not None and ts < cutoff
+
+    raw_versions = await client.get_versions(file_key, stop_when=_is_before_cutoff)
+
     old_version: VersionInfo | None = None
     in_range: list[VersionInfo] = []
 
     for v in raw_versions:
-        created = v.get("created_at", "")
+        ts = _parse_version_ts(v)
+        if ts is None:
+            continue
         user = v.get("user", {})
         vi = VersionInfo(
             id=v.get("id", ""),
-            created_at=created,
+            created_at=v.get("created_at", ""),
             label=v.get("label", ""),
             user=user.get("handle", "") if user else "",
         )
-        # Parse the ISO timestamp
-        try:
-            ts = datetime.fromisoformat(created.replace("Z", "+00:00"))
-        except (ValueError, AttributeError):
-            continue
         if ts < cutoff:
             if old_version is None:
                 old_version = vi
@@ -160,36 +172,64 @@ async def _find_version_before(
     return old_version, in_range
 
 
+def _extract_all_pages(file_tree: dict, file_key: str) -> dict[str, dict]:
+    """Extract {page_node_id: canvas_node} from a full file tree response.
+
+    Given the response from ``get_file_full()``, returns a mapping of each
+    CANVAS (page) node by its node_id.
+    """
+    pages: dict[str, dict] = {}
+    document = file_tree.get("document", {})
+    for child in document.get("children", []):
+        if child.get("type") == "CANVAS":
+            pages[child["id"]] = child
+    return pages
+
+
 async def _diff_file(
     client: FigmaClient,
     file_key: str,
     file_name: str,
-    page_ids: list[str],
+    tracked_page_ids: list[str],
     old_version: VersionInfo | None,
     versions_in_range: list[VersionInfo],
 ) -> FileDiff:
-    """Compare all pages in a file between old_version and current HEAD."""
+    """Compare all pages in a file between old_version and current HEAD.
+
+    Uses two ``get_file_full`` calls (current + old version) to fetch the
+    entire file tree at each point — far cheaper than per-page fetches.
+    """
     pages: list[PageDiff] = []
     new_version = versions_in_range[-1] if versions_in_range else None
 
-    for page_id in page_ids:
-        # Current state
-        current_node = await client.get_page(file_key, page_id)
+    # One API call for current state, one for old state
+    current_tree = await client.get_file_full(file_key)
+    current_pages = _extract_all_pages(current_tree, file_key)
+
+    if old_version:
+        try:
+            old_tree = await client.get_file_full(file_key, version=old_version.id)
+            old_pages = _extract_all_pages(old_tree, file_key)
+        except Exception:
+            old_pages = {}
+    else:
+        old_pages = {}
+
+    # Iterate over all pages (tracked + newly-added-in-Figma)
+    all_page_ids = set(current_pages) | set(old_pages)
+
+    for page_id in sorted(all_page_ids):
+        current_node = current_pages.get(page_id, {})
+        old_node = old_pages.get(page_id, {})
+
         cur_frames, cur_flows = _extract_frames(current_node, file_key)
-
-        # Old state
-        if old_version:
-            try:
-                old_node = await client.get_page_at_version(
-                    file_key, page_id, old_version.id,
-                )
-            except Exception:
-                old_node = {}
-        else:
-            old_node = {}
-
         old_frames, old_flows = _extract_frames(old_node, file_key)
-        page_name = current_node.get("name", page_id)
+
+        page_name = (
+            current_node.get("name")
+            or old_node.get("name")
+            or page_id
+        )
 
         diff = PageDiff(
             page_node_id=page_id,
@@ -198,7 +238,7 @@ async def _diff_file(
             figma_url=f"https://www.figma.com/design/{file_key}?node-id={page_id.replace(':', '-')}",
             frames_before=len(old_frames),
             frames_after=len(cur_frames),
-            is_new_page=not old_node,
+            is_new_page=bool(current_node) and not old_node,
         )
 
         old_ids = set(old_frames)
@@ -242,9 +282,18 @@ async def _run(
     api_key: str,
     target: Path,
     since: str,
+    progress: bool = False,
 ) -> tuple[list[FileDiff], datetime, datetime]:
     """Main async entry point. Scans .md files to discover tracked Figma files,
-    then uses the Figma API to compute real diffs."""
+    then uses the Figma API to compute real diffs.
+
+    Strategy (minimizes API calls):
+    1. Discover tracked files from .md frontmatter
+    2. Fetch versions for all files concurrently (rate-limited)
+    3. Filter to files with activity in the window
+    4. For each active file, fetch current + old full trees (2 calls)
+    5. Compare in memory — no more API calls
+    """
     delta = _parse_duration(since)
     now = datetime.now(timezone.utc)
     cutoff = now - delta
@@ -258,26 +307,55 @@ async def _run(
             continue
         fk = fm.file_key
         if fk not in file_pages:
-            # Derive file name from directory structure
             rel = md_path.relative_to(target)
             file_name = rel.parts[0] if rel.parts else ""
             file_pages[fk] = (file_name, [])
         if fm.page_node_id and fm.page_node_id not in file_pages[fk][1]:
             file_pages[fk][1].append(fm.page_node_id)
 
+    if progress:
+        click.echo(f"Discovered {len(file_pages)} tracked Figma files", err=True)
+
     results: list[FileDiff] = []
 
     async with FigmaClient(api_key) as client:
-        for fk, (file_name, page_ids) in file_pages.items():
-            old_ver, in_range = await _find_version_before(client, fk, cutoff)
-            if not in_range:
-                continue  # no versions in the window → no changes
+        # Phase 1: find active files (versions lookup, concurrent)
+        if progress:
+            click.echo(f"Fetching version history for {len(file_pages)} files...", err=True)
 
-            diff = await _diff_file(
-                client, fk, file_name, page_ids, old_ver, in_range,
-            )
-            if diff.pages:
-                results.append(diff)
+        version_tasks = [
+            _find_version_before(client, fk, cutoff)
+            for fk in file_pages
+        ]
+        version_results = await asyncio.gather(*version_tasks, return_exceptions=True)
+
+        active_files: list[tuple[str, str, list[str], VersionInfo | None, list[VersionInfo]]] = []
+        for (fk, (file_name, page_ids)), vr in zip(file_pages.items(), version_results):
+            if isinstance(vr, BaseException):
+                continue
+            old_ver, in_range = vr
+            if in_range:
+                active_files.append((fk, file_name, page_ids, old_ver, in_range))
+
+        if progress:
+            click.echo(f"  {len(active_files)} files had activity in the window", err=True)
+
+        # Phase 2: diff active files (concurrent full fetches — 2 calls per file)
+        if active_files:
+            if progress:
+                click.echo(f"Fetching file trees for {len(active_files)} active files...", err=True)
+
+            diff_tasks = [
+                _diff_file(client, fk, fn, pids, old_ver, in_range)
+                for fk, fn, pids, old_ver, in_range in active_files
+            ]
+            diffs = await asyncio.gather(*diff_tasks, return_exceptions=True)
+
+            for d in diffs:
+                if isinstance(d, BaseException):
+                    continue
+                if d.pages:
+                    results.append(d)
 
     return results, cutoff, now
 
@@ -408,8 +486,14 @@ def _format_json(
     show_default=True,
     help="Output format.",
 )
+@click.option(
+    "--progress/--no-progress", default=True,
+    help="Show progress to stderr while fetching from the Figma API.",
+)
 @click.pass_context
-def diff_cmd(ctx: click.Context, target: str, since: str, fmt: str) -> None:
+def diff_cmd(
+    ctx: click.Context, target: str, since: str, fmt: str, progress: bool,
+) -> None:
     """Show what designers changed in Figma using the Figma Versions API.
 
     Compares Figma file trees at two points in time to detect structural
@@ -428,7 +512,9 @@ def diff_cmd(ctx: click.Context, target: str, since: str, fmt: str) -> None:
     if not resolved.is_dir():
         raise click.ClickException(f"Target directory not found: {resolved}")
 
-    results, since_date, until_date = asyncio.run(_run(api_key, resolved, since))
+    results, since_date, until_date = asyncio.run(
+        _run(api_key, resolved, since, progress=progress),
+    )
 
     if fmt == "json":
         click.echo(_format_json(results, since_date, until_date))

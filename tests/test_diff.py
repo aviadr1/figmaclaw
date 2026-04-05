@@ -185,8 +185,16 @@ async def test_run_detects_added_frames(tmp_path: Path) -> None:
         {"id": "v2", "created_at": "2026-04-03T12:00:00Z", "label": "", "user": {"handle": "bart"}},
         {"id": "v1", "created_at": "2026-03-25T12:00:00Z", "label": "", "user": {"handle": "bart"}},
     ])
-    mock_client.get_page = AsyncMock(return_value=new_canvas)
-    mock_client.get_page_at_version = AsyncMock(return_value=old_canvas)
+    # New implementation uses get_file_full instead of get_page per page
+    def _make_file_tree(canvases: list[dict]) -> dict:
+        return {"document": {"children": canvases}}
+
+    async def _get_file_full(fk, *, version=None):
+        if version:
+            return _make_file_tree([old_canvas])
+        return _make_file_tree([new_canvas])
+
+    mock_client.get_file_full = AsyncMock(side_effect=_get_file_full)
 
     with patch.object(diff_module, "FigmaClient") as MockCls:
         MockCls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
@@ -226,8 +234,16 @@ async def test_run_detects_removed_frames(tmp_path: Path) -> None:
         {"id": "v2", "created_at": "2026-04-03T12:00:00Z", "label": "", "user": {"handle": "bart"}},
         {"id": "v1", "created_at": "2026-03-25T12:00:00Z", "label": "", "user": {"handle": "bart"}},
     ])
-    mock_client.get_page = AsyncMock(return_value=new_canvas)
-    mock_client.get_page_at_version = AsyncMock(return_value=old_canvas)
+    # New implementation uses get_file_full instead of get_page per page
+    def _make_file_tree(canvases: list[dict]) -> dict:
+        return {"document": {"children": canvases}}
+
+    async def _get_file_full(fk, *, version=None):
+        if version:
+            return _make_file_tree([old_canvas])
+        return _make_file_tree([new_canvas])
+
+    mock_client.get_file_full = AsyncMock(side_effect=_get_file_full)
 
     with patch.object(diff_module, "FigmaClient") as MockCls:
         MockCls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
@@ -259,8 +275,16 @@ async def test_run_detects_renames(tmp_path: Path) -> None:
         {"id": "v2", "created_at": "2026-04-03T12:00:00Z", "label": "", "user": {}},
         {"id": "v1", "created_at": "2026-03-25T12:00:00Z", "label": "", "user": {}},
     ])
-    mock_client.get_page = AsyncMock(return_value=new_canvas)
-    mock_client.get_page_at_version = AsyncMock(return_value=old_canvas)
+    # New implementation uses get_file_full instead of get_page per page
+    def _make_file_tree(canvases: list[dict]) -> dict:
+        return {"document": {"children": canvases}}
+
+    async def _get_file_full(fk, *, version=None):
+        if version:
+            return _make_file_tree([old_canvas])
+        return _make_file_tree([new_canvas])
+
+    mock_client.get_file_full = AsyncMock(side_effect=_get_file_full)
 
     with patch.object(diff_module, "FigmaClient") as MockCls:
         MockCls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
@@ -315,14 +339,12 @@ async def test_run_multiple_pages_in_file(tmp_path: Path) -> None:
         {"id": "v1", "created_at": "2026-03-25T12:00:00Z", "label": "", "user": {}},
     ])
 
-    async def _get_page(fk, pid):
-        return canvas_100 if pid == "100:1" else canvas_200
+    async def _get_file_full(fk, *, version=None):
+        if version:
+            return {"document": {"children": [old_canvas_100, old_canvas_200]}}
+        return {"document": {"children": [canvas_100, canvas_200]}}
 
-    async def _get_page_ver(fk, pid, ver):
-        return old_canvas_100 if pid == "100:1" else old_canvas_200
-
-    mock_client.get_page = AsyncMock(side_effect=_get_page)
-    mock_client.get_page_at_version = AsyncMock(side_effect=_get_page_ver)
+    mock_client.get_file_full = AsyncMock(side_effect=_get_file_full)
 
     with patch.object(diff_module, "FigmaClient") as MockCls:
         MockCls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
@@ -350,8 +372,13 @@ async def test_run_version_users_tracked(tmp_path: Path) -> None:
         {"id": "v2", "created_at": "2026-04-02T12:00:00Z", "label": "checkpoint", "user": {"handle": "jakub"}},
         {"id": "v1", "created_at": "2026-03-25T12:00:00Z", "label": "", "user": {"handle": "bart"}},
     ])
-    mock_client.get_page = AsyncMock(return_value=canvas)
-    mock_client.get_page_at_version = AsyncMock(return_value=old_canvas)
+
+    async def _get_file_full(fk, *, version=None):
+        if version:
+            return {"document": {"children": [old_canvas]}}
+        return {"document": {"children": [canvas]}}
+
+    mock_client.get_file_full = AsyncMock(side_effect=_get_file_full)
 
     with patch.object(diff_module, "FigmaClient") as MockCls:
         MockCls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
@@ -400,8 +427,13 @@ def test_cli_json_output(tmp_path: Path) -> None:
         {"id": "v2", "created_at": "2026-04-03T12:00:00Z", "label": "", "user": {"handle": "bart"}},
         {"id": "v1", "created_at": "2026-03-25T12:00:00Z", "label": "", "user": {}},
     ])
-    mock_client.get_page = AsyncMock(return_value=canvas)
-    mock_client.get_page_at_version = AsyncMock(return_value=old_canvas)
+
+    async def _get_file_full(fk, *, version=None):
+        if version:
+            return {"document": {"children": [old_canvas]}}
+        return {"document": {"children": [canvas]}}
+
+    mock_client.get_file_full = AsyncMock(side_effect=_get_file_full)
 
     with patch.object(diff_module, "FigmaClient") as MockCls:
         MockCls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
@@ -409,7 +441,8 @@ def test_cli_json_output(tmp_path: Path) -> None:
 
         runner = CliRunner(env={"FIGMA_API_KEY": "fake"})
         result = runner.invoke(cli, [
-            "--repo-dir", str(tmp_path), "diff", "figma/", "--format", "json",
+            "--repo-dir", str(tmp_path), "diff", "figma/",
+            "--format", "json", "--no-progress",
         ])
 
     assert result.exit_code == 0, result.output

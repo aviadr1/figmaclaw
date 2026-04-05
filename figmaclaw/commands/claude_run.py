@@ -36,6 +36,7 @@ from figmaclaw.figma_md_parse import section_line_ranges
 
 SECTION_THRESHOLD = 80  # pages/sections above this use incremental mode
 ENRICHMENT_LOG = ".figma-sync/enrichment-log.csv"
+STREAM_JSON_LOG = ".figma-sync/claude-stream.jsonl"  # raw stream-json, appended per batch
 
 
 def _log_enrichment(
@@ -305,6 +306,7 @@ def _run_claude(
     max_turns: int,
     skip_permissions: bool,
     extra_flags: list[str],
+    stream_log_path: Path | None = None,
 ) -> ClaudeResult:
     """Invoke ``claude -p`` and stream output to stdout/stderr.
 
@@ -344,20 +346,34 @@ def _run_claude(
     t.start()
 
     result = ClaudeResult()
-    for line in proc.stdout:
-        sys.stdout.buffer.write(line)
-        sys.stdout.buffer.flush()
-        # Parse result event for metrics
-        try:
-            msg = _json.loads(line)
-            if msg.get("type") == "result":
-                result.turns = msg.get("num_turns", 0)
-                result.cost_usd = msg.get("total_cost_usd", 0.0)
-                result.duration_ms = msg.get("duration_ms", 0)
-                result.is_error = msg.get("is_error", False)
-                result.stop_reason = msg.get("stop_reason", "")
-        except (ValueError, KeyError):
-            pass
+    log_fp = None
+    if stream_log_path is not None:
+        stream_log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_fp = open(stream_log_path, "ab")  # append, binary for line bytes
+
+    try:
+        for line in proc.stdout:
+            sys.stdout.buffer.write(line)
+            sys.stdout.buffer.flush()
+            # Persistent stream-json log — flush after each line so it survives
+            # CI timeout/cancellation. Independent of shell pipe behavior.
+            if log_fp is not None:
+                log_fp.write(line)
+                log_fp.flush()
+            # Parse result event for metrics
+            try:
+                msg = _json.loads(line)
+                if msg.get("type") == "result":
+                    result.turns = msg.get("num_turns", 0)
+                    result.cost_usd = msg.get("total_cost_usd", 0.0)
+                    result.duration_ms = msg.get("duration_ms", 0)
+                    result.is_error = msg.get("is_error", False)
+                    result.stop_reason = msg.get("stop_reason", "")
+            except (ValueError, KeyError):
+                pass
+    finally:
+        if log_fp is not None:
+            log_fp.close()
 
     t.join()
     result.exit_code = proc.wait()
@@ -451,6 +467,9 @@ def claude_run_cmd(
     repo_dir = Path(ctx.obj["repo_dir"])
     if not target.is_absolute():
         target = repo_dir / target
+
+    # Stream-json log: persistent, flushed per line, resilient to timeout
+    stream_log = repo_dir / STREAM_JSON_LOG
 
     # Resolve prompt template
     if prompt_text:
@@ -557,6 +576,7 @@ def claude_run_cmd(
                 rc = _run_claude(
                     prompt=prompt, model=model, max_turns=max_turns,
                     skip_permissions=skip_permissions, extra_flags=[],
+                    stream_log_path=stream_log,
                 )
                 dur = time.monotonic() - t0
                 ok = rc.exit_code == 0
@@ -591,6 +611,7 @@ def claude_run_cmd(
                 rc = _run_claude(
                     prompt=prompt, model=model, max_turns=max_turns,
                     skip_permissions=skip_permissions, extra_flags=[],
+                    stream_log_path=stream_log,
                 )
                 dur = time.monotonic() - t0
                 ok = rc.exit_code == 0
@@ -616,6 +637,7 @@ def claude_run_cmd(
             rc = _run_claude(
                 prompt=prompt, model=model, max_turns=max_turns,
                 skip_permissions=skip_permissions, extra_flags=[],
+                stream_log_path=stream_log,
             )
             dur = time.monotonic() - t0
             ok = rc.exit_code == 0
