@@ -173,11 +173,7 @@ async def _find_version_before(
 
 
 def _extract_all_pages(file_tree: dict, file_key: str) -> dict[str, dict]:
-    """Extract {page_node_id: canvas_node} from a full file tree response.
-
-    Given the response from ``get_file_full()``, returns a mapping of each
-    CANVAS (page) node by its node_id.
-    """
+    """Extract {page_node_id: canvas_node} from a file tree response."""
     pages: dict[str, dict] = {}
     document = file_tree.get("document", {})
     for child in document.get("children", []):
@@ -194,29 +190,32 @@ async def _diff_file(
     old_version: VersionInfo | None,
     versions_in_range: list[VersionInfo],
 ) -> FileDiff:
-    """Compare all pages in a file between old_version and current HEAD.
+    """Compare tracked pages in a file between old_version and current HEAD.
 
-    Uses two ``get_file_full`` calls (current + old version) to fetch the
-    entire file tree at each point — far cheaper than per-page fetches.
+    Uses ``get_file_shallow`` (depth=2) to fetch only the top-level
+    frame/section structure, not the full recursive tree. This keeps
+    response size small even for files with hundreds of deeply nested layers.
     """
     pages: list[PageDiff] = []
     new_version = versions_in_range[-1] if versions_in_range else None
 
-    # One API call for current state, one for old state
-    current_tree = await client.get_file_full(file_key)
+    # 1 API call for current state (shallow — depth=2)
+    current_tree = await client.get_file_shallow(file_key)
     current_pages = _extract_all_pages(current_tree, file_key)
 
     if old_version:
         try:
-            old_tree = await client.get_file_full(file_key, version=old_version.id)
+            old_tree = await client.get_file_shallow(
+                file_key, version=old_version.id,
+            )
             old_pages = _extract_all_pages(old_tree, file_key)
         except Exception:
             old_pages = {}
     else:
         old_pages = {}
 
-    # Iterate over all pages (tracked + newly-added-in-Figma)
-    all_page_ids = set(current_pages) | set(old_pages)
+    # Only diff tracked pages (+ any new pages not yet tracked)
+    all_page_ids = set(tracked_page_ids) | set(current_pages) | set(old_pages)
 
     for page_id in sorted(all_page_ids):
         current_node = current_pages.get(page_id, {})
@@ -289,9 +288,9 @@ async def _run(
 
     Strategy (minimizes API calls):
     1. Discover tracked files from .md frontmatter
-    2. Fetch versions for all files concurrently (rate-limited)
-    3. Filter to files with activity in the window
-    4. For each active file, fetch current + old full trees (2 calls)
+    2. Pre-filter with get_file_meta (cheap, returns lastModified)
+    3. Fetch versions only for recently modified files
+    4. For each active file, fetch tracked pages at current + old version
     5. Compare in memory — no more API calls
     """
     delta = _parse_duration(since)
@@ -319,19 +318,54 @@ async def _run(
     results: list[FileDiff] = []
 
     async with FigmaClient(api_key) as client:
-        # Phase 1: find active files (versions lookup, concurrent)
+        # Phase 0: pre-filter with get_file_meta (cheap — returns lastModified)
         if progress:
-            click.echo(f"Fetching version history for {len(file_pages)} files...", err=True)
+            click.echo(f"Checking lastModified for {len(file_pages)} files...", err=True)
+
+        meta_tasks = [client.get_file_meta(fk) for fk in file_pages]
+        meta_results = await asyncio.gather(*meta_tasks, return_exceptions=True)
+
+        candidates: list[str] = []
+        for fk, meta in zip(file_pages, meta_results):
+            if isinstance(meta, BaseException):
+                candidates.append(fk)  # if meta fails, still check versions
+                continue
+            try:
+                last_mod = datetime.fromisoformat(
+                    meta.lastModified.replace("Z", "+00:00"),
+                )
+                if last_mod >= cutoff:
+                    candidates.append(fk)
+            except (ValueError, AttributeError):
+                candidates.append(fk)
+
+        if progress:
+            skipped = len(file_pages) - len(candidates)
+            click.echo(
+                f"  {len(candidates)} recently modified, {skipped} unchanged (skipped)",
+                err=True,
+            )
+
+        # Phase 1: find active files (versions lookup — only candidates)
+        if progress and candidates:
+            click.echo(f"Fetching version history for {len(candidates)} files...", err=True)
 
         version_tasks = [
             _find_version_before(client, fk, cutoff)
-            for fk in file_pages
+            for fk in candidates
         ]
         version_results = await asyncio.gather(*version_tasks, return_exceptions=True)
 
         active_files: list[tuple[str, str, list[str], VersionInfo | None, list[VersionInfo]]] = []
-        for (fk, (file_name, page_ids)), vr in zip(file_pages.items(), version_results):
+        for fk, vr in zip(candidates, version_results):
+            file_name, page_ids = file_pages[fk]
             if isinstance(vr, BaseException):
+                if progress:
+                    click.echo(
+                        f"  WARNING: version lookup failed for {file_name} ({fk}): "
+                        f"{type(vr).__name__}: {vr}",
+                        err=True,
+                    )
                 continue
             old_ver, in_range = vr
             if in_range:
@@ -340,13 +374,21 @@ async def _run(
         if progress:
             click.echo(f"  {len(active_files)} files had activity in the window", err=True)
 
-        # Phase 2: diff active files (concurrent full fetches — 2 calls per file)
+        # Phase 2: diff active files (per-page fetches — 2 API calls per file)
         if active_files:
             if progress:
-                click.echo(f"Fetching file trees for {len(active_files)} active files...", err=True)
+                total_pages = sum(len(pids) for _, _, pids, _, _ in active_files)
+                click.echo(
+                    f"Fetching pages for {len(active_files)} active files "
+                    f"({total_pages} tracked pages)...",
+                    err=True,
+                )
 
             diff_tasks = [
-                _diff_file(client, fk, fn, pids, old_ver, in_range)
+                asyncio.wait_for(
+                    _diff_file(client, fk, fn, pids, old_ver, in_range),
+                    timeout=300,  # 5 min per file
+                )
                 for fk, fn, pids, old_ver, in_range in active_files
             ]
             diffs = await asyncio.gather(*diff_tasks, return_exceptions=True)

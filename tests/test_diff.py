@@ -22,7 +22,7 @@ from figmaclaw.commands.diff import (
     _find_version_before,
     _run,
 )
-from figmaclaw.figma_api_models import VersionSummary, VersionUser
+from figmaclaw.figma_api_models import FileMetaResponse, VersionSummary, VersionUser
 from figmaclaw.figma_client import FigmaClient
 
 
@@ -171,6 +171,30 @@ async def test_find_version_no_old_version() -> None:
 # ── Integration tests: _run ─────────────────────────────────────────
 
 
+def _recent_meta() -> FileMetaResponse:
+    """Return a FileMetaResponse with a recent lastModified date."""
+    return FileMetaResponse(
+        name="Test File", version="v2", lastModified="2026-04-03T12:00:00Z",
+    )
+
+
+def _mock_get_file_shallow(old_canvases: list[dict], new_canvases: list[dict]):
+    """Build a mock get_file_shallow side-effect from old/new canvas lists."""
+    def _make_tree(canvases: list[dict]) -> dict:
+        return {
+            "name": "Test File",
+            "version": "v2",
+            "lastModified": "2026-04-03T12:00:00Z",
+            "document": {"children": canvases},
+        }
+
+    async def _get_file_shallow(fk, *, version=None):
+        if version:
+            return _make_tree(old_canvases)
+        return _make_tree(new_canvases)
+    return _get_file_shallow
+
+
 @pytest.mark.asyncio
 async def test_run_detects_added_frames(tmp_path: Path) -> None:
     """Frames added between old version and current should be reported."""
@@ -194,21 +218,10 @@ async def test_run_detects_added_frames(tmp_path: Path) -> None:
         _vs(id="v2", created_at="2026-04-03T12:00:00Z", handle="bart"),
         _vs(id="v1", created_at="2026-03-25T12:00:00Z", handle="bart"),
     ])
-    # New implementation uses get_file_full instead of get_page per page
-    def _make_file_tree(canvases: list[dict]) -> dict:
-        return {
-            "name": "Test File",
-            "version": "v2",
-            "lastModified": "2026-04-03T12:00:00Z",
-            "document": {"children": canvases},
-        }
-
-    async def _get_file_full(fk, *, version=None):
-        if version:
-            return _make_file_tree([old_canvas])
-        return _make_file_tree([new_canvas])
-
-    mock_client.get_file_full = AsyncMock(side_effect=_get_file_full)
+    mock_client.get_file_meta = AsyncMock(return_value=_recent_meta())
+    mock_client.get_file_shallow = AsyncMock(
+        side_effect=_mock_get_file_shallow([old_canvas], [new_canvas]),
+    )
 
     with patch.object(diff_module, "FigmaClient") as MockCls:
         MockCls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
@@ -248,21 +261,10 @@ async def test_run_detects_removed_frames(tmp_path: Path) -> None:
         _vs(id="v2", created_at="2026-04-03T12:00:00Z", handle="bart"),
         _vs(id="v1", created_at="2026-03-25T12:00:00Z", handle="bart"),
     ])
-    # New implementation uses get_file_full instead of get_page per page
-    def _make_file_tree(canvases: list[dict]) -> dict:
-        return {
-            "name": "Test File",
-            "version": "v2",
-            "lastModified": "2026-04-03T12:00:00Z",
-            "document": {"children": canvases},
-        }
-
-    async def _get_file_full(fk, *, version=None):
-        if version:
-            return _make_file_tree([old_canvas])
-        return _make_file_tree([new_canvas])
-
-    mock_client.get_file_full = AsyncMock(side_effect=_get_file_full)
+    mock_client.get_file_meta = AsyncMock(return_value=_recent_meta())
+    mock_client.get_file_shallow = AsyncMock(
+        side_effect=_mock_get_file_shallow([old_canvas], [new_canvas]),
+    )
 
     with patch.object(diff_module, "FigmaClient") as MockCls:
         MockCls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
@@ -294,21 +296,10 @@ async def test_run_detects_renames(tmp_path: Path) -> None:
         _vs(id="v2", created_at="2026-04-03T12:00:00Z"),
         _vs(id="v1", created_at="2026-03-25T12:00:00Z"),
     ])
-    # New implementation uses get_file_full instead of get_page per page
-    def _make_file_tree(canvases: list[dict]) -> dict:
-        return {
-            "name": "Test File",
-            "version": "v2",
-            "lastModified": "2026-04-03T12:00:00Z",
-            "document": {"children": canvases},
-        }
-
-    async def _get_file_full(fk, *, version=None):
-        if version:
-            return _make_file_tree([old_canvas])
-        return _make_file_tree([new_canvas])
-
-    mock_client.get_file_full = AsyncMock(side_effect=_get_file_full)
+    mock_client.get_file_meta = AsyncMock(return_value=_recent_meta())
+    mock_client.get_file_shallow = AsyncMock(
+        side_effect=_mock_get_file_shallow([old_canvas], [new_canvas]),
+    )
 
     with patch.object(diff_module, "FigmaClient") as MockCls:
         MockCls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
@@ -331,6 +322,7 @@ async def test_run_no_changes_skips_file(tmp_path: Path) -> None:
 
     # No versions in range
     mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_recent_meta())
     mock_client.get_versions = AsyncMock(return_value=[
         _vs(id="v1", created_at="2026-03-20T12:00:00Z"),
     ])
@@ -362,13 +354,13 @@ async def test_run_multiple_pages_in_file(tmp_path: Path) -> None:
         _vs(id="v2", created_at="2026-04-03T12:00:00Z", handle="bart"),
         _vs(id="v1", created_at="2026-03-25T12:00:00Z"),
     ])
-
-    async def _get_file_full(fk, *, version=None):
-        if version:
-            return {"name": "Test File", "version": "v2", "lastModified": "2026-04-03T12:00:00Z", "document": {"children": [old_canvas_100, old_canvas_200]}}
-        return {"name": "Test File", "version": "v2", "lastModified": "2026-04-03T12:00:00Z", "document": {"children": [canvas_100, canvas_200]}}
-
-    mock_client.get_file_full = AsyncMock(side_effect=_get_file_full)
+    mock_client.get_file_meta = AsyncMock(return_value=_recent_meta())
+    mock_client.get_file_shallow = AsyncMock(
+        side_effect=_mock_get_file_shallow(
+            [old_canvas_100, old_canvas_200],
+            [canvas_100, canvas_200],
+        ),
+    )
 
     with patch.object(diff_module, "FigmaClient") as MockCls:
         MockCls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
@@ -396,13 +388,10 @@ async def test_run_version_users_tracked(tmp_path: Path) -> None:
         _vs(id="v2", created_at="2026-04-02T12:00:00Z", label="checkpoint", handle="jakub"),
         _vs(id="v1", created_at="2026-03-25T12:00:00Z", handle="bart"),
     ])
-
-    async def _get_file_full(fk, *, version=None):
-        if version:
-            return {"name": "Test File", "version": "v2", "lastModified": "2026-04-03T12:00:00Z", "document": {"children": [old_canvas]}}
-        return {"name": "Test File", "version": "v2", "lastModified": "2026-04-03T12:00:00Z", "document": {"children": [canvas]}}
-
-    mock_client.get_file_full = AsyncMock(side_effect=_get_file_full)
+    mock_client.get_file_meta = AsyncMock(return_value=_recent_meta())
+    mock_client.get_file_shallow = AsyncMock(
+        side_effect=_mock_get_file_shallow([old_canvas], [canvas]),
+    )
 
     with patch.object(diff_module, "FigmaClient") as MockCls:
         MockCls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
@@ -451,13 +440,10 @@ def test_cli_json_output(tmp_path: Path) -> None:
         _vs(id="v2", created_at="2026-04-03T12:00:00Z", handle="bart"),
         _vs(id="v1", created_at="2026-03-25T12:00:00Z"),
     ])
-
-    async def _get_file_full(fk, *, version=None):
-        if version:
-            return {"name": "Test File", "version": "v2", "lastModified": "2026-04-03T12:00:00Z", "document": {"children": [old_canvas]}}
-        return {"name": "Test File", "version": "v2", "lastModified": "2026-04-03T12:00:00Z", "document": {"children": [canvas]}}
-
-    mock_client.get_file_full = AsyncMock(side_effect=_get_file_full)
+    mock_client.get_file_meta = AsyncMock(return_value=_recent_meta())
+    mock_client.get_file_shallow = AsyncMock(
+        side_effect=_mock_get_file_shallow([old_canvas], [canvas]),
+    )
 
     with patch.object(diff_module, "FigmaClient") as MockCls:
         MockCls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
@@ -475,3 +461,58 @@ def test_cli_json_output(tmp_path: Path) -> None:
     assert len(data["files"]) == 1
     assert len(data["files"][0]["pages"]) == 1
     assert data["files"][0]["pages"][0]["added_frames"][0]["node_id"] == "11:3"
+
+
+# ── VersionSummary nullable fields ────────────────────────────────
+
+
+def test_version_summary_accepts_null_label_and_description() -> None:
+    """Figma API returns null for label/description on autosave versions."""
+    v = VersionSummary(
+        id="v1",
+        created_at="2026-04-01T12:00:00Z",
+        label=None,
+        description=None,
+        user=VersionUser(handle="bart"),
+    )
+    assert v.label is None
+    assert v.description is None
+
+
+def test_version_summary_defaults_to_empty_string() -> None:
+    """When label/description are omitted, they default to empty string."""
+    v = VersionSummary(
+        id="v1",
+        created_at="2026-04-01T12:00:00Z",
+        user=VersionUser(handle="bart"),
+    )
+    assert v.label == ""
+    assert v.description == ""
+
+
+@pytest.mark.asyncio
+async def test_find_version_before_with_null_labels() -> None:
+    """Versions with null labels should not crash version parsing."""
+    from datetime import datetime, timezone
+
+    client = MagicMock(spec=FigmaClient)
+    client.get_versions = AsyncMock(return_value=[
+        VersionSummary(
+            id="v2", created_at="2026-04-03T12:00:00Z",
+            label=None, description=None,
+            user=VersionUser(handle="bart"),
+        ),
+        VersionSummary(
+            id="v1", created_at="2026-03-25T12:00:00Z",
+            label=None, description=None,
+            user=VersionUser(handle="jakub"),
+        ),
+    ])
+
+    cutoff = datetime(2026, 3, 28, tzinfo=timezone.utc)
+    old, in_range = await _find_version_before(client, "abc123", cutoff)
+
+    assert old is not None
+    assert old.id == "v1"
+    assert len(in_range) == 1
+    assert in_range[0].id == "v2"

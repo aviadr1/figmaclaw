@@ -303,8 +303,8 @@ class VersionSummary(pydantic.BaseModel):
 
     id: str
     created_at: str
-    label: str = ""
-    description: str = ""
+    label: str | None = ""
+    description: str | None = ""
     user: VersionUser = pydantic.Field(default_factory=VersionUser)
 
 

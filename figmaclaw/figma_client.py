@@ -37,7 +37,7 @@ class FigmaClient:
 
     _base_url = "https://api.figma.com"
 
-    def __init__(self, api_key: str, *, rate_limit_rpm: int = 14) -> None:
+    def __init__(self, api_key: str, *, rate_limit_rpm: int = 30) -> None:
         self._api_key = api_key
         self._client: httpx.AsyncClient | None = None
         self._min_interval = 60.0 / rate_limit_rpm if rate_limit_rpm > 0 else 0.0
@@ -47,7 +47,7 @@ class FigmaClient:
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
                 headers={"X-Figma-Token": self._api_key},
-                timeout=120.0,
+                timeout=300.0,
             )
         return self._client
 
@@ -145,6 +145,82 @@ class FigmaClient:
         if entry is None or entry.document is None:
             return {}
         return entry.document
+
+    async def get_pages(
+        self, file_key: str, page_node_ids: list[str],
+        *, version: str | None = None,
+        batch_size: int = 10,
+    ) -> dict[str, dict[str, Any]]:
+        """GET /v1/files/{file_key}/nodes?ids=... — batch fetch multiple pages.
+
+        Returns ``{page_node_id: canvas_node_dict}`` for each requested page.
+        Batches requests to stay within Figma API limits. If a batch fails
+        with 400, falls back to individual page fetches (some pages may not
+        exist at the requested version).
+
+        If *version* is given, fetches the pages at that historical version.
+        """
+        if not page_node_ids:
+            return {}
+        result: dict[str, dict[str, Any]] = {}
+        for i in range(0, len(page_node_ids), batch_size):
+            batch = page_node_ids[i : i + batch_size]
+            ids_str = ",".join(batch)
+            params: dict[str, str] = {"ids": ids_str}
+            if version:
+                params["version"] = version
+            try:
+                data = await self._get(f"/v1/files/{file_key}/nodes", params=params)
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 400:
+                    # Batch failed — fall back to individual fetches
+                    for pid in batch:
+                        try:
+                            p: dict[str, str] = {"ids": pid}
+                            if version:
+                                p["version"] = version
+                            data = await self._get(
+                                f"/v1/files/{file_key}/nodes", params=p,
+                            )
+                            entry = data.get("nodes", {}).get(pid, {})
+                            doc = entry.get("document", {})
+                            result[pid] = doc if doc else {}
+                        except Exception:
+                            result[pid] = {}
+                    continue
+                raise
+            nodes: dict[str, Any] = data.get("nodes", {})
+            for pid in batch:
+                entry = nodes.get(pid, {})
+                doc = entry.get("document", {})
+                result[pid] = doc if doc else {}
+        return result
+
+    async def get_file_shallow(
+        self, file_key: str, *, version: str | None = None,
+    ) -> dict[str, Any]:
+        """GET /v1/files/{file_key}?depth=2[&version=...] — shallow file tree.
+
+        Returns document → pages → immediate children (FRAME/SECTION nodes)
+        without recursing into nested layers. This is much smaller than the
+        full tree and sufficient for structural diff (detecting added/removed/
+        renamed frames).
+
+        Depth 3 gives: document → pages → top-level children (frames +
+        sections) → section children (frames inside sections). This captures
+        all structural frame nodes without recursing into deeply nested layers.
+        """
+        params: dict[str, str] = {"depth": "3"}
+        if version:
+            params["version"] = version
+        data = await self._get(f"/v1/files/{file_key}", params=params)
+        _validate(
+            FileMetaResponse, data,
+            endpoint="GET /v1/files/{key}?depth=2"
+            + (f"&version={version}" if version else ""),
+            context=f"file_key={file_key}",
+        )
+        return data
 
     async def get_file_full(
         self, file_key: str, *, version: str | None = None,
