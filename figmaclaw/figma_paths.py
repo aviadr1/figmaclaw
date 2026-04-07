@@ -43,3 +43,13 @@ def component_path(file_slug: str, section_slug: str) -> str:
     Example: figma/design-system/components/buttons-10-1.md
     """
     return f"figma/{file_slug}/components/{section_slug}.md"
+
+
+def census_path(file_slug: str) -> str:
+    """Return the repo-relative path for a file's component census markdown file.
+
+    The underscore prefix distinguishes it from pull-generated page/component files.
+
+    Example: figma/design-system/_census.md
+    """
+    return f"figma/{file_slug}/_census.md"

@@ -1,0 +1,50 @@
+# Reusable workflow — called by host repos via:
+#   uses: aviadr1/figmaclaw/.github/workflows/census.yml@main
+#
+# Snapshots all published component sets for tracked files into _census.md.
+# Hash-gated: only writes and commits when the component registry actually changes.
+# One REST call per tracked file — runs in seconds.
+
+on:
+  workflow_call:
+    inputs:
+      file_key:
+        description: 'Census only this file key (default: all tracked files)'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      FIGMA_API_KEY:
+        required: true
+
+jobs:
+  census:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install figmaclaw
+        run: pip install uv && uv tool install git+https://github.com/aviadr1/figmaclaw
+
+      - name: Pull latest changes
+        run: git pull --no-rebase
+
+      - name: Configure git
+        run: |
+          git config user.name "figmaclaw[bot]"
+          git config user.email "figmaclaw[bot]@users.noreply.github.com"
+
+      - name: Run census
+        env:
+          FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+        run: |
+          if [ -n "${{ inputs.file_key }}" ]; then
+            figmaclaw census --file-key "${{ inputs.file_key }}" --auto-commit
+          else
+            figmaclaw census --auto-commit
+          fi
+
+      - name: Push
+        run: git push || (git pull --no-rebase && git push)
