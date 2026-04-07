@@ -451,3 +451,122 @@ def test_render_component_section_figma_url_points_to_section():
     md = render_component_section(section, page)
     # Section node ID "20:1" → "20-1" in URL
     assert "node-id=20-1" in md
+
+
+# --- component_set_keys in component section frontmatter ---
+
+def test_render_component_section_with_component_set_keys_in_frontmatter():
+    """INVARIANT: component_set_keys is written to component section frontmatter when provided."""
+    from figmaclaw.figma_render import render_component_section
+    section, page = _make_component_section()
+    keys = {"ButtonV2": "a1b2c3d4e5f67890", "IconV2": "b2c3d4e5f6789012"}
+    md = render_component_section(section, page, component_set_keys=keys)
+    fm = parse_frontmatter(md)
+    assert fm is not None
+    assert fm.component_set_keys == keys
+
+
+def test_render_component_section_without_keys_omits_field():
+    """INVARIANT: component_set_keys is absent from frontmatter when not provided."""
+    from figmaclaw.figma_render import render_component_section
+    section, page = _make_component_section()
+    md = render_component_section(section, page)
+    fm_block = md.split("---\n")[1]
+    assert "component_set_keys" not in fm_block
+
+
+def test_render_component_section_keys_are_single_line_flow_style():
+    """INVARIANT: component_set_keys renders as single-line YAML flow style (not block-indented)."""
+    from figmaclaw.figma_render import render_component_section
+    section, page = _make_component_section()
+    keys = {"ButtonV2": "a1b2c3d4e5f67890", "IconV2": "b2c3d4e5f6789012"}
+    md = render_component_section(section, page, component_set_keys=keys)
+    fm_block = md.split("---\n")[1]
+    lines = fm_block.strip().splitlines()
+    key_lines = [l for l in lines if l.startswith("component_set_keys:")]
+    assert len(key_lines) == 1, "component_set_keys must be on a single line"
+    assert "{" in key_lines[0], "component_set_keys must use inline flow-style {}"
+    data = yaml.safe_load(fm_block)
+    assert data["component_set_keys"] == keys
+
+
+# --- raw_frames in screen page frontmatter ---
+
+def test_build_page_frontmatter_with_raw_frames():
+    """INVARIANT: raw_frames is written to screen page frontmatter when provided."""
+    from figmaclaw.figma_render import build_page_frontmatter
+    from figmaclaw.figma_frontmatter import FrameComposition
+    frames = [FigmaFrame(node_id="11:1", name="welcome"), FigmaFrame(node_id="11:2", name="clean")]
+    section = FigmaSection(node_id="10:1", name="onboarding", frames=frames)
+    page = _make_page(sections=[section])
+    rf = {"11:1": FrameComposition(raw=3, ds=["AvatarV2", "ButtonV2"])}
+    fm_str = build_page_frontmatter(page, raw_frames=rf)
+    fm = parse_frontmatter(fm_str + "\nbody")
+    assert fm is not None
+    assert "11:1" in fm.raw_frames
+    assert fm.raw_frames["11:1"].raw == 3
+    assert fm.raw_frames["11:1"].ds == ["AvatarV2", "ButtonV2"]
+    assert "11:2" not in fm.raw_frames  # fully clean frame absent (sparse)
+
+
+def test_build_page_frontmatter_without_raw_frames_omits_field():
+    """INVARIANT: raw_frames is absent from frontmatter when not provided."""
+    from figmaclaw.figma_render import build_page_frontmatter
+    page = _make_page()
+    fm_str = build_page_frontmatter(page)
+    assert "raw_frames" not in fm_str
+
+
+def test_raw_frames_is_single_line_flow_style():
+    """INVARIANT: raw_frames renders as single-line YAML flow style (not block-indented)."""
+    from figmaclaw.figma_render import build_page_frontmatter
+    from figmaclaw.figma_frontmatter import FrameComposition
+    frames = [FigmaFrame(node_id="11:1", name="welcome")]
+    section = FigmaSection(node_id="10:1", name="onboarding", frames=frames)
+    page = _make_page(sections=[section])
+    rf = {"11:1": FrameComposition(raw=5, ds=["AvatarV2", "ButtonV2", "ButtonV2"])}
+    # Use scaffold_page so the closing --- is followed by a newline, making the split work cleanly
+    entry = _make_entry()
+    from figmaclaw.figma_render import scaffold_page
+    md = scaffold_page(page, entry, raw_frames=rf)
+    fm_block = md.split("---\n")[1]  # content between opening and closing ---
+    lines = fm_block.strip().splitlines()
+    rf_lines = [l for l in lines if l.startswith("raw_frames:")]
+    assert len(rf_lines) == 1, "raw_frames must be on a single line"
+    assert "{" in rf_lines[0], "raw_frames must use inline flow-style {}"
+    data = yaml.safe_load(fm_block)
+    assert data["raw_frames"]["11:1"]["raw"] == 5
+    assert data["raw_frames"]["11:1"]["ds"] == ["AvatarV2", "ButtonV2", "ButtonV2"]
+
+
+def test_old_file_without_new_fields_parses_with_empty_defaults():
+    """INVARIANT: existing .md files without component_set_keys or raw_frames parse cleanly."""
+    md = (
+        "---\n"
+        "file_key: hOV4QM\n"
+        "page_node_id: '7741:45837'\n"
+        "frames: ['11:1']\n"
+        "flows: []\n"
+        "---\n\n# Body"
+    )
+    fm = parse_frontmatter(md)
+    assert fm is not None
+    assert fm.component_set_keys == {}
+    assert fm.raw_frames == {}
+
+
+# --- FrameComposition model ---
+
+def test_frame_composition_model():
+    """INVARIANT: FrameComposition stores raw count and ds component names correctly."""
+    from figmaclaw.figma_frontmatter import FrameComposition
+    fc = FrameComposition(raw=3, ds=["AvatarV2", "ButtonV2", "ButtonV2"])
+    assert fc.raw == 3
+    assert fc.ds == ["AvatarV2", "ButtonV2", "ButtonV2"]  # duplicates preserved
+
+
+def test_frame_composition_default_ds_is_empty():
+    """INVARIANT: FrameComposition.ds defaults to empty list when not specified."""
+    from figmaclaw.figma_frontmatter import FrameComposition
+    fc = FrameComposition(raw=2)
+    assert fc.ds == []

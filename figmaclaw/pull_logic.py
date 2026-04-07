@@ -44,6 +44,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from figmaclaw.figma_client import FigmaClient
+from figmaclaw.figma_frontmatter import FrameComposition
 from figmaclaw.figma_hash import compute_frame_hashes, compute_page_hash
 from figmaclaw.figma_models import FigmaPage, FigmaSection, from_page_node
 from figmaclaw.figma_parse import parse_flows, parse_frontmatter
@@ -68,7 +69,13 @@ class PullResult(BaseModel):
     has_more: bool = False  # True when max_pages was hit and more pages remain
 
 
-def write_new_page(repo_root: Path, page: FigmaPage, entry: PageEntry) -> Path:
+def write_new_page(
+    repo_root: Path,
+    page: FigmaPage,
+    entry: PageEntry,
+    *,
+    raw_frames: dict[str, FrameComposition] | None = None,
+) -> Path:
     """Write a NEW scaffold .md for a FigmaPage (screen sections only) and return the path.
 
     Only call this when the file does NOT exist yet. For existing files, use
@@ -79,11 +86,17 @@ def write_new_page(repo_root: Path, page: FigmaPage, entry: PageEntry) -> Path:
     assert entry.md_path is not None, "entry.md_path must be set to call write_new_page()"
     out_path = repo_root / entry.md_path
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(scaffold_page(page, entry))
+    out_path.write_text(scaffold_page(page, entry, raw_frames=raw_frames))
     return out_path
 
 
-def update_page_frontmatter(repo_root: Path, page: FigmaPage, entry: PageEntry) -> Path:
+def update_page_frontmatter(
+    repo_root: Path,
+    page: FigmaPage,
+    entry: PageEntry,
+    *,
+    raw_frames: dict[str, FrameComposition] | None = None,
+) -> Path:
     """Update ONLY the frontmatter of an existing page .md file, preserving the body.
 
     Uses python-frontmatter to cleanly separate frontmatter from body, then rebuilds
@@ -91,6 +104,10 @@ def update_page_frontmatter(repo_root: Path, page: FigmaPage, entry: PageEntry) 
     the correct flow-style YAML formatting).
 
     entry.md_path must not be None and the file must already exist.
+
+    raw_frames: freshly computed from the pull pass for this page. Replaces any
+    existing raw_frames value (pull-pass data is always current). None means the
+    field was not computed and is omitted from the output frontmatter.
     """
     assert entry.md_path is not None, "entry.md_path must be set"
     out_path = repo_root / entry.md_path
@@ -103,7 +120,7 @@ def update_page_frontmatter(repo_root: Path, page: FigmaPage, entry: PageEntry) 
     assert parts is not None, f"Failed to parse frontmatter from {out_path}"
     _, body = parts
 
-    # Preserve enrichment state from existing frontmatter
+    # Preserve enrichment state from existing frontmatter (set by enrich pass, not pull pass)
     existing_fm = parse_frontmatter(md_text)
     enriched_hash = existing_fm.enriched_hash if existing_fm else None
     enriched_at = existing_fm.enriched_at if existing_fm else None
@@ -114,6 +131,7 @@ def update_page_frontmatter(repo_root: Path, page: FigmaPage, entry: PageEntry) 
         enriched_hash=enriched_hash,
         enriched_at=enriched_at,
         enriched_frame_hashes=enriched_frame_hashes or None,
+        raw_frames=raw_frames,
     )
     out_path.write_text(f"{new_fm}\n{body}")
     return out_path
@@ -124,12 +142,63 @@ def write_component_section(
     section: FigmaSection,
     page: FigmaPage,
     md_rel_path: str,
+    *,
+    component_set_keys: dict[str, str] | None = None,
 ) -> Path:
     """Render a single component library section to disk and return the absolute path written."""
     out_path = repo_root / md_rel_path
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(render_component_section(section, page))
+    out_path.write_text(render_component_section(section, page, component_set_keys=component_set_keys))
     return out_path
+
+
+def _compute_raw_frames(frame_docs: dict[str, dict]) -> dict[str, FrameComposition]:
+    """Classify direct children of each frame node into raw vs DS-component instances.
+
+    frame_docs: {node_id: document_node} as returned by FigmaClient.get_nodes().
+    Returns a sparse dict containing only frames that have at least one raw child.
+    Frames with zero raw children (fully componentized) are omitted — their absence
+    signals "clean" to audit skills, so they skip the expensive get_design_context call.
+
+    raw:  count of non-INSTANCE direct children (FRAME, GROUP, RECTANGLE, TEXT, etc.)
+    ds:   names of INSTANCE children with duplicates — [ButtonV2, ButtonV2] means 2 instances.
+    """
+    result: dict[str, FrameComposition] = {}
+    for node_id, node in frame_docs.items():
+        children: list[dict] = node.get("children", [])
+        raw_count = 0
+        ds_names: list[str] = []
+        for child in children:
+            if child.get("type") == "INSTANCE":
+                ds_names.append(child.get("name", ""))
+            else:
+                raw_count += 1
+        if raw_count > 0:
+            result[node_id] = FrameComposition(raw=raw_count, ds=ds_names)
+    return result
+
+
+def _build_component_set_keys(
+    page_node_id: str,
+    component_sets: list[dict],
+) -> dict[str, str]:
+    """Build the component_set_keys dict for all component sections on a given page.
+
+    The Figma /component_sets endpoint returns published COMPONENT_SET nodes.
+    Each has a containing_frame.pageId that identifies which page it lives on.
+    Matching by pageId (not by section frame node IDs) is necessary because:
+    - Published component sets are direct page-level children, not inside sections.
+    - Private/locked base-component sets inside sections are NOT returned by the API.
+    - All published sets on a page are relevant to any section on that page.
+
+    Returns {component_set_name: figma_key} for use with importComponentSetByKeyAsync().
+    """
+    return {
+        cs["name"]: cs["key"]
+        for cs in component_sets
+        if cs.get("containing_frame", {}).get("pageId") == page_node_id
+        and cs.get("key") and cs.get("name")
+    }
 
 
 def _merge_existing(page: FigmaPage, existing_flows: list[tuple[str, str]]) -> FigmaPage:
@@ -212,6 +281,14 @@ async def pull_file(
         last_modified=api_last_modified,
         last_checked_at=now,
     )
+
+    # Fetch component sets once per changed file. Used to populate component_set_keys
+    # in component section .md frontmatter so build skills can skip search_design_system().
+    try:
+        component_sets = await client.get_component_sets(file_key)
+    except Exception as exc:
+        log.warning("Failed to fetch component sets for %r: %s — component_set_keys will be empty", file_key, exc)
+        component_sets = []
 
     doc = meta.get("document", {})
     page_stubs = [c for c in doc.get("children", []) if c.get("type") == "CANVAS"]
@@ -303,6 +380,20 @@ async def pull_file(
             screen_sections = [s for s in page.sections if not s.is_component_library]
             component_sections = [s for s in page.sections if s.is_component_library]
 
+            # Batch-fetch direct children of all screen frames to compute raw_frames.
+            # One API call per changed page; returns sparse dict (only frames with raw children).
+            raw_frames: dict[str, FrameComposition] | None = None
+            screen_frame_ids = [f.node_id for s in screen_sections for f in s.frames]
+            if screen_frame_ids:
+                try:
+                    frame_docs = await client.get_nodes(file_key, screen_frame_ids, depth=1)
+                    raw_frames = _compute_raw_frames(frame_docs)
+                except Exception as exc:
+                    log.warning(
+                        "Failed to fetch frame children for page %r (%s): %s — raw_frames will be omitted",
+                        page_name, page_node_id, exc,
+                    )
+
             written_screen_rel: str | None = None
             if screen_sections:
                 screen_page = page.model_copy(update={"sections": screen_sections})
@@ -315,9 +406,9 @@ async def pull_file(
                     frame_hashes=frame_hashes,
                 )
                 if screen_md.exists():
-                    written = update_page_frontmatter(repo_root, screen_page, screen_entry)
+                    written = update_page_frontmatter(repo_root, screen_page, screen_entry, raw_frames=raw_frames)
                 else:
-                    written = write_new_page(repo_root, screen_page, screen_entry)
+                    written = write_new_page(repo_root, screen_page, screen_entry, raw_frames=raw_frames)
                 written_screen_rel = str(written.relative_to(repo_root))
                 result.md_paths.append(written_screen_rel)
                 result.pages_written += 1
@@ -329,7 +420,11 @@ async def pull_file(
                 sect_suffix = section.node_id.replace(":", "-")
                 sect_slug = f"{slugify(section.name)}-{sect_suffix}"
                 comp_rel = component_path(file_slug, sect_slug)
-                written = write_component_section(repo_root, section, page, comp_rel)
+                sect_keys = _build_component_set_keys(page.page_node_id, component_sets)
+                written = write_component_section(
+                    repo_root, section, page, comp_rel,
+                    component_set_keys=sect_keys or None,
+                )
                 written_component_rels.append(str(written.relative_to(repo_root)))
 
             if written_component_rels:

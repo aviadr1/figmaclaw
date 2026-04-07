@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import yaml
 
+from figmaclaw.figma_frontmatter import FrameComposition
 from figmaclaw.figma_models import FigmaPage, FigmaSection
 from figmaclaw.figma_sync_state import PageEntry
 
@@ -83,6 +84,8 @@ def _build_frontmatter(
     enriched_hash: str | None = None,
     enriched_at: str | None = None,
     enriched_frame_hashes: dict[str, str] | None = None,
+    component_set_keys: dict[str, str] | None = None,
+    raw_frames: dict[str, FrameComposition] | None = None,
 ) -> str:
     """Render compact YAML frontmatter block (between --- markers)."""
     fm: dict = {"file_key": file_key, "page_node_id": page_node_id}
@@ -98,6 +101,13 @@ def _build_frontmatter(
         fm["enriched_at"] = enriched_at
     if enriched_frame_hashes:
         fm["enriched_frame_hashes"] = _FlowDict(enriched_frame_hashes)
+    if component_set_keys:
+        fm["component_set_keys"] = _FlowDict(component_set_keys)
+    if raw_frames:
+        fm["raw_frames"] = _FlowDict({
+            k: _FlowDict({"raw": v.raw, "ds": _FlowList(v.ds)})
+            for k, v in raw_frames.items()
+        })
 
     body = yaml.dump(
         fm,
@@ -115,11 +125,16 @@ def build_page_frontmatter(
     enriched_hash: str | None = None,
     enriched_at: str | None = None,
     enriched_frame_hashes: dict[str, str] | None = None,
+    raw_frames: dict[str, FrameComposition] | None = None,
 ) -> str:
     """Build the YAML frontmatter block for a screen page from a FigmaPage model.
 
     Returns the full frontmatter string including ``---`` delimiters. Used by
     update_page_frontmatter() to replace frontmatter without touching the body.
+
+    raw_frames: sparse dict of frames with raw (non-INSTANCE) children, computed
+    by the pull pass. Only frames with raw > 0 are included. None means not yet
+    computed (field is omitted from frontmatter); {} means computed but all clean.
     """
     screen_sections = [s for s in page.sections if not s.is_component_library]
     frame_ids: list[str] = [
@@ -136,10 +151,16 @@ def build_page_frontmatter(
         enriched_hash=enriched_hash,
         enriched_at=enriched_at,
         enriched_frame_hashes=enriched_frame_hashes,
+        raw_frames=raw_frames,
     )
 
 
-def scaffold_page(page: FigmaPage, entry: PageEntry) -> str:
+def scaffold_page(
+    page: FigmaPage,
+    entry: PageEntry,
+    *,
+    raw_frames: dict[str, FrameComposition] | None = None,
+) -> str:
     """Generate a skeleton markdown page with LLM placeholders for a NEW FigmaPage.
 
     Component library sections are skipped — use render_component_section() for those.
@@ -158,7 +179,7 @@ def scaffold_page(page: FigmaPage, entry: PageEntry) -> str:
     """
     parts: list[str] = []
 
-    parts.append(build_page_frontmatter(page))
+    parts.append(build_page_frontmatter(page, raw_frames=raw_frames))
     parts.append("")
 
     # H1 header
@@ -226,11 +247,18 @@ def scaffold_page(page: FigmaPage, entry: PageEntry) -> str:
 def render_component_section(
     section: FigmaSection,
     page: FigmaPage,
+    *,
+    component_set_keys: dict[str, str] | None = None,
 ) -> str:
     """Render a component library section to a standalone semantic markdown file.
 
     Output: figma/{file-slug}/components/{section-slug}.md
     Format: YAML frontmatter + title + variants table (no flows, no Mermaid).
+
+    component_set_keys: maps component-set name → Figma key for this section,
+    fetched by the pull pass from GET /v1/files/{file_key}/component_sets.
+    Written to frontmatter so build skills can call importComponentSetByKeyAsync()
+    without a runtime search_design_system() MCP call.
     """
     parts: list[str] = []
 
@@ -242,6 +270,7 @@ def render_component_section(
         section_node_id=section.node_id,
         frame_ids=frame_ids,
         flows=[],
+        component_set_keys=component_set_keys,
     ))
     parts.append("")
 

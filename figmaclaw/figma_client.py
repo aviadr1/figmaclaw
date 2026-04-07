@@ -135,6 +135,47 @@ class FigmaClient:
         raw: dict[str, str | None] = data.get("images", {})
         return {k.replace("-", ":"): v for k, v in raw.items()}
 
+    async def get_component_sets(self, file_key: str) -> list[dict[str, Any]]:
+        """GET /v1/files/{file_key}/component_sets — all component sets defined in a file.
+
+        Returns a list of component set dicts, each with at minimum:
+          "key"     — the Figma-internal key for importComponentSetByKeyAsync()
+          "node_id" — the node ID of the COMPONENT_SET node in the file
+          "name"    — the component set name (e.g. "ButtonV2")
+
+        Returns an empty list if the file has no component sets or on error.
+        """
+        data = await self._get(f"/v1/files/{file_key}/component_sets")
+        result: list[dict[str, Any]] = data.get("meta", {}).get("component_sets", [])
+        return result
+
+    async def get_nodes(
+        self,
+        file_key: str,
+        node_ids: list[str],
+        *,
+        depth: int = 1,
+    ) -> dict[str, Any]:
+        """GET /v1/files/{file_key}/nodes?ids=...&depth=N — batch fetch node documents.
+
+        Returns {node_id: document_node} where document_node is the raw Figma node dict
+        (with "id", "type", "children", etc.). Node IDs with "-" are normalised to ":".
+
+        Callers should batch to avoid excessively long query strings; Figma's practical
+        limit is a few hundred IDs per request.
+        """
+        data = await self._get(
+            f"/v1/files/{file_key}/nodes",
+            params={"ids": ",".join(node_ids), "depth": str(depth)},
+        )
+        nodes: dict[str, Any] = data.get("nodes", {})
+        # Each entry is {"document": node_dict, ...} — unwrap to just the document node.
+        # Normalise Figma's occasional "-" separators back to ":".
+        return {
+            k.replace("-", ":"): v.get("document", {})
+            for k, v in nodes.items()
+        }
+
     async def download_url(self, url: str) -> bytes:
         """Download an arbitrary URL (e.g. Figma S3 image export). Not a Figma API endpoint."""
         client = await self._ensure_client()

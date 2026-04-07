@@ -953,3 +953,303 @@ async def test_pull_cmd_stamps_listing_last_modified_after_failed_get_file_meta(
     reloaded = FigmaSyncState(tmp_path)
     reloaded.load()
     assert reloaded.manifest.files["restricted_key"].last_modified == "2026-03-01T00:00:00Z"
+
+
+# --- _compute_raw_frames ---
+
+def test_compute_raw_frames_counts_raw_children_and_ds_names():
+    """INVARIANT: _compute_raw_frames classifies INSTANCE children as ds and others as raw."""
+    from figmaclaw.pull_logic import _compute_raw_frames
+    frame_docs = {
+        "11:1": {
+            "id": "11:1",
+            "type": "FRAME",
+            "children": [
+                {"type": "INSTANCE", "name": "AvatarV2"},
+                {"type": "INSTANCE", "name": "ButtonV2"},
+                {"type": "FRAME", "name": "raw-child"},
+                {"type": "TEXT", "name": "label"},
+            ],
+        }
+    }
+    result = _compute_raw_frames(frame_docs)
+    assert "11:1" in result
+    assert result["11:1"].raw == 2
+    assert result["11:1"].ds == ["AvatarV2", "ButtonV2"]
+
+
+def test_compute_raw_frames_omits_fully_componentized_frames():
+    """INVARIANT: Frames with zero raw children (all INSTANCE) are absent from raw_frames."""
+    from figmaclaw.pull_logic import _compute_raw_frames
+    frame_docs = {
+        "11:1": {
+            "children": [
+                {"type": "INSTANCE", "name": "AvatarV2"},
+                {"type": "INSTANCE", "name": "ButtonV2"},
+            ]
+        }
+    }
+    result = _compute_raw_frames(frame_docs)
+    assert "11:1" not in result  # fully componentized — absent signals "clean"
+
+
+def test_compute_raw_frames_preserves_ds_duplicates():
+    """INVARIANT: ds list preserves duplicates so callers can see N × ButtonV2 instances."""
+    from figmaclaw.pull_logic import _compute_raw_frames
+    frame_docs = {
+        "11:1": {
+            "children": [
+                {"type": "INSTANCE", "name": "ButtonV2"},
+                {"type": "INSTANCE", "name": "ButtonV2"},
+                {"type": "RECTANGLE", "name": "bg"},
+            ]
+        }
+    }
+    result = _compute_raw_frames(frame_docs)
+    assert result["11:1"].ds == ["ButtonV2", "ButtonV2"]
+
+
+def test_compute_raw_frames_returns_empty_for_no_input():
+    """INVARIANT: _compute_raw_frames returns {} for empty frame_docs."""
+    from figmaclaw.pull_logic import _compute_raw_frames
+    assert _compute_raw_frames({}) == {}
+
+
+# --- _build_component_set_keys ---
+
+def test_build_component_set_keys_matches_by_page_id():
+    """INVARIANT: _build_component_set_keys returns name→key for component sets on the same page.
+
+    The /component_sets API returns published component sets with containing_frame.pageId.
+    Matching is by pageId because published sets are page-level nodes — not inside sections.
+    Private locked component sets inside sections are not returned by the Figma API.
+    """
+    from figmaclaw.pull_logic import _build_component_set_keys
+    component_sets = [
+        {"containing_frame": {"pageId": "449:42"}, "name": "avatar", "key": "aabb1122"},
+        {"containing_frame": {"pageId": "783:9631"}, "name": "button", "key": "ccdd3344"},
+    ]
+    result = _build_component_set_keys("449:42", component_sets)
+    assert result == {"avatar": "aabb1122"}
+    assert "button" not in result
+
+
+def test_build_component_set_keys_returns_empty_when_no_match():
+    """INVARIANT: _build_component_set_keys returns {} when no component sets are on this page."""
+    from figmaclaw.pull_logic import _build_component_set_keys
+    result = _build_component_set_keys("449:42", [])
+    assert result == {}
+
+
+# --- pull_file: new API calls and frontmatter fields ---
+
+def _fake_page_node_with_children() -> dict:
+    """Screen page whose frames have both raw and instance children."""
+    return {
+        "id": "7741:45837",
+        "name": "Onboarding",
+        "type": "CANVAS",
+        "children": [
+            {
+                "id": "10:1",
+                "name": "intro",
+                "type": "SECTION",
+                "children": [
+                    {
+                        "id": "11:1",
+                        "name": "welcome",
+                        "type": "FRAME",
+                        "children": [],  # children are fetched via get_nodes, not here
+                    },
+                ],
+            }
+        ],
+    }
+
+
+def _fake_get_nodes_response() -> dict:
+    """Simulated get_nodes response: frame 11:1 has 1 INSTANCE + 2 raw children."""
+    return {
+        "11:1": {
+            "id": "11:1",
+            "type": "FRAME",
+            "children": [
+                {"type": "INSTANCE", "name": "AvatarV2"},
+                {"type": "RECTANGLE", "name": "bg"},
+                {"type": "TEXT", "name": "label"},
+            ],
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_pull_file_calls_get_component_sets_once_per_changed_file(tmp_path: Path):
+    """INVARIANT: pull_file calls get_component_sets exactly once per changed file."""
+    from figmaclaw.figma_client import FigmaClient
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
+    mock_client.get_page = AsyncMock(return_value=_fake_page_node())
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+    mock_client.get_nodes = AsyncMock(return_value={})
+
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    mock_client.get_component_sets.assert_called_once_with("abc123")
+
+
+@pytest.mark.asyncio
+async def test_pull_file_does_not_call_get_component_sets_when_file_unchanged(tmp_path: Path):
+    """INVARIANT: pull_file skips get_component_sets when the file version is unchanged."""
+    from figmaclaw.figma_client import FigmaClient
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v2"
+    state.manifest.files["abc123"].last_modified = "2026-03-31T12:00:00Z"
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2", "2026-03-31T12:00:00Z"))
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    mock_client.get_component_sets.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pull_file_calls_get_nodes_for_changed_screen_page(tmp_path: Path):
+    """INVARIANT: pull_file calls get_nodes once for each changed page that has screen frames."""
+    from figmaclaw.figma_client import FigmaClient
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
+    mock_client.get_page = AsyncMock(return_value=_fake_page_node_with_children())
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+    mock_client.get_nodes = AsyncMock(return_value=_fake_get_nodes_response())
+
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    mock_client.get_nodes.assert_called_once()
+    call_args = mock_client.get_nodes.call_args
+    assert call_args.args[0] == "abc123"  # file_key
+    assert "11:1" in call_args.args[1]   # frame node ID included
+
+
+@pytest.mark.asyncio
+async def test_pull_file_writes_raw_frames_to_new_page_frontmatter(tmp_path: Path):
+    """INVARIANT: raw_frames from get_nodes appears in written page frontmatter."""
+    from figmaclaw.figma_client import FigmaClient
+    from figmaclaw.figma_parse import parse_frontmatter
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
+    mock_client.get_page = AsyncMock(return_value=_fake_page_node_with_children())
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+    mock_client.get_nodes = AsyncMock(return_value=_fake_get_nodes_response())
+
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    out = tmp_path / "figma" / "web-app" / "pages" / "onboarding-7741-45837.md"
+    fm = parse_frontmatter(out.read_text())
+    assert fm is not None
+    assert "11:1" in fm.raw_frames
+    assert fm.raw_frames["11:1"].raw == 2   # RECTANGLE + TEXT
+    assert fm.raw_frames["11:1"].ds == ["AvatarV2"]
+
+
+@pytest.mark.asyncio
+async def test_pull_file_writes_component_set_keys_to_component_frontmatter(tmp_path: Path):
+    """INVARIANT: component_set_keys from get_component_sets appears in component .md frontmatter."""
+    from figmaclaw.figma_client import FigmaClient
+    from figmaclaw.figma_parse import parse_frontmatter
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    # Matching is by containing_frame.pageId, not by frame node IDs.
+    # The page node ID for _fake_component_page_node is "7741:45837".
+    component_sets = [
+        {"containing_frame": {"pageId": "7741:45837"}, "name": "ButtonV2", "key": "aabb1122cc334455"},
+        {"containing_frame": {"pageId": "7741:45837"}, "name": "ButtonOutline", "key": "ddeeff0011223344"},
+        {"containing_frame": {"pageId": "9999:1"}, "name": "OtherFile", "key": "unrelated"},
+    ]
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
+    mock_client.get_page = AsyncMock(return_value=_fake_component_page_node())
+    mock_client.get_component_sets = AsyncMock(return_value=component_sets)
+    mock_client.get_nodes = AsyncMock(return_value={})
+
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    comp_out = tmp_path / "figma" / "web-app" / "components" / "buttons-20-1.md"
+    fm = parse_frontmatter(comp_out.read_text())
+    assert fm is not None
+    assert fm.component_set_keys == {
+        "ButtonV2": "aabb1122cc334455",
+        "ButtonOutline": "ddeeff0011223344",
+    }
+    assert "OtherFile" not in fm.component_set_keys
+
+
+@pytest.mark.asyncio
+async def test_pull_file_handles_get_component_sets_failure_gracefully(tmp_path: Path):
+    """INVARIANT: pull_file continues and omits component_set_keys when get_component_sets fails."""
+    from figmaclaw.figma_client import FigmaClient
+    from figmaclaw.figma_parse import parse_frontmatter
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
+    mock_client.get_page = AsyncMock(return_value=_fake_component_page_node())
+    mock_client.get_component_sets = AsyncMock(side_effect=Exception("API error"))
+    mock_client.get_nodes = AsyncMock(return_value={})
+
+    result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    assert result.component_sections_written == 1  # still wrote the file
+    comp_out = tmp_path / "figma" / "web-app" / "components" / "buttons-20-1.md"
+    fm = parse_frontmatter(comp_out.read_text())
+    assert fm is not None
+    assert fm.component_set_keys == {}  # empty — not an error
+
+
+@pytest.mark.asyncio
+async def test_pull_file_handles_get_nodes_failure_gracefully(tmp_path: Path):
+    """INVARIANT: pull_file continues and omits raw_frames when get_nodes fails."""
+    from figmaclaw.figma_client import FigmaClient
+    from figmaclaw.figma_parse import parse_frontmatter
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
+    mock_client.get_page = AsyncMock(return_value=_fake_page_node_with_children())
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+    mock_client.get_nodes = AsyncMock(side_effect=Exception("timeout"))
+
+    result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    assert result.pages_written == 1  # still wrote the page
+    out = tmp_path / "figma" / "web-app" / "pages" / "onboarding-7741-45837.md"
+    fm = parse_frontmatter(out.read_text())
+    assert fm is not None
+    assert fm.raw_frames == {}  # absent from frontmatter when fetch failed

@@ -49,35 +49,58 @@ All frontmatter is YAML between `---` markers at the top of the file.
 ```yaml
 ---
 file_key: 7az6PPiHUQumhxtV935xuD
-page_node_id: 4554:17865
-frames: {4713:6926: 'Prepare screen showing camera preview and Go Live button.', 4713:7191: 'Countdown screen showing LIVE IN 3.'}
-flows: [["4713:6926", "4713:7191"], ["4713:7191", "4713:7445"]]
+page_node_id: '2234:10724'
+frames: ['2423:71475', '2423:73012', '2423:73769']
+flows: [['2423:71475', '2423:73012']]
+enriched_hash: f1e2d3c4b5a69788
+enriched_at: '2026-04-07T10:00:00Z'
+enriched_frame_hashes: {'2423:71475': a1b2c3d4, '2423:73012': e5f6g7h8}
+raw_frames: {'2423:71475': {raw: 3, ds: [grid, top-control-bar, chat-input]}, '2423:73012': {raw: 5, ds: [grid, top-control-bar, chat-input, front-row]}}
 ---
 ```
 
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `file_key` | string | yes | Figma file key — used for all API calls |
-| `page_node_id` | string | yes | Figma CANVAS node ID for this page |
-| `frames` | flow-style mapping | no | `{node_id: description}` — authoritative frame descriptions |
-| `flows` | flow-style sequence | no | `[[src_id, dst_id], ...]` — prototype navigation edges |
+| Field | Written by | Description |
+|---|---|---|
+| `file_key` | `pull` | Figma file key — used for all API calls |
+| `page_node_id` | `pull` | Figma CANVAS node ID for this page |
+| `frames` | `pull` | Flow-style list of frame node IDs present on this page |
+| `flows` | `pull` | `[[src_id, dst_id], ...]` — prototype navigation edges |
+| `enriched_hash` | `mark-enriched` | Page hash at last enrichment — used to detect staleness |
+| `enriched_at` | `mark-enriched` | ISO timestamp of last enrichment |
+| `enriched_frame_hashes` | `mark-enriched` | `{node_id: frame_hash}` at enrichment — for surgical re-enrichment |
+| `raw_frames` | `pull` | **Composition signals.** Sparse dict — only frames with at least one raw (non-INSTANCE) direct child. Absent = fully componentized. See below. |
+
+**`raw_frames` schema** — each entry: `{raw: <int>, ds: [<name>, ...]}` where `raw` is the count of non-INSTANCE direct children and `ds` is the list of already-embedded DS component instance names (with duplicates). A frame absent from `raw_frames` has zero raw children — it is fully componentized and can be skipped in audits without calling `get_design_context`.
 
 ### Component library section (`.../components/*.md`)
 
-Same as above plus:
+```yaml
+---
+file_key: AZswXfXwfx2fff3RFBMo8h
+page_node_id: '449:42'
+section_node_id: 483:9607
+frames: ['483:8981', '483:8989', '483:9046']
+component_set_keys: {avatar: 9dd5c39605e9713741b26b5020fb51b67103f06f}
+---
+```
 
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `section_node_id` | string | yes | Figma node ID of the section within the page |
+| Field | Written by | Description |
+|---|---|---|
+| `file_key` | `pull` | Figma file key |
+| `page_node_id` | `pull` | Figma CANVAS node ID of the parent page |
+| `section_node_id` | `pull` | Figma node ID of the SECTION within the page |
+| `frames` | `pull` | Flow-style list of component/variant node IDs in this section |
+| `component_set_keys` | `pull` | **Key lookup for build skills.** Maps published component-set name → Figma key for use with `importComponentSetByKeyAsync()`. Populated from `GET /v1/files/{file_key}/component_sets` matched by page. Empty when the API returns no published sets for this page. |
+
+**`component_set_keys` note**: the Figma `/component_sets` endpoint returns only *published* component sets (page-level nodes). Private/locked sets inside sections (e.g. `🔒 Base Components`) are not returned and will not appear here. The keys present are the ones build skills should use when importing DS instances.
 
 ### Format invariants — frontmatter
 
-- `frames` **must** be a single-line YAML flow mapping: `frames: {key: value, ...}` — NOT block-indented YAML
-- `flows` **must** be a single-line YAML flow sequence: `flows: [["a", "b"], ...]`
-- PyYAML requires `width=2**20` in `yaml.dump` to prevent wrapping long values — without it, descriptions with apostrophes or colons break into ugly multi-line flow style
+- `frames`, `flows`, `enriched_frame_hashes`, `component_set_keys`, and `raw_frames` **must** be single-line YAML flow style — NOT block-indented. PyYAML requires `width=2**20` in `yaml.dump` to prevent wrapping long values.
 - `page_hash` is **NOT** stored in `.md` files — it lives only in `.figma-sync/manifest.json`
-- Empty descriptions are **not written** to frontmatter — a missing key means no description yet (equivalent to `(no description yet)` in the body)
-- Node IDs containing `:` (e.g. `4713:6926`) are valid YAML map keys — no quoting needed
+- `raw_frames` is **sparse** — frames absent from the dict are fully componentized (zero raw children). Do not write `raw_frames: {}` for a clean page; omit the field entirely.
+- `component_set_keys` is omitted when empty — only written when the Figma `/component_sets` API returns at least one published set for that page.
+- `enriched_*` fields are written by `mark-enriched`, never by `pull`. `raw_frames` and `component_set_keys` are written by `pull`, never by `mark-enriched`. The two passes are independent — adding `raw_frames` to a file does NOT trigger re-enrichment.
 
 ### Editing frontmatter
 

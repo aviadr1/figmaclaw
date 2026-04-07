@@ -13,6 +13,7 @@ Example rendered frontmatter (v2 — screen page):
     enriched_hash: b39103d8ad45cd38
     enriched_at: '2026-04-01T12:00:00Z'
     enriched_frame_hashes: {'11:1': a3f2b7c1, '11:2': e4d9f8a2}
+    raw_frames: {'11:1': {raw: 3, ds: [AvatarV2, ButtonV2]}}
     ---
 
 Example rendered frontmatter (component section):
@@ -22,10 +23,19 @@ Example rendered frontmatter (component section):
     page_node_id: '5678:1234'
     section_node_id: '20:1'
     frames: ['30:1', '30:2']
+    component_set_keys: {ButtonV2: a1b2c3d4e5f67890, IconV2: b2c3d4e5f6789012}
     ---
 
 Backward compatibility: the old v1 format stored frames as a dict
 {node_id: description}. The validator normalizes this to a list of node IDs.
+
+New fields (added incrementally, backward-compatible via empty defaults):
+- component_set_keys: written to component section .md files by the pull pass.
+  Maps component-set name → Figma key for use with importComponentSetByKeyAsync().
+- raw_frames: written to screen page .md files by the pull pass.
+  Sparse dict of frames that have at least one raw (non-INSTANCE) direct child.
+  Frames absent from this dict are fully componentized. Used by audit skills to
+  skip get_design_context calls on clean frames.
 """
 
 from __future__ import annotations
@@ -33,6 +43,22 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from pydantic import BaseModel, Field, model_validator
+
+
+class FrameComposition(BaseModel):
+    """Composition signals for a single screen frame.
+
+    Written by the pull pass into the raw_frames frontmatter field.
+    Only frames with at least one raw (non-INSTANCE) direct child are included
+    in raw_frames — absence means the frame is fully componentized.
+
+    raw: count of non-INSTANCE direct children (FRAME, GROUP, RECTANGLE, TEXT, etc.)
+    ds:  names of INSTANCE direct children (DS components already embedded),
+         with duplicates preserved so [ButtonV2, ButtonV2] means two separate instances.
+    """
+
+    raw: int
+    ds: list[str] = Field(default_factory=list)
 
 
 class FigmaPageFrontmatter(BaseModel):
@@ -52,6 +78,12 @@ class FigmaPageFrontmatter(BaseModel):
     enriched_hash: str | None = None  # page_hash at time of last enrichment
     enriched_at: str | None = None  # ISO timestamp of last enrichment
     enriched_frame_hashes: dict[str, str] = Field(default_factory=dict)  # {node_id: frame_hash} at enrichment
+
+    # Pull-pass composition signals (written by pull, never by enrich — no re-enrichment triggered)
+    # component_set_keys: set on component section .md files only. Maps component-set name → Figma key.
+    component_set_keys: dict[str, str] = Field(default_factory=dict)
+    # raw_frames: sparse dict of frames with raw children. Absent frames are fully componentized.
+    raw_frames: dict[str, FrameComposition] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
