@@ -49,6 +49,8 @@ figmaclaw and issueclaw are **general-purpose open-source tools** — they work 
 | `enriched_hash` | `mark-enriched` | Page hash at last enrichment (null = never) |
 | `enriched_at` | `mark-enriched` | Timestamp of last enrichment |
 | `enriched_frame_hashes` | `mark-enriched` | Per-frame content hashes at last enrichment |
+| `component_set_keys` | `pull` | Component sections only. Maps published component-set name → Figma key for `importComponentSetByKeyAsync()`. |
+| `raw_frames` | `pull` | Screen pages only. Sparse dict of frames with ≥1 raw (non-INSTANCE) child: `{node_id: {raw: N, ds: [names...]}}`. Absent = fully componentized. |
 
 **Commands:**
 

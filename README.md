@@ -72,6 +72,7 @@ frames: ['11:1', '11:2', '46:42']
 flows: [['11:1', '11:2']]
 enriched_hash: b39103d8
 enriched_frame_hashes: {'11:1': 'a3f2b7c1', '11:2': 'e4d9f8a2'}
+raw_frames: {'11:1': {raw: 3, ds: [ButtonV2, AvatarV2]}}
 ---
 
 # Web App / Onboarding
