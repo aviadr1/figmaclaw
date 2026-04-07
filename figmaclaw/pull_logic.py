@@ -44,7 +44,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from figmaclaw.figma_client import FigmaClient
-from figmaclaw.figma_frontmatter import FrameComposition
+from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION, FrameComposition
 from figmaclaw.figma_hash import compute_frame_hashes, compute_page_hash
 from figmaclaw.figma_models import FigmaPage, FigmaSection, from_page_node
 from figmaclaw.figma_parse import parse_flows, parse_frontmatter
@@ -269,10 +269,13 @@ async def pull_file(
     file_name = meta.name
 
     stored = state.manifest.files.get(file_key)
-    if not force and stored and stored.version == api_version and stored.last_modified == api_last_modified:
+    schema_stale = (stored.pull_schema_version if stored else 0) < CURRENT_PULL_SCHEMA_VERSION
+    if not force and not schema_stale and stored and stored.version == api_version and stored.last_modified == api_last_modified:
         _progress(f"{file_name}: unchanged (version {api_version}), skipping all pages")
         result.skipped_file = True
         return result
+    if schema_stale and stored and stored.version == api_version:
+        _progress(f"{file_name}: pull schema stale (v{stored.pull_schema_version} → v{CURRENT_PULL_SCHEMA_VERSION}), refreshing frontmatter")
 
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     state.set_file_meta(
@@ -349,7 +352,7 @@ async def pull_file(
         new_hash = compute_page_hash(page_node)
         stored_hash = state.get_page_hash(file_key, page_node_id)
 
-        if not force and stored_hash == new_hash:
+        if not force and not schema_stale and stored_hash == new_hash:
             _progress(f"  [{page_idx}/{total_pages}] {page_name} — unchanged (skip)")
             result.pages_skipped += 1
             continue
@@ -457,5 +460,12 @@ async def pull_file(
         if on_page_written:
             all_written = ([written_screen_rel] if written_screen_rel else []) + written_component_rels
             on_page_written(f"{file_name} / {page_name}", all_written)
+
+    # Record that all pages in this file are now at the current pull schema version.
+    # Only written after the full page loop completes — if interrupted mid-file,
+    # the version stays at 0 and the next run re-processes the whole file.
+    if not result.has_more and file_key in state.manifest.files:
+        state.manifest.files[file_key].pull_schema_version = CURRENT_PULL_SCHEMA_VERSION
+        state.save()
 
     return result

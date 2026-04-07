@@ -229,3 +229,180 @@ def test_inspect_exit_code_2_for_non_figmaclaw_file(tmp_path: Path) -> None:
     ])
 
     assert result.exit_code == 2
+
+
+# --- Schema version staleness reporting ---
+
+def _write_md_with_enrichment(tmp_path: Path, enriched_schema_version: int = 0) -> Path:
+    """Write a fully-described page .md that has been enriched at a given schema version."""
+    page = _make_page(with_descriptions=True)
+    entry = PageEntry(
+        page_name="Onboarding",
+        page_slug="onboarding",
+        md_path="figma/abc123/pages/onboarding.md",
+        page_hash="deadbeef12345678",
+        last_refreshed_at="2026-03-31T00:00:00Z",
+    )
+    scaffold = scaffold_page(page, entry)
+    # Inject enriched_hash and enriched_schema_version into frontmatter
+    extra = f"enriched_hash: deadbeef12345678\nenriched_at: '2026-04-01T00:00:00Z'\nenriched_schema_version: {enriched_schema_version}"
+    md_text = scaffold.replace("\n---\n", f"\n{extra}\n---\n", 1)
+    p = tmp_path / "page.md"
+    p.write_text(md_text)
+    return p
+
+
+def test_inspect_json_includes_schema_version_fields(tmp_path: Path) -> None:
+    """INVARIANT: --json output includes all schema staleness fields."""
+    md_path = _write_md(tmp_path, _make_page())
+    runner = CliRunner()
+    result = runner.invoke(cli, [
+        "--repo-dir", str(tmp_path),
+        "inspect", str(md_path), "--json",
+    ])
+
+    data = json.loads(result.output)
+    assert "pull_schema_stale" in data
+    assert "pull_schema_version" in data
+    assert "current_pull_schema_version" in data
+    assert "enrichment_schema_version" in data
+    assert "enrichment_must_update" in data
+    assert "enrichment_should_update" in data
+    assert "current_enrichment_schema_version" in data
+    assert "min_required_enrichment_schema_version" in data
+
+
+def test_inspect_reports_pull_schema_stale_when_manifest_version_behind(tmp_path: Path) -> None:
+    """INVARIANT: pull_schema_stale=True when manifest file has pull_schema_version < current."""
+    from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
+    from figmaclaw.figma_sync_state import FileEntry, FigmaSyncState
+
+    md_path = _write_md(tmp_path, _make_page())
+
+    # Write a manifest with pull_schema_version=0 (behind current)
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.manifest.files["abc123"] = FileEntry(
+        file_name="Web App",
+        version="v1",
+        last_modified="2026-03-31T00:00:00Z",
+        pull_schema_version=0,
+    )
+    state.save()
+
+    runner = CliRunner()
+    result = runner.invoke(cli, [
+        "--repo-dir", str(tmp_path),
+        "inspect", str(md_path), "--json",
+    ])
+
+    data = json.loads(result.output)
+    assert data["pull_schema_stale"] is True
+    assert data["pull_schema_version"] == 0
+    assert data["current_pull_schema_version"] == CURRENT_PULL_SCHEMA_VERSION
+
+
+def test_inspect_reports_pull_schema_current_when_manifest_version_matches(tmp_path: Path) -> None:
+    """INVARIANT: pull_schema_stale=False when manifest has pull_schema_version == current."""
+    from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
+    from figmaclaw.figma_sync_state import FileEntry, FigmaSyncState
+
+    md_path = _write_md(tmp_path, _make_page())
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.manifest.files["abc123"] = FileEntry(
+        file_name="Web App",
+        version="v1",
+        last_modified="2026-03-31T00:00:00Z",
+        pull_schema_version=CURRENT_PULL_SCHEMA_VERSION,
+    )
+    state.save()
+
+    runner = CliRunner()
+    result = runner.invoke(cli, [
+        "--repo-dir", str(tmp_path),
+        "inspect", str(md_path), "--json",
+    ])
+
+    data = json.loads(result.output)
+    assert data["pull_schema_stale"] is False
+
+
+def test_inspect_reports_enrichment_must_update_when_below_required(tmp_path: Path) -> None:
+    """INVARIANT: enrichment_must_update=True when enriched_schema_version < MIN_REQUIRED."""
+    from figmaclaw.figma_frontmatter import MIN_REQUIRED_ENRICHMENT_SCHEMA_VERSION
+
+    # Write a page enriched at version 0 (below any MIN_REQUIRED >= 1)
+    md_path = _write_md_with_enrichment(tmp_path, enriched_schema_version=0)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, [
+        "--repo-dir", str(tmp_path),
+        "inspect", str(md_path), "--json",
+    ])
+
+    data = json.loads(result.output)
+    if MIN_REQUIRED_ENRICHMENT_SCHEMA_VERSION > 0:
+        assert data["enrichment_must_update"] is True
+        assert data["needs_enrichment"] is True
+    else:
+        # MIN_REQUIRED is 0 — nothing is ever forced. Test the invariant that
+        # enrichment_must_update reflects the actual comparison.
+        assert data["enrichment_must_update"] is False
+
+
+def test_inspect_reports_enrichment_should_update_when_below_current_but_above_required(tmp_path: Path) -> None:
+    """INVARIANT: enrichment_should_update=True when MIN_REQUIRED <= esv < CURRENT."""
+    from figmaclaw.figma_frontmatter import (
+        CURRENT_ENRICHMENT_SCHEMA_VERSION,
+        MIN_REQUIRED_ENRICHMENT_SCHEMA_VERSION,
+    )
+    # This test is only meaningful when CURRENT > MIN_REQUIRED (SHOULD bucket exists)
+    if CURRENT_ENRICHMENT_SCHEMA_VERSION <= MIN_REQUIRED_ENRICHMENT_SCHEMA_VERSION:
+        pytest.skip("No SHOULD bucket: CURRENT == MIN_REQUIRED")
+
+    # Enrich at MIN_REQUIRED — valid but not latest
+    md_path = _write_md_with_enrichment(tmp_path, enriched_schema_version=MIN_REQUIRED_ENRICHMENT_SCHEMA_VERSION)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, [
+        "--repo-dir", str(tmp_path),
+        "inspect", str(md_path), "--json",
+    ])
+
+    data = json.loads(result.output)
+    assert data["enrichment_must_update"] is False   # valid output
+    assert data["enrichment_should_update"] is True   # but outdated
+
+
+def test_inspect_no_schema_staleness_when_all_current(tmp_path: Path) -> None:
+    """INVARIANT: no staleness flags set when pull and enrichment schemas are both current."""
+    from figmaclaw.figma_frontmatter import (
+        CURRENT_ENRICHMENT_SCHEMA_VERSION,
+        CURRENT_PULL_SCHEMA_VERSION,
+    )
+    from figmaclaw.figma_sync_state import FileEntry, FigmaSyncState
+
+    md_path = _write_md_with_enrichment(tmp_path, enriched_schema_version=CURRENT_ENRICHMENT_SCHEMA_VERSION)
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.manifest.files["abc123"] = FileEntry(
+        file_name="Web App",
+        version="v1",
+        last_modified="2026-03-31T00:00:00Z",
+        pull_schema_version=CURRENT_PULL_SCHEMA_VERSION,
+    )
+    state.save()
+
+    runner = CliRunner()
+    result = runner.invoke(cli, [
+        "--repo-dir", str(tmp_path),
+        "inspect", str(md_path), "--json",
+    ])
+
+    data = json.loads(result.output)
+    assert data["pull_schema_stale"] is False
+    assert data["enrichment_must_update"] is False
+    assert data["enrichment_should_update"] is False

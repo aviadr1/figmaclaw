@@ -16,6 +16,7 @@ from pathlib import Path
 import click
 import yaml
 
+from figmaclaw.figma_frontmatter import CURRENT_ENRICHMENT_SCHEMA_VERSION
 from figmaclaw.figma_parse import parse_frontmatter, split_frontmatter
 from figmaclaw.figma_render import _FlowDict, _FlowList, _FrontmatterDumper
 from figmaclaw.figma_sync_state import FigmaSyncState
@@ -80,10 +81,22 @@ def mark_enriched_cmd(ctx: click.Context, md_path: Path, auto_commit: bool) -> N
     if fm.flows:
         fm_data["flows"] = _FlowList(fm.flows)
 
+    # Enrichment state (written/updated by this command)
     fm_data["enriched_hash"] = page_entry.page_hash
     fm_data["enriched_at"] = now
     if page_entry.frame_hashes:
         fm_data["enriched_frame_hashes"] = _FlowDict(page_entry.frame_hashes)
+    fm_data["enriched_schema_version"] = CURRENT_ENRICHMENT_SCHEMA_VERSION
+
+    # Preserve pull-pass fields — these are written by the pull pass and must not
+    # be dropped when mark-enriched rewrites frontmatter. Dropping them was a bug.
+    if fm.component_set_keys:
+        fm_data["component_set_keys"] = _FlowDict(fm.component_set_keys)
+    if fm.raw_frames:
+        fm_data["raw_frames"] = _FlowDict({
+            k: _FlowDict({"raw": v.raw, "ds": _FlowList(v.ds)})
+            for k, v in fm.raw_frames.items()
+        })
 
     new_fm_body = yaml.dump(
         fm_data, Dumper=_FrontmatterDumper, default_flow_style=False, allow_unicode=True,

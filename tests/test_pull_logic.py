@@ -138,12 +138,14 @@ def _fake_page_node(page_id: str = "7741:45837") -> dict:
 
 @pytest.mark.asyncio
 async def test_pull_file_skips_when_version_unchanged(tmp_path: Path):
-    """INVARIANT: pull_file returns skipped=True when file version is unchanged."""
+    """INVARIANT: pull_file returns skipped=True when file version is unchanged and schema is current."""
+    from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
     state = FigmaSyncState(tmp_path)
     state.load()
     state.add_tracked_file("abc123", "Web App")
     state.manifest.files["abc123"].version = "v2"
     state.manifest.files["abc123"].last_modified = "2026-03-31T12:00:00Z"
+    state.manifest.files["abc123"].pull_schema_version = CURRENT_PULL_SCHEMA_VERSION
 
     from figmaclaw.figma_client import FigmaClient
     mock_client = MagicMock(spec=FigmaClient)
@@ -177,7 +179,8 @@ async def test_pull_file_force_bypasses_version_check(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_pull_file_skips_page_when_hash_unchanged(tmp_path: Path):
-    """INVARIANT: pull_file skips individual pages whose structural hash is unchanged."""
+    """INVARIANT: pull_file skips individual pages whose structural hash is unchanged (when schema is current)."""
+    from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
     from figmaclaw.figma_hash import compute_page_hash
     page_node = _fake_page_node()
     stored_hash = compute_page_hash(page_node)
@@ -186,6 +189,7 @@ async def test_pull_file_skips_page_when_hash_unchanged(tmp_path: Path):
     state.load()
     state.add_tracked_file("abc123", "Web App")
     state.manifest.files["abc123"].version = "v1"  # old version → triggers page check
+    state.manifest.files["abc123"].pull_schema_version = CURRENT_PULL_SCHEMA_VERSION  # schema current → page skip applies
     state.manifest.files["abc123"].pages["7741:45837"] = PageEntry(
         page_name="Onboarding",
         page_slug="onboarding",
@@ -686,9 +690,10 @@ async def test_pull_file_on_page_written_receives_written_paths(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_pull_file_skipped_pages_do_not_trigger_on_page_written(tmp_path: Path):
-    """INVARIANT: on_page_written is NOT called for pages that are skipped (hash unchanged)."""
+    """INVARIANT: on_page_written is NOT called for pages that are skipped (hash unchanged, schema current)."""
     from figmaclaw.figma_hash import compute_page_hash
     from figmaclaw.figma_client import FigmaClient
+    from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
 
     page_node = _fake_page_node()
     stored_hash = compute_page_hash(page_node)
@@ -697,6 +702,7 @@ async def test_pull_file_skipped_pages_do_not_trigger_on_page_written(tmp_path: 
     state.load()
     state.add_tracked_file("abc123", "Web App")
     state.manifest.files["abc123"].version = "v1"
+    state.manifest.files["abc123"].pull_schema_version = CURRENT_PULL_SCHEMA_VERSION
     state.manifest.files["abc123"].pages["7741:45837"] = PageEntry(
         page_name="Onboarding", page_slug="onboarding",
         md_path="figma/abc123/pages/onboarding.md",
@@ -1107,13 +1113,15 @@ async def test_pull_file_calls_get_component_sets_once_per_changed_file(tmp_path
 
 @pytest.mark.asyncio
 async def test_pull_file_does_not_call_get_component_sets_when_file_unchanged(tmp_path: Path):
-    """INVARIANT: pull_file skips get_component_sets when the file version is unchanged."""
+    """INVARIANT: pull_file skips get_component_sets when the file version is unchanged and schema is current."""
     from figmaclaw.figma_client import FigmaClient
+    from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
     state = FigmaSyncState(tmp_path)
     state.load()
     state.add_tracked_file("abc123", "Web App")
     state.manifest.files["abc123"].version = "v2"
     state.manifest.files["abc123"].last_modified = "2026-03-31T12:00:00Z"
+    state.manifest.files["abc123"].pull_schema_version = CURRENT_PULL_SCHEMA_VERSION
 
     mock_client = MagicMock(spec=FigmaClient)
     mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2", "2026-03-31T12:00:00Z"))
@@ -1256,3 +1264,139 @@ async def test_pull_file_handles_get_nodes_failure_gracefully(tmp_path: Path):
     fm = parse_frontmatter(out.read_text())
     assert fm is not None
     assert fm.raw_frames == {}  # absent from frontmatter when fetch failed
+
+
+# --- Pull schema version (staleness bypass) ---
+
+@pytest.mark.asyncio
+async def test_pull_file_writes_pull_schema_version_to_manifest_after_success(tmp_path: Path):
+    """INVARIANT: pull_schema_version is written to the manifest after all pages complete."""
+    from figmaclaw.figma_client import FigmaClient
+    from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
+    mock_client.get_page = AsyncMock(return_value=_fake_page_node())
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+    mock_client.get_nodes = AsyncMock(return_value={})
+
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    assert state.manifest.files["abc123"].pull_schema_version == CURRENT_PULL_SCHEMA_VERSION
+
+
+@pytest.mark.asyncio
+async def test_pull_file_does_not_write_pull_schema_version_when_has_more(tmp_path: Path):
+    """INVARIANT: pull_schema_version is NOT written when max_pages was hit (partial run)."""
+    from figmaclaw.figma_client import FigmaClient
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
+    mock_client.get_page = AsyncMock(return_value=_fake_page_node())
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+    mock_client.get_nodes = AsyncMock(return_value={})
+
+    # With max_pages=0 the loop exits immediately without writing any pages
+    result = await pull_file(mock_client, "abc123", state, tmp_path, force=False, max_pages=0)
+
+    assert result.has_more is True
+    assert state.manifest.files["abc123"].pull_schema_version == 0  # not bumped
+
+
+@pytest.mark.asyncio
+async def test_pull_file_processes_schema_stale_file_even_when_figma_unchanged(tmp_path: Path):
+    """INVARIANT: when pull_schema_version < CURRENT, file is re-processed even if Figma version matches."""
+    from figmaclaw.figma_client import FigmaClient
+    from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    # Figma version matches — would normally be skipped
+    state.manifest.files["abc123"].version = "v2"
+    state.manifest.files["abc123"].last_modified = "2026-03-31T12:00:00Z"
+    # But pull_schema_version is behind current (default 0)
+    assert state.manifest.files["abc123"].pull_schema_version < CURRENT_PULL_SCHEMA_VERSION
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2", "2026-03-31T12:00:00Z"))
+    mock_client.get_page = AsyncMock(return_value=_fake_page_node())
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+    mock_client.get_nodes = AsyncMock(return_value={})
+
+    result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    # File was NOT skipped despite matching Figma version — schema staleness triggered processing
+    assert result.skipped_file is False
+    assert result.pages_written == 1
+
+
+@pytest.mark.asyncio
+async def test_pull_file_processes_schema_stale_pages_even_when_page_hash_unchanged(tmp_path: Path):
+    """INVARIANT: schema_stale bypasses page-level hash check so existing pages get new FM fields."""
+    from figmaclaw.figma_client import FigmaClient
+    from figmaclaw.figma_parse import parse_frontmatter
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    mock_client = MagicMock(spec=FigmaClient)
+    page_node = _fake_page_node_with_children()
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
+    mock_client.get_page = AsyncMock(return_value=page_node)
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+    mock_client.get_nodes = AsyncMock(return_value=_fake_get_nodes_response())
+
+    # First pull: write the page, bump version and schema version
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    out = tmp_path / "figma" / "web-app" / "pages" / "onboarding-7741-45837.md"
+    body_before = out.read_text().split("---\n", 2)[-1]  # capture body
+
+    # Simulate schema staleness: reset pull_schema_version to 0 (pre-versioning)
+    state.manifest.files["abc123"].pull_schema_version = 0
+    # Also update Figma version so file passes file-level check... wait, we need schema_stale
+    # Actually with version unchanged AND schema stale, it should still process
+    state.manifest.files["abc123"].version = "v2"
+    state.manifest.files["abc123"].last_modified = "2026-03-31T12:00:00Z"
+    state.save()
+
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2", "2026-03-31T12:00:00Z"))
+
+    result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    # Page was re-processed (not skipped) despite page hash being unchanged
+    assert result.pages_written == 1
+
+    # Body must be preserved — only frontmatter changed
+    body_after = out.read_text().split("---\n", 2)[-1]
+    assert body_before == body_after
+
+
+@pytest.mark.asyncio
+async def test_pull_file_skips_file_when_schema_current_and_figma_unchanged(tmp_path: Path):
+    """INVARIANT: when pull_schema_version == CURRENT and Figma unchanged, file is skipped."""
+    from figmaclaw.figma_client import FigmaClient
+    from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v2"
+    state.manifest.files["abc123"].last_modified = "2026-03-31T12:00:00Z"
+    state.manifest.files["abc123"].pull_schema_version = CURRENT_PULL_SCHEMA_VERSION
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2", "2026-03-31T12:00:00Z"))
+
+    result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    assert result.skipped_file is True
+    mock_client.get_page.assert_not_called()

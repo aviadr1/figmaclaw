@@ -18,6 +18,11 @@ from pathlib import Path
 
 import click
 
+from figmaclaw.figma_frontmatter import (
+    CURRENT_ENRICHMENT_SCHEMA_VERSION,
+    CURRENT_PULL_SCHEMA_VERSION,
+    MIN_REQUIRED_ENRICHMENT_SCHEMA_VERSION,
+)
 from figmaclaw.figma_md_parse import section_line_ranges
 from figmaclaw.figma_parse import parse_frontmatter
 from figmaclaw.figma_schema import is_placeholder_row
@@ -147,7 +152,29 @@ def inspect_cmd(
         })
 
     has_placeholders = missing > 0 or "<!-- LLM:" in md_text
-    needs_enrichment = has_placeholders or meta.enriched_hash is None or stale_section_count > 0
+
+    # Schema staleness: pull-pass frontmatter fields
+    try:
+        from figmaclaw.figma_sync_state import FigmaSyncState as _FSS
+        _state = _FSS(repo_dir)
+        _state.load()
+        _file_entry = _state.manifest.files.get(meta.file_key)
+        file_pull_schema_version = (_file_entry.pull_schema_version if _file_entry else 0)
+    except Exception:
+        file_pull_schema_version = 0
+    pull_schema_stale = file_pull_schema_version < CURRENT_PULL_SCHEMA_VERSION
+
+    # Schema staleness: enrichment prompt/format
+    esv = meta.enriched_schema_version  # 0 if pre-versioning or never enriched
+    enrichment_must_update = esv < MIN_REQUIRED_ENRICHMENT_SCHEMA_VERSION
+    enrichment_should_update = esv < CURRENT_ENRICHMENT_SCHEMA_VERSION
+
+    needs_enrichment = (
+        has_placeholders
+        or meta.enriched_hash is None
+        or stale_section_count > 0
+        or enrichment_must_update
+    )
 
     if json_output:
         output = {
@@ -165,6 +192,14 @@ def inspect_cmd(
             "pending_sections": pending_section_count,
             "stale_sections": stale_section_count,
             "section_threshold": SECTION_THRESHOLD,
+            "pull_schema_stale": pull_schema_stale,
+            "pull_schema_version": file_pull_schema_version,
+            "current_pull_schema_version": CURRENT_PULL_SCHEMA_VERSION,
+            "enrichment_schema_version": esv,
+            "enrichment_must_update": enrichment_must_update,
+            "enrichment_should_update": enrichment_should_update,
+            "current_enrichment_schema_version": CURRENT_ENRICHMENT_SCHEMA_VERSION,
+            "min_required_enrichment_schema_version": MIN_REQUIRED_ENRICHMENT_SCHEMA_VERSION,
             "sections": section_data,
         }
         click.echo(json.dumps(output, indent=2))
@@ -178,6 +213,12 @@ def inspect_cmd(
             click.echo(f"  enriched_hash: {meta.enriched_hash}  enriched_at: {meta.enriched_at}")
         else:
             click.echo("  NOT enriched")
+        if pull_schema_stale:
+            click.echo(f"  [PULL-SCHEMA STALE] frontmatter v{file_pull_schema_version} < current v{CURRENT_PULL_SCHEMA_VERSION} — pull-only refresh needed")
+        if enrichment_must_update:
+            click.echo(f"  [ENRICH MUST] enrichment v{esv} < required v{MIN_REQUIRED_ENRICHMENT_SCHEMA_VERSION} — body must be re-enriched")
+        elif enrichment_should_update:
+            click.echo(f"  [ENRICH SHOULD] enrichment v{esv} < current v{CURRENT_ENRICHMENT_SCHEMA_VERSION} — body should be re-enriched (opportunistic)")
         click.echo("")
         for sd in section_data:
             status = ""

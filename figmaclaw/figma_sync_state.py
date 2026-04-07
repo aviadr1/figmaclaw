@@ -36,6 +36,10 @@ class FileEntry(BaseModel):
     version: str
     last_modified: str
     last_checked_at: str = ""
+    # 0 = pre-versioning. Set to CURRENT_PULL_SCHEMA_VERSION after a successful pull
+    # that wrote all pages at the current schema. Files below CURRENT_PULL_SCHEMA_VERSION
+    # get frontmatter re-written on next pull even if Figma content is unchanged.
+    pull_schema_version: int = 0
     pages: dict[str, PageEntry] = Field(default_factory=dict)
 
 

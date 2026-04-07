@@ -13,6 +13,7 @@ Example rendered frontmatter (v2 — screen page):
     enriched_hash: b39103d8ad45cd38
     enriched_at: '2026-04-01T12:00:00Z'
     enriched_frame_hashes: {'11:1': a3f2b7c1, '11:2': e4d9f8a2}
+    enriched_schema_version: 1
     raw_frames: {'11:1': {raw: 3, ds: [AvatarV2, ButtonV2]}}
     ---
 
@@ -36,6 +37,30 @@ New fields (added incrementally, backward-compatible via empty defaults):
   Sparse dict of frames that have at least one raw (non-INSTANCE) direct child.
   Frames absent from this dict are fully componentized. Used by audit skills to
   skip get_design_context calls on clean frames.
+- enriched_schema_version: written by mark-enriched. Tracks which prompt version
+  produced the LLM body. Used by inspect to surface MUST/SHOULD re-enrichment.
+
+Schema version tracking
+-----------------------
+Two independent version numbers track whether a file/page needs updating:
+
+  CURRENT_PULL_SCHEMA_VERSION (per-file in manifest)
+      Bump when pull_file starts writing new frontmatter fields.
+      Files below this version get frontmatter re-written on next pull —
+      body is NEVER touched, no LLM triggered.
+
+  CURRENT_ENRICHMENT_SCHEMA_VERSION (per-page in frontmatter, written by mark-enriched)
+  MIN_REQUIRED_ENRICHMENT_SCHEMA_VERSION
+      Bump CURRENT when prompt changes (any improvement or format change).
+      Bump MIN_REQUIRED too when old output is structurally wrong (MUST re-enrich).
+      Leave MIN_REQUIRED lower for quality improvements (SHOULD re-enrich).
+
+Pull schema changelog:
+  v1: initial — frames, flows, enriched_*
+  v2: added raw_frames (screen pages), component_set_keys (component sections)
+
+Enrichment schema changelog:
+  v1: initial enrichment format — frame table + page summary + Mermaid flows
 """
 
 from __future__ import annotations
@@ -43,6 +68,20 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from pydantic import BaseModel, Field, model_validator
+
+# Pull-pass schema version. Bump when pull_file writes new frontmatter fields.
+# Files in the manifest with pull_schema_version < this get frontmatter-refreshed
+# on the next pull run even if Figma content is unchanged. Body is never touched.
+CURRENT_PULL_SCHEMA_VERSION: int = 2
+
+# Enrichment schema version. Bump when the LLM prompt or output format changes.
+# Pages with enriched_schema_version < MIN_REQUIRED MUST be re-enriched (broken output).
+# Pages with enriched_schema_version < CURRENT (but >= MIN_REQUIRED) SHOULD be
+# re-enriched opportunistically (valid but outdated output).
+# To make a bump "MUST": set both CURRENT and MIN_REQUIRED to the new value.
+# To make a bump "SHOULD": bump only CURRENT, leave MIN_REQUIRED.
+CURRENT_ENRICHMENT_SCHEMA_VERSION: int = 1
+MIN_REQUIRED_ENRICHMENT_SCHEMA_VERSION: int = 1
 
 
 class FrameComposition(BaseModel):
@@ -78,6 +117,8 @@ class FigmaPageFrontmatter(BaseModel):
     enriched_hash: str | None = None  # page_hash at time of last enrichment
     enriched_at: str | None = None  # ISO timestamp of last enrichment
     enriched_frame_hashes: dict[str, str] = Field(default_factory=dict)  # {node_id: frame_hash} at enrichment
+    # 0 = pre-versioning or never enriched. Set to CURRENT_ENRICHMENT_SCHEMA_VERSION by mark-enriched.
+    enriched_schema_version: int = 0
 
     # Pull-pass composition signals (written by pull, never by enrich — no re-enrichment triggered)
     # component_set_keys: set on component section .md files only. Maps component-set name → Figma key.
