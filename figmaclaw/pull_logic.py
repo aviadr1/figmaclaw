@@ -339,7 +339,12 @@ async def pull_file(
                             all_screen_frame_ids.append(child["id"])
         if all_screen_frame_ids:
             try:
-                all_frame_docs = await client.get_nodes(file_key, all_screen_frame_ids, depth=1)
+                # Chunk to avoid 414 URI Too Large (Figma GET limit ~200 IDs per call).
+                chunk_size = 200
+                for i in range(0, len(all_screen_frame_ids), chunk_size):
+                    chunk = all_screen_frame_ids[i : i + chunk_size]
+                    chunk_docs = await client.get_nodes(file_key, chunk, depth=1)
+                    all_frame_docs.update(chunk_docs)
                 log.debug("Batch-fetched %d frame nodes for file %r", len(all_screen_frame_ids), file_key)
             except Exception as exc:
                 log.warning("Failed to batch-fetch frame children for %r: %s — raw_frames will be omitted", file_key, exc)
