@@ -318,6 +318,32 @@ async def pull_file(
     else:
         page_nodes_map = {}  # populated lazily below
 
+    # Batch-fetch direct children of ALL screen frames across ALL pages in one get_nodes call.
+    # This is O(1) per file instead of O(pages), which makes schema-stale backfills fast.
+    # Only done in parallel mode (max_pages=None) where we already have all page nodes.
+    # In sequential mode, fall back to per-page get_nodes inside the loop.
+    all_frame_docs: dict[str, dict] = {}
+    if max_pages is None:
+        all_screen_frame_ids: list[str] = []
+        for stub_id, pn in page_nodes_map.items():
+            if isinstance(pn, Exception):
+                continue
+            new_hash = compute_page_hash(pn)
+            stored_hash = state.get_page_hash(file_key, stub_id)
+            if not force and not schema_stale and stored_hash == new_hash:
+                continue  # page will be skipped — don't waste payload on its frames
+            for section in pn.get("children", []):
+                if section.get("type") == "SECTION":
+                    for child in section.get("children", []):
+                        if child.get("type") == "FRAME":
+                            all_screen_frame_ids.append(child["id"])
+        if all_screen_frame_ids:
+            try:
+                all_frame_docs = await client.get_nodes(file_key, all_screen_frame_ids, depth=1)
+                log.debug("Batch-fetched %d frame nodes for file %r", len(all_screen_frame_ids), file_key)
+            except Exception as exc:
+                log.warning("Failed to batch-fetch frame children for %r: %s — raw_frames will be omitted", file_key, exc)
+
     for page_idx, page_stub in enumerate(page_stubs, 1):
         page_node_id: str = page_stub.id
         page_name: str = page_stub.name
@@ -382,19 +408,30 @@ async def pull_file(
             screen_sections = [s for s in page.sections if not s.is_component_library]
             component_sections = [s for s in page.sections if s.is_component_library]
 
-            # Batch-fetch direct children of all screen frames to compute raw_frames.
-            # One API call per changed page; returns sparse dict (only frames with raw children).
+            # Compute raw_frames from pre-fetched batch (parallel mode) or per-page call (sequential).
             raw_frames: dict[str, FrameComposition] | None = None
             screen_frame_ids = [f.node_id for s in screen_sections for f in s.frames]
             if screen_frame_ids:
-                try:
-                    frame_docs = await client.get_nodes(file_key, screen_frame_ids, depth=1)
-                    raw_frames = _compute_raw_frames(frame_docs)
-                except Exception as exc:
-                    log.warning(
-                        "Failed to fetch frame children for page %r (%s): %s — raw_frames will be omitted",
-                        page_name, page_node_id, exc,
-                    )
+                if max_pages is None:
+                    # Use the file-level batch already fetched above — O(1) lookup, no extra API call.
+                    try:
+                        page_frame_docs = {k: v for k, v in all_frame_docs.items() if k in set(screen_frame_ids)}
+                        raw_frames = _compute_raw_frames(page_frame_docs) if page_frame_docs else None
+                    except Exception as exc:
+                        log.warning(
+                            "Failed to compute raw_frames for page %r (%s): %s — raw_frames will be omitted",
+                            page_name, page_node_id, exc,
+                        )
+                else:
+                    # Sequential mode: must fetch per-page (we don't have all page nodes upfront).
+                    try:
+                        frame_docs = await client.get_nodes(file_key, screen_frame_ids, depth=1)
+                        raw_frames = _compute_raw_frames(frame_docs)
+                    except Exception as exc:
+                        log.warning(
+                            "Failed to fetch frame children for page %r (%s): %s — raw_frames will be omitted",
+                            page_name, page_node_id, exc,
+                        )
 
             written_screen_rel: str | None = None
             if screen_sections:
