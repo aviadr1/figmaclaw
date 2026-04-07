@@ -23,7 +23,7 @@ Enrich a figmaclaw `.md` file with:
 ### Step 1 — Check what needs enrichment
 
 ```bash
-figmaclaw page-tree <file_path> --json
+figmaclaw inspect <file_path> --json
 ```
 
 Check `needs_enrichment` in the JSON output. If false, skip this file.
@@ -39,7 +39,7 @@ Note the full body verbatim — you will preserve and adapt it.
 ### Step 3 — Download screenshots
 
 ```bash
-figmaclaw screenshots <file_path> --pending
+figmaclaw screenshots <file_path> --stale
 ```
 
 Downloads PNGs to `.figma-cache/screenshots/<file_key>/` for frames without descriptions.
@@ -121,7 +121,7 @@ This snapshots the current page hash and frame hashes into frontmatter, so the s
 ### Step 8 — Verify
 
 ```bash
-figmaclaw page-tree <file_path> --json
+figmaclaw inspect <file_path> --json
 ```
 
 Check `needs_enrichment` is false.

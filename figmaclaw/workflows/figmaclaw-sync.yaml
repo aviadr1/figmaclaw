@@ -1,12 +1,13 @@
-# Installed by: figmaclaw init (or figmaclaw workflows upgrade)
-# Upgrade after tool update: figmaclaw workflows upgrade
-# Logic lives in: aviadr1/figmaclaw/.github/workflows/sync.yml
+# SOURCE OF TRUTH: aviadr1/figmaclaw
+# All logic lives in aviadr1/figmaclaw/.github/workflows/ (sync.yml, claude-run.yml)
+# Make changes there, not here. This file just calls those reusable workflows.
+# To upgrade: figmaclaw workflows upgrade
 
 name: figmaclaw — nightly sync
 
 on:
   schedule:
-    - cron: '0 2 * * *'  # 2am UTC daily
+    - cron: '0 * * * *'  # every hour
   workflow_dispatch:
     inputs:
       force:
@@ -31,7 +32,44 @@ jobs:
     with:
       force: ${{ github.event.inputs.force || 'false' }}
       since: ${{ github.event.inputs.since || '3m' }}
-      # vars.FIGMA_TEAM_ID is a repo variable (not secret) — must be passed as input
       figma_team_id: ${{ vars.FIGMA_TEAM_ID }}
     secrets:
+      FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+
+  # Whole-page enrichment: small pages (≤80 frames), many per run
+  # Sorted smallest-first for throughput. ~38 pages/hour observed.
+  enrich:
+    needs: sync
+    if: success()
+    uses: aviadr1/figmaclaw/.github/workflows/claude-run.yml@main
+    with:
+      target: figma/
+      model: claude-sonnet-4-6
+      max_turns: 80
+      needs_enrichment: true
+      max_frames: 80
+      max_files: 0
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+
+  # Section-mode enrichment: large pages (>80 frames)
+  # One section per Claude invocation, committed independently.
+  # Resumable: timeout loses at most 1 section of work.
+  # Processes multiple pages per run (unlimited).
+  # Re-enrichment: only changed sections are re-processed.
+  enrich-large:
+    needs: sync
+    if: success()
+    uses: aviadr1/figmaclaw/.github/workflows/claude-run.yml@main
+    with:
+      target: figma/
+      model: claude-sonnet-4-6
+      max_turns: 80
+      needs_enrichment: true
+      min_frames: 81
+      max_files: 0
+      section_mode: true
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}

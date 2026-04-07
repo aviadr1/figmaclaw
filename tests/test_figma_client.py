@@ -81,7 +81,7 @@ async def test_get_file_meta_uses_x_figma_token_header():
 
 @pytest.mark.asyncio
 async def test_get_file_meta_returns_version_and_pages():
-    """INVARIANT: get_file_meta returns dict with version, lastModified, document.children."""
+    """INVARIANT: get_file_meta returns a typed FileMetaResponse (figmaclaw#11)."""
     with respx.mock:
         respx.get(f"https://api.figma.com/v1/files/{FILE_KEY}").mock(
             return_value=httpx.Response(200, json=_meta_response())
@@ -89,12 +89,12 @@ async def test_get_file_meta_returns_version_and_pages():
         async with FigmaClient(api_key="figd_test") as client:
             meta = await client.get_file_meta(FILE_KEY)
 
-    assert meta["version"] == "123456"
-    assert meta["lastModified"] == "2026-03-31T11:01:12Z"
-    assert meta["name"] == "Web App"
-    pages = meta["document"]["children"]
+    assert meta.version == "123456"
+    assert meta.lastModified == "2026-03-31T11:01:12Z"
+    assert meta.name == "Web App"
+    pages = meta.document.children
     assert len(pages) == 2
-    assert pages[0]["type"] == "CANVAS"
+    assert pages[0].type == "CANVAS"
 
 
 @pytest.mark.asyncio
@@ -160,7 +160,7 @@ async def test_retries_on_429():
                 meta = await client.get_file_meta(FILE_KEY)
 
     assert call_count == 3
-    assert meta["version"] == "123456"
+    assert meta.version == "123456"
 
 
 @pytest.mark.asyncio
@@ -183,7 +183,60 @@ async def test_retries_on_5xx():
                 meta = await client.get_file_meta(FILE_KEY)
 
     assert call_count == 2
-    assert meta["version"] == "123456"
+    assert meta.version == "123456"
+
+
+@pytest.mark.asyncio
+async def test_retries_on_connection_drop():
+    """INVARIANT: Client retries on RemoteProtocolError (connection drops mid-transfer).
+
+    Large file tree downloads sometimes fail with 'peer closed connection without
+    sending complete message body'. The client should retry instead of failing.
+    """
+    import httpcore
+    call_count = 0
+
+    with respx.mock:
+        def conn_drop_then_ok(request: httpx.Request) -> httpx.Response:
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise httpx.RemoteProtocolError(
+                    "peer closed connection without sending complete message body",
+                )
+            return httpx.Response(200, json=_meta_response())
+
+        respx.get(f"https://api.figma.com/v1/files/{FILE_KEY}").mock(side_effect=conn_drop_then_ok)
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            async with FigmaClient(api_key="figd_test") as client:
+                meta = await client.get_file_meta(FILE_KEY)
+
+    assert call_count == 3
+    assert meta.version == "123456"
+
+
+@pytest.mark.asyncio
+async def test_retries_on_read_timeout():
+    """INVARIANT: Client retries on ReadTimeout (slow responses that time out)."""
+    call_count = 0
+
+    with respx.mock:
+        def timeout_then_ok(request: httpx.Request) -> httpx.Response:
+            nonlocal call_count
+            call_count += 1
+            if call_count < 2:
+                raise httpx.ReadTimeout("read timeout")
+            return httpx.Response(200, json=_meta_response())
+
+        respx.get(f"https://api.figma.com/v1/files/{FILE_KEY}").mock(side_effect=timeout_then_ok)
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            async with FigmaClient(api_key="figd_test") as client:
+                meta = await client.get_file_meta(FILE_KEY)
+
+    assert call_count == 2
+    assert meta.version == "123456"
 
 
 @pytest.mark.asyncio
@@ -218,8 +271,8 @@ async def test_list_team_projects_returns_projects():
             projects = await client.list_team_projects(team_id)
 
     assert len(projects) == 2
-    assert projects[0]["name"] == "Web"
-    assert projects[1]["name"] == "Mobile"
+    assert projects[0].name == "Web"
+    assert projects[1].name == "Mobile"
 
 
 @pytest.mark.asyncio
@@ -239,8 +292,8 @@ async def test_list_project_files_returns_files():
             files = await client.list_project_files(project_id)
 
     assert len(files) == 1
-    assert files[0]["key"] == "abc123"
-    assert files[0]["name"] == "Web App"
+    assert files[0].key == "abc123"
+    assert files[0].name == "Web App"
 
 
 @pytest.mark.asyncio

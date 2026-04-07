@@ -9,6 +9,7 @@ from pathlib import Path
 
 import click
 
+from figmaclaw.figma_api_models import FileSummary, ProjectSummary
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_sync_state import FigmaSyncState
 from figmaclaw.figma_utils import parse_since
@@ -69,9 +70,9 @@ async def _listing_prefilter(
     projects = await client.list_team_projects(team_id)
 
     # Fetch all project file listings concurrently
-    async def _list_project(project: dict) -> list[dict]:
+    async def _list_project(project: ProjectSummary) -> list[FileSummary]:
         try:
-            return await client.list_project_files(str(project.get("id", "")))
+            return await client.list_project_files(str(project.id))
         except Exception:
             return []
 
@@ -83,9 +84,9 @@ async def _listing_prefilter(
 
     for files in all_file_lists:
         for file_info in files:
-            file_key: str = file_info.get("key", "")
-            file_name: str = file_info.get("name", "")
-            last_modified: str = file_info.get("last_modified", "")
+            file_key = file_info.key
+            file_name = file_info.name
+            last_modified = file_info.last_modified
             if not file_key:
                 continue
 

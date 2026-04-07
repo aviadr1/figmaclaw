@@ -98,16 +98,19 @@ component_set_keys: {avatar: 9dd5c39605e9713741b26b5020fb51b67103f06f}
 
 - `frames`, `flows`, `enriched_frame_hashes`, `component_set_keys`, and `raw_frames` **must** be single-line YAML flow style — NOT block-indented. PyYAML requires `width=2**20` in `yaml.dump` to prevent wrapping long values.
 - `page_hash` is **NOT** stored in `.md` files — it lives only in `.figma-sync/manifest.json`
+- `frames` list contains node IDs only — descriptions live in the body, not frontmatter
+- Node IDs containing `:` (e.g. `4713:6926`) are valid YAML values — quoted in lists
 - `raw_frames` is **sparse** — frames absent from the dict are fully componentized (zero raw children). Do not write `raw_frames: {}` for a clean page; omit the field entirely.
 - `component_set_keys` is omitted when empty — only written when the Figma `/component_sets` API returns at least one published set for that page.
 - `enriched_*` fields are written by `mark-enriched`, never by `pull`. `raw_frames` and `component_set_keys` are written by `pull`, never by `mark-enriched`. The two passes are independent — adding `raw_frames` to a file does NOT trigger re-enrichment.
 
 ### Editing frontmatter
 
-- **Do:** Use `figmaclaw set-frames` to merge descriptions into `frames:`
-- **Do:** Edit `frames:` directly in the file if needed
-- **Don't:** Edit other frontmatter fields manually — they are managed by figmaclaw
+- **Do:** Use `figmaclaw set-flows` to update flows in frontmatter
+- **Do:** Use `figmaclaw mark-enriched` to snapshot enrichment state after writing body
+- **Don't:** Edit `enriched_*` fields manually — they are managed by `mark-enriched`
 - **Don't:** Add `page_hash` or any legacy `figmaclaw:` nested block
+- **Don't:** Put descriptions in frontmatter — they belong in the body only
 
 ---
 
@@ -166,9 +169,9 @@ flowchart LR
 
 ### What the body is NOT
 
-- The body description column in the table is a **display copy** of `frames[node_id]` from frontmatter. It is not the source of truth.
-- Agents and tooling **must never parse the description column** to get frame descriptions — read `frames` from frontmatter.
-- Section intros and page summary are **only in the body** — they are not stored in frontmatter. See known limitations below.
+- The body description column is **LLM-authored prose** — it is not stored in frontmatter. Frontmatter `frames` is just a list of node IDs.
+- Agents and tooling **must never parse the description column** for structured data — use frontmatter for node IDs and enrichment state.
+- Section intros and page summary are **only in the body** — they are not stored in frontmatter.
 
 ---
 
@@ -237,16 +240,19 @@ for section in sections:
         # frame.description does NOT exist — read from fm.frames instead
 ```
 
-### Writing descriptions
+### Enrichment flow
+
+Descriptions live in the body only. The enrichment workflow:
 
 ```bash
-# Always use stdin heredoc — never --frames for multi-value JSON with apostrophes
-figmaclaw set-frames figma/<file>/pages/<page>.md << 'EOF'
-{
-  "4713:6926": "Prepare screen showing camera preview and a pink Go Live button.",
-  "4713:7191": "Countdown screen showing 'LIVE IN 3' in large gradient text."
-}
+figmaclaw inspect <file> --json              # check needs_enrichment
+figmaclaw screenshots <file> --stale         # download only changed frames
+# LLM reads screenshots, writes descriptions
+figmaclaw write-body <file> <<'EOF'          # write prose body
+... page summary, section intros, frame tables, Mermaid ...
 EOF
+figmaclaw set-flows <file> --flows '[...]'   # set inferred flows
+figmaclaw mark-enriched <file>               # snapshot hashes
 ```
 
 ---

@@ -34,9 +34,9 @@ When the file **already exists**: update ONLY the frontmatter using `python-fron
 
 When the file **doesn't exist**: write skeleton via `write_new_page()` as normal.
 
-### 2. `figmaclaw/commands/set_frames.py`
+### 2. `figmaclaw/commands/set_flows.py`
 
-Frontmatter only — body is never touched by code. The LLM uses `replace-body` to update body prose.
+Frontmatter only — body is never touched by code. The LLM uses `write-body` to update body prose.
 
 ### 3. `figmaclaw/pull_logic.py`
 
@@ -134,7 +134,7 @@ No `str.partition("---")`, no regex splitting, no hand-parsing. The library hand
 | File | What to change |
 |---|---|
 | `figmaclaw/commands/enrich.py` | Rename to `sync.py`. Line 133: `write_page()` — guard with file-exists check, use `python-frontmatter` for existing files |
-| `figmaclaw/commands/set_frames.py` | Add body table row updates after frontmatter update |
+| `figmaclaw/commands/set_flows.py` | Add body table row updates after frontmatter update |
 | `figmaclaw/pull_logic.py` | Line 295: same `write_page()` bug — guard with file-exists check |
 | `figmaclaw/figma_render.py` | Rename `render_page()` to `scaffold_page()`, add print/return mode |
 | `figmaclaw/figma_parse.py` | Already uses `python-frontmatter` correctly — reference implementation |

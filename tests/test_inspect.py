@@ -1,13 +1,11 @@
-"""Tests for commands/page_tree.py.
+"""Tests for commands/inspect.py.
 
 INVARIANTS:
-- page-tree --json outputs a dict with the expected top-level schema fields
-- page-tree --json includes all sections and frames from the .md file
-- page-tree exits with code 1 when any frame is missing a description
-- page-tree exits with code 0 when all frames have descriptions
-- page-tree --missing-only includes only frames without descriptions
-- page-tree --json --missing-only omits sections where all frames are described
-- page-tree exits with code 2 for a file with no figmaclaw frontmatter
+- inspect --json outputs a dict with the expected top-level schema fields
+- inspect --json includes all sections and frames from the .md file
+- inspect always exits 0 on success (enrichment status is in JSON, not exit code)
+- inspect --needs-enrichment shows only frames/pages that need enrichment
+- inspect exits with code 2 for a file with no figmaclaw frontmatter
 """
 
 from __future__ import annotations
@@ -61,13 +59,13 @@ def _write_md(tmp_path: Path, page: FigmaPage) -> Path:
     return p
 
 
-def test_page_tree_json_output_has_expected_schema(tmp_path: Path) -> None:
+def test_inspect_json_output_has_expected_schema(tmp_path: Path) -> None:
     """INVARIANT: --json output is a dict with file_key, page_node_id, total_frames, missing_descriptions, sections."""
     md_path = _write_md(tmp_path, _make_page())
     runner = CliRunner()
     result = runner.invoke(cli, [
         "--repo-dir", str(tmp_path),
-        "page-tree", str(md_path), "--json",
+        "inspect", str(md_path), "--json",
     ])
 
     data = json.loads(result.output)
@@ -79,13 +77,13 @@ def test_page_tree_json_output_has_expected_schema(tmp_path: Path) -> None:
     assert isinstance(data["sections"], list)
 
 
-def test_page_tree_json_carries_file_key_and_page_node_id(tmp_path: Path) -> None:
+def test_inspect_json_carries_file_key_and_page_node_id(tmp_path: Path) -> None:
     """INVARIANT: --json output carries the file_key and page_node_id from frontmatter."""
     md_path = _write_md(tmp_path, _make_page())
     runner = CliRunner()
     result = runner.invoke(cli, [
         "--repo-dir", str(tmp_path),
-        "page-tree", str(md_path), "--json",
+        "inspect", str(md_path), "--json",
     ])
 
     data = json.loads(result.output)
@@ -93,13 +91,13 @@ def test_page_tree_json_carries_file_key_and_page_node_id(tmp_path: Path) -> Non
     assert data["page_node_id"] == "7741:45837"
 
 
-def test_page_tree_json_includes_all_frames(tmp_path: Path) -> None:
+def test_inspect_json_includes_all_frames(tmp_path: Path) -> None:
     """INVARIANT: --json output includes every frame from the .md file."""
     md_path = _write_md(tmp_path, _make_page())
     runner = CliRunner()
     result = runner.invoke(cli, [
         "--repo-dir", str(tmp_path),
-        "page-tree", str(md_path), "--json",
+        "inspect", str(md_path), "--json",
     ])
 
     data = json.loads(result.output)
@@ -108,13 +106,13 @@ def test_page_tree_json_includes_all_frames(tmp_path: Path) -> None:
     assert node_ids == {"11:1", "11:2"}
 
 
-def test_page_tree_exit_0_with_placeholders(tmp_path: Path) -> None:
-    """INVARIANT: page-tree always exits 0 on success. Placeholder count is in JSON, not exit code."""
+def test_inspect_exit_0_with_placeholders(tmp_path: Path) -> None:
+    """INVARIANT: inspect always exits 0 on success. Placeholder count is in JSON, not exit code."""
     md_path = _write_md(tmp_path, _make_page(with_descriptions=False))
     runner = CliRunner()
     result = runner.invoke(cli, [
         "--repo-dir", str(tmp_path),
-        "page-tree", str(md_path), "--json",
+        "inspect", str(md_path), "--json",
     ])
 
     assert result.exit_code == 0
@@ -123,13 +121,13 @@ def test_page_tree_exit_0_with_placeholders(tmp_path: Path) -> None:
     assert data["needs_enrichment"] is True
 
 
-def test_page_tree_exit_0_when_all_described(tmp_path: Path) -> None:
-    """INVARIANT: page-tree exits 0 with zero missing descriptions when all frames described."""
+def test_inspect_exit_0_when_all_described(tmp_path: Path) -> None:
+    """INVARIANT: inspect exits 0 with zero missing descriptions when all frames described."""
     md_path = _write_md(tmp_path, _make_page(with_descriptions=True))
     runner = CliRunner()
     result = runner.invoke(cli, [
         "--repo-dir", str(tmp_path),
-        "page-tree", str(md_path), "--json",
+        "inspect", str(md_path), "--json",
     ])
 
     assert result.exit_code == 0
@@ -137,8 +135,8 @@ def test_page_tree_exit_0_when_all_described(tmp_path: Path) -> None:
     assert data["missing_descriptions"] == 0
 
 
-def test_page_tree_shows_needs_enrichment_for_unenriched_page(tmp_path: Path) -> None:
-    """INVARIANT: page-tree JSON shows needs_enrichment=true when page has no enriched_hash."""
+def test_inspect_shows_needs_enrichment_for_unenriched_page(tmp_path: Path) -> None:
+    """INVARIANT: inspect JSON shows needs_enrichment=true when page has no enriched_hash."""
     frames = [
         FigmaFrame(node_id="11:1", name="welcome", description=""),
         FigmaFrame(node_id="11:2", name="permissions", description=""),
@@ -161,7 +159,7 @@ def test_page_tree_shows_needs_enrichment_for_unenriched_page(tmp_path: Path) ->
     runner = CliRunner()
     result = runner.invoke(cli, [
         "--repo-dir", str(tmp_path),
-        "page-tree", str(md_path), "--json",
+        "inspect", str(md_path), "--json",
     ])
 
     assert result.exit_code == 0
@@ -169,15 +167,65 @@ def test_page_tree_shows_needs_enrichment_for_unenriched_page(tmp_path: Path) ->
     assert data["needs_enrichment"] is True  # no enriched_hash = needs enrichment
 
 
-def test_page_tree_exit_code_2_for_non_figmaclaw_file(tmp_path: Path) -> None:
-    """INVARIANT: page-tree exits with code 2 when the file has no figmaclaw frontmatter."""
+def test_inspect_json_per_section_pending_counts(tmp_path: Path) -> None:
+    """INVARIANT: --json output includes per-section pending_frames counts."""
+    md_path = _write_md(tmp_path, _make_page(with_descriptions=False))
+    runner = CliRunner()
+    result = runner.invoke(cli, [
+        "--repo-dir", str(tmp_path),
+        "inspect", str(md_path), "--json",
+    ])
+
+    data = json.loads(result.output)
+    assert "total_sections" in data
+    assert "pending_sections" in data
+    assert data["total_sections"] == 1
+    assert data["pending_sections"] == 1  # section has placeholders
+    section = data["sections"][0]
+    assert "pending_frames" in section
+    assert "stale_frames" in section
+    assert "total_frames" in section
+    assert section["pending_frames"] == 2  # both frames have (no description yet)
+    assert section["total_frames"] == 2
+
+
+def test_inspect_json_per_section_zero_pending_when_described(tmp_path: Path) -> None:
+    """INVARIANT: described sections have pending_frames=0."""
+    md_path = _write_md(tmp_path, _make_page(with_descriptions=True))
+    runner = CliRunner()
+    result = runner.invoke(cli, [
+        "--repo-dir", str(tmp_path),
+        "inspect", str(md_path), "--json",
+    ])
+
+    data = json.loads(result.output)
+    assert data["pending_sections"] == 0
+    assert data["sections"][0]["pending_frames"] == 0
+
+
+def test_inspect_json_section_threshold(tmp_path: Path) -> None:
+    """INVARIANT: section_threshold is included in --json output."""
+    md_path = _write_md(tmp_path, _make_page())
+    runner = CliRunner()
+    result = runner.invoke(cli, [
+        "--repo-dir", str(tmp_path),
+        "inspect", str(md_path), "--json",
+    ])
+
+    data = json.loads(result.output)
+    assert "section_threshold" in data
+    assert data["section_threshold"] == 80
+
+
+def test_inspect_exit_code_2_for_non_figmaclaw_file(tmp_path: Path) -> None:
+    """INVARIANT: inspect exits with code 2 when the file has no figmaclaw frontmatter."""
     md_path = tmp_path / "plain.md"
     md_path.write_text("# Plain markdown\n\nNo frontmatter here.\n")
 
     runner = CliRunner()
     result = runner.invoke(cli, [
         "--repo-dir", str(tmp_path),
-        "page-tree", str(md_path),
+        "inspect", str(md_path),
     ])
 
     assert result.exit_code == 2

@@ -1,0 +1,45 @@
+# Installed by: figmaclaw init (or figmaclaw workflows upgrade)
+# Upgrade after tool update: figmaclaw workflows upgrade
+# Logic lives in: aviadr1/figmaclaw/.github/workflows/manage-webhooks.yml
+
+name: figmaclaw — manage Figma webhooks
+
+# Idempotent webhook management for tracked Figma files.
+# Run 'validate' on a schedule or on demand to check the invariant:
+#     exactly ONE active webhook per tracked file → endpoint
+# Run 'sync' to repair drift (missing or duplicate webhooks).
+
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        description: 'Command to run'
+        required: true
+        type: choice
+        default: 'validate'
+        options:
+          - sync
+          - validate
+          - register
+          - list
+          - delete-all
+      endpoint:
+        description: 'Webhook delivery endpoint URL'
+        required: true
+        type: string
+      dry_run:
+        description: 'Dry run (sync/register only)'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  manage:
+    uses: aviadr1/figmaclaw/.github/workflows/manage-webhooks.yml@main
+    with:
+      command: ${{ inputs.command }}
+      endpoint: ${{ inputs.endpoint }}
+      dry_run: ${{ inputs.dry_run }}
+    secrets:
+      FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+      FIGMA_WEBHOOK_SECRET: ${{ secrets.FIGMA_WEBHOOK_SECRET }}

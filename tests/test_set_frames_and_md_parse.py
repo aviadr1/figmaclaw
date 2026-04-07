@@ -12,7 +12,7 @@ import textwrap
 
 import pytest
 
-from figmaclaw.figma_md_parse import parse_sections
+from figmaclaw.figma_md_parse import parse_sections, section_line_ranges
 from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection
 from figmaclaw.figma_render import scaffold_page
 from figmaclaw.figma_parse import parse_frontmatter
@@ -138,3 +138,197 @@ def test_parse_sections_robust_to_any_column_header_name():
     assert len(sections[0].frames) == 1
     assert sections[0].frames[0].node_id == "11:1"
     assert sections[0].frames[0].name == "Frame Name"
+
+
+# --- section_line_ranges ---
+
+
+_MULTI_SECTION_MD = """\
+---
+file_key: abc
+page_node_id: '1:1'
+---
+
+# File / Page
+
+[Open in Figma](https://figma.com)
+
+Page summary text.
+
+## Auth (`10:1`)
+
+Auth section intro.
+
+| Screen | Node ID | Description |
+|--------|---------|-------------|
+| Login | `11:1` | login desc |
+| Signup | `11:2` | signup desc |
+
+## Dashboard (`20:1`)
+
+Dashboard intro.
+
+| Screen | Node ID | Description |
+|--------|---------|-------------|
+| Home | `21:1` | home desc |
+
+## Screen flows
+
+```mermaid
+flowchart LR
+    A["Login"] --> B["Home"]
+```
+"""
+
+
+def test_section_line_ranges_returns_all_sections():
+    """section_line_ranges returns one entry per ## heading, including Screen flows."""
+    ranges = section_line_ranges(_MULTI_SECTION_MD)
+    names = [s.name for s, _, _ in ranges]
+    assert "Auth" in names
+    assert "Dashboard" in names
+    assert "Screen flows" in names
+    assert len(ranges) == 3
+
+
+def test_section_line_ranges_boundaries():
+    """start_line is the ## heading, end_line is the next ## heading."""
+    ranges = section_line_ranges(_MULTI_SECTION_MD)
+    lines = _MULTI_SECTION_MD.splitlines()
+
+    auth_section, auth_start, auth_end = ranges[0]
+    assert auth_section.name == "Auth"
+    assert lines[auth_start].startswith("## Auth")
+    assert lines[auth_end].startswith("## Dashboard")
+
+    dash_section, dash_start, dash_end = ranges[1]
+    assert dash_section.name == "Dashboard"
+    assert lines[dash_start].startswith("## Dashboard")
+    assert lines[dash_end].startswith("## Screen flows")
+
+
+def test_section_line_ranges_last_section():
+    """Last section's end_line is len(lines)."""
+    ranges = section_line_ranges(_MULTI_SECTION_MD)
+    _, _, last_end = ranges[-1]
+    assert last_end == len(_MULTI_SECTION_MD.splitlines())
+
+
+def test_section_line_ranges_includes_frames():
+    """Sections have their frames parsed from table rows."""
+    ranges = section_line_ranges(_MULTI_SECTION_MD)
+    auth_section = ranges[0][0]
+    assert len(auth_section.frames) == 2
+    assert auth_section.frames[0].node_id == "11:1"
+
+    dash_section = ranges[1][0]
+    assert len(dash_section.frames) == 1
+    assert dash_section.frames[0].node_id == "21:1"
+
+    # Screen flows has no frame table
+    flows_section = ranges[2][0]
+    assert len(flows_section.frames) == 0
+
+
+def test_section_line_ranges_screen_flows_has_empty_node_id():
+    """Screen flows heading has no (node_id) — its node_id should be empty."""
+    ranges = section_line_ranges(_MULTI_SECTION_MD)
+    flows = [s for s, _, _ in ranges if s.name == "Screen flows"]
+    assert len(flows) == 1
+    assert flows[0].node_id == ""
+
+
+def test_parse_sections_still_skips_screen_flows():
+    """parse_sections (which delegates to section_line_ranges) still skips Screen flows."""
+    sections = parse_sections(_MULTI_SECTION_MD)
+    names = [s.name for s in sections]
+    assert "Screen flows" not in names
+    assert len(sections) == 2
+
+
+# --- figmaclaw#25 regression: empty-name sections ---
+
+
+_LEGACY_EMPTY_NAME_SECTION_MD = """\
+---
+file_key: abc
+page_node_id: '1:1'
+---
+
+# File / Page
+
+## Normal Section (`10:1`)
+
+| Screen | Node ID | Description |
+|--------|---------|-------------|
+| Welcome | `11:1` | described |
+
+##  (`20:1`)
+
+| Screen | Node ID | Description |
+|--------|---------|-------------|
+| Hidden frame | `21:1` | (no description yet) |
+| Another | `21:2` | (no description yet) |
+
+## Screen Flow
+"""
+
+
+def test_empty_name_section_heading_preserves_node_id():
+    """figmaclaw#25: a legacy file with ``##  (`20:1`)`` — two spaces, no name —
+    must parse as a real frame section with node_id="20:1", NOT be silently
+    dropped as a prose section.
+    """
+    sections = parse_sections(_LEGACY_EMPTY_NAME_SECTION_MD)
+    by_id = {s.node_id: s for s in sections}
+    assert "20:1" in by_id, (
+        "Empty-name section was dropped — this is the figmaclaw#25 regression"
+    )
+
+
+def test_empty_name_section_frames_are_enumerable():
+    """Frames inside an empty-name section must be visible to downstream
+    enrichment code — this is what makes pending_sections return the right
+    count instead of 0.
+    """
+    sections = parse_sections(_LEGACY_EMPTY_NAME_SECTION_MD)
+    by_id = {s.node_id: s for s in sections}
+    section = by_id["20:1"]
+    frame_ids = {f.node_id for f in section.frames}
+    assert frame_ids == {"21:1", "21:2"}
+
+
+def test_empty_name_section_normalizes_to_unnamed():
+    """Legacy empty-name sections parse with the canonical (Unnamed) placeholder."""
+    sections = parse_sections(_LEGACY_EMPTY_NAME_SECTION_MD)
+    by_id = {s.node_id: s for s in sections}
+    assert by_id["20:1"].name == "(Unnamed)"
+
+
+def test_render_then_parse_preserves_all_frames_even_with_empty_section_name():
+    """End-to-end: ingest a Figma page with an empty-name section, render it
+    via scaffold_page, then parse it back. Every frame must survive.
+    """
+    frames_in_empty = [
+        FigmaFrame(node_id=f"21:{i}", name=f"Frame {i}", description="")
+        for i in range(1, 6)
+    ]
+    frames_in_named = [
+        FigmaFrame(node_id="11:1", name="Welcome", description=""),
+    ]
+    sections = [
+        FigmaSection(node_id="10:1", name="Named Section", frames=frames_in_named),
+        FigmaSection(node_id="20:1", name="", frames=frames_in_empty),  # empty name!
+    ]
+    md = scaffold_page(_make_page(sections=sections), _make_entry())
+
+    parsed = parse_sections(md)
+    by_id = {s.node_id: s for s in parsed}
+    assert set(by_id.keys()) == {"10:1", "20:1"}
+    assert len(by_id["10:1"].frames) == 1
+    assert len(by_id["20:1"].frames) == 5
+    # And the empty section heading renders with the canonical (Unnamed)
+    # placeholder so later reads don't rely on parser tolerance of two-space
+    # legacy headings.
+    assert "## (Unnamed) (`20:1`)" in md
+    assert "##  (`20:1`)" not in md  # the legacy two-space form is NOT emitted

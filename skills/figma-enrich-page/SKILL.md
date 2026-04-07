@@ -11,8 +11,8 @@ Enrich a figmaclaw `.md` file with frame descriptions, page summary, section int
 ## Quick flow
 
 ```bash
-figmaclaw page-tree <file> --json           # check needs_enrichment
-figmaclaw screenshots <file> --pending      # download PNGs for pending frames
+figmaclaw inspect <file> --json           # check needs_enrichment
+figmaclaw screenshots <file> --stale      # download PNGs for pending frames
 # LLM describes frames from screenshots
 figmaclaw write-body <file> <<'EOF'         # write body prose
 ... descriptions, summary, intros, Mermaid ...

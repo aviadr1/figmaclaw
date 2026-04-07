@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
+from figmaclaw.figma_api_models import FileSummary, ProjectSummary
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_sync_state import FigmaSyncState
 from figmaclaw.main import cli
@@ -28,12 +29,14 @@ FILE_KEY_A = "aaaabbbbcccc"
 FILE_KEY_B = "ddddeeeefffg"
 
 
-def _project(project_id: str = "proj1", name: str = "Web") -> dict:
-    return {"id": project_id, "name": name}
+def _project(project_id: str = "proj1", name: str = "Web") -> ProjectSummary:
+    return ProjectSummary(id=project_id, name=name)
 
 
-def _file(key: str, name: str, last_modified: str = "2026-01-15T10:00:00Z") -> dict:
-    return {"key": key, "name": name, "last_modified": last_modified}
+def _file(
+    key: str, name: str, last_modified: str = "2026-01-15T10:00:00Z",
+) -> FileSummary:
+    return FileSummary(key=key, name=name, last_modified=last_modified)
 
 
 @pytest.fixture()

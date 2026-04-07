@@ -1,0 +1,197 @@
+# Reusable workflow — called by host repos via:
+#   uses: aviadr1/figmaclaw/.github/workflows/claude-run.yml@main
+#
+# Runs `figmaclaw claude-run` to enrich figma pages with LLM descriptions.
+# All logic is in the figmaclaw CLI — no script path resolution needed.
+
+on:
+  workflow_call:
+    inputs:
+      target:
+        required: true
+        type: string
+        description: 'File or directory to process (e.g. figma/ or figma/web-app/pages/foo.md)'
+      prompt_file:
+        required: false
+        type: string
+        default: ''
+        description: 'Path to a prompt template file inside the repo (default: bundled figma-batch-enrich.md)'
+      model:
+        required: false
+        type: string
+        default: 'claude-sonnet-4-6'
+      max_turns:
+        required: false
+        type: number
+        default: 50
+      changed_only:
+        required: false
+        type: boolean
+        default: false
+      needs_enrichment:
+        required: false
+        type: boolean
+        default: false
+      max_files:
+        required: false
+        type: number
+        default: 3
+      min_frames:
+        required: false
+        type: number
+        default: 0
+        description: 'Only process files with at least N frames'
+      max_frames:
+        required: false
+        type: number
+        default: 0
+        description: 'Only process files with at most N frames (0 = no limit)'
+      section_mode:
+        required: false
+        type: boolean
+        default: false
+        description: 'For large pages, enrich one section at a time'
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+      FIGMA_API_KEY:
+        required: false
+
+concurrency:
+  group: claude-run-${{ github.ref }}-${{ inputs.target }}-${{ inputs.section_mode && 'sections' || 'bulk' }}
+  cancel-in-progress: true
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    permissions:
+      contents: write
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 2
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install figmaclaw
+        run: pip install uv && uv tool install 'git+https://github.com/aviadr1/figmaclaw'
+
+      - name: Configure git
+        run: |
+          git config user.name  "claude-run[bot]"
+          git config user.email "claude-run[bot]@users.noreply.github.com"
+
+      - name: Run claude-run
+        id: claude
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          FIGMA_API_KEY:           ${{ secrets.FIGMA_API_KEY }}
+          FIGMA_TEAM_ID:     ${{ vars.FIGMA_TEAM_ID }}
+        run: |
+          set -euo pipefail
+
+          # Build CLI flags
+          FLAGS=""
+          if [ "${{ inputs.changed_only }}" = "true" ]; then
+            FLAGS="$FLAGS --changed-only"
+          fi
+          if [ "${{ inputs.needs_enrichment }}" = "true" ]; then
+            FLAGS="$FLAGS --needs-enrichment"
+          fi
+          if [ "${{ inputs.max_files }}" != "0" ]; then
+            FLAGS="$FLAGS --max-files ${{ inputs.max_files }}"
+          fi
+          if [ "${{ inputs.min_frames }}" != "0" ]; then
+            FLAGS="$FLAGS --min-frames ${{ inputs.min_frames }}"
+          fi
+          if [ "${{ inputs.max_frames }}" != "0" ]; then
+            FLAGS="$FLAGS --max-frames ${{ inputs.max_frames }}"
+          fi
+          if [ "${{ inputs.section_mode }}" = "true" ]; then
+            FLAGS="$FLAGS --section-mode"
+          fi
+
+          PROMPT_FLAG=""
+          PROMPT_FILE="${{ inputs.prompt_file }}"
+          if [ -n "$PROMPT_FILE" ] && [ -f "$PROMPT_FILE" ]; then
+            PROMPT_FLAG="--prompt-file $PROMPT_FILE"
+          fi
+          # If no prompt_file, figmaclaw uses its bundled default
+
+          echo "::group::claude-run raw stream-json"
+          # claude-run writes stream-json to .figma-sync/claude-stream.jsonl
+          # directly (flushed per line, resilient to timeout). We only need
+          # stream-format here for human-readable CI log output.
+          figmaclaw claude-run \
+            "${{ inputs.target }}" \
+            --model "${{ inputs.model }}" \
+            --max-turns "${{ inputs.max_turns }}" \
+            $PROMPT_FLAG \
+            $FLAGS \
+            | figmaclaw stream-format
+          echo "::endgroup::"
+
+      - name: Verify figma enrichment complete
+        if: success()
+        env:
+          FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+        run: |
+          TARGET="${{ inputs.target }}"
+
+          # Only applies to single figma .md files
+          if [[ "$TARGET" != figma/*.md ]]; then
+            echo "target is not a single figma page — skipping postcondition check"
+            exit 0
+          fi
+
+          figmaclaw inspect "$TARGET" --json | python3 -c "
+          import json, sys
+          data = json.load(sys.stdin)
+          total   = data.get('total_frames', 0)
+          missing = data.get('missing_descriptions', 0)
+          needs   = data.get('needs_enrichment', True)
+          if total == 0:
+              print(f'no frames — nothing to verify')
+              sys.exit(0)
+          filled = total - missing
+          pct = int(filled / total * 100) if total > 0 else 100
+          print(f'enrichment: {filled}/{total} frames described ({pct}%)')
+          print(f'needs_enrichment: {needs}')
+          if needs:
+              print(f'  still pending: {missing} placeholder(s)')
+              sys.exit(1)
+          "
+
+      - name: Upload raw stream-json artifact
+        if: always()  # success, failure, cancelled, or timeout
+        uses: actions/upload-artifact@v5
+        with:
+          name: claude-run-raw-${{ github.run_id }}-${{ inputs.section_mode && 'large' || 'bulk' }}
+          path: .figma-sync/claude-stream.jsonl
+          retention-days: 0  # use repo max (up to 400 days on GH Enterprise, 90 days default)
+          if-no-files-found: warn
+
+      - name: Show formatted output in step summary
+        if: always()
+        run: |
+          echo "## Run parameters" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| param | value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| target | \`${{ inputs.target }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| model  | \`${{ inputs.model }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| max_turns | ${{ inputs.max_turns }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"

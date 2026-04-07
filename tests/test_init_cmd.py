@@ -67,3 +67,46 @@ def test_init_overwrites_with_flag(tmp_path: Path):
 
     content = (workflows_dir / "figmaclaw-webhook.yaml").read_text()
     assert "figma-webhook" in content  # real template content, not placeholder
+
+
+def test_init_with_webhook_proxy_copies_worker(tmp_path: Path):
+    """INVARIANT: --with-webhook-proxy copies the CF Worker template."""
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--repo-dir", str(tmp_path), "init", "--with-webhook-proxy"])
+    assert result.exit_code == 0, result.output
+
+    proxy_dir = tmp_path / "workers" / "figma-webhook-proxy"
+    assert (proxy_dir / "src" / "index.js").exists()
+    assert (proxy_dir / "wrangler.toml").exists()
+
+    wrangler = (proxy_dir / "wrangler.toml").read_text()
+    assert 'GITHUB_REPO = "OWNER/REPO"' in wrangler
+    assert "YOUR_KV_NAMESPACE_ID" in wrangler
+
+
+def test_init_webhook_proxy_skips_existing(tmp_path: Path):
+    """INVARIANT: --with-webhook-proxy does not overwrite existing proxy dir without --overwrite."""
+    proxy_dir = tmp_path / "workers" / "figma-webhook-proxy"
+    proxy_dir.mkdir(parents=True)
+    sentinel = proxy_dir / "sentinel.txt"
+    sentinel.write_text("keep me")
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--repo-dir", str(tmp_path), "init", "--with-webhook-proxy"])
+    assert result.exit_code == 0
+
+    assert sentinel.read_text() == "keep me"
+
+
+def test_init_webhook_proxy_overwrites_with_flag(tmp_path: Path):
+    """INVARIANT: --with-webhook-proxy --overwrite replaces the proxy dir."""
+    proxy_dir = tmp_path / "workers" / "figma-webhook-proxy"
+    proxy_dir.mkdir(parents=True)
+    (proxy_dir / "old-file.txt").write_text("stale")
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--repo-dir", str(tmp_path), "init", "--with-webhook-proxy", "--overwrite"])
+    assert result.exit_code == 0
+
+    assert (proxy_dir / "src" / "index.js").exists()
+    assert not (proxy_dir / "old-file.txt").exists()

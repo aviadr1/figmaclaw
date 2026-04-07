@@ -37,8 +37,19 @@ _DOWNLOAD_LOCK_FILENAME = ".figma-downloads.lock"
     "--pending", "pending_only", is_flag=True, default=False,
     help="Only download frames that have no description yet.",
 )
+@click.option(
+    "--stale", "stale_only", is_flag=True, default=False,
+    help="Only download frames whose content hash changed since last enrichment.",
+)
+@click.option(
+    "--section", "section_node_id", default=None,
+    help="Only download frames belonging to this section (by node_id).",
+)
 @click.pass_context
-def screenshots_cmd(ctx: click.Context, md_path: Path, pending_only: bool) -> None:
+def screenshots_cmd(
+    ctx: click.Context, md_path: Path, pending_only: bool, stale_only: bool,
+    section_node_id: str | None,
+) -> None:
     """Download frame screenshots for a figmaclaw .md file to local cache.
 
     Saves PNGs to .figma-cache/screenshots/{file_key}/ (gitignored).
@@ -53,18 +64,23 @@ def screenshots_cmd(ctx: click.Context, md_path: Path, pending_only: bool) -> No
     if not api_key:
         raise click.UsageError("FIGMA_API_KEY environment variable is not set.")
 
-    result = asyncio.run(_run(api_key, repo_dir, md_path, pending_only))
+    result = asyncio.run(_run(api_key, repo_dir, md_path, pending_only, stale_only, section_node_id))
     click.echo(json.dumps(result, indent=2))
 
 
-async def _run(api_key: str, repo_dir: Path, md_path: Path, pending_only: bool) -> dict:
+async def _run(
+    api_key: str, repo_dir: Path, md_path: Path, pending_only: bool, stale_only: bool,
+    section_node_id: str | None = None,
+) -> dict:
     if not md_path.is_absolute():
         md_path = repo_dir / md_path
 
     md_text = md_path.read_text()
     fm = parse_frontmatter(md_text)
     if fm is None:
-        raise click.UsageError(f"{md_path}: no figmaclaw frontmatter — is this a figmaclaw .md file?")
+        raise click.UsageError(
+            f"{md_path}: no figmaclaw frontmatter — is this a figmaclaw .md file?"
+        )
 
     file_key = fm.file_key
 
@@ -72,15 +88,54 @@ async def _run(api_key: str, repo_dir: Path, md_path: Path, pending_only: bool) 
     # is empty because no descriptions have been written yet.
     all_body_ids = [f.node_id for s in parse_sections(md_text) for f in s.frames]
 
-    if pending_only:
-        # Pending = frames whose body table row has the "(no description yet)" placeholder.
+    # Section filter: restrict to frames in one section
+    if section_node_id:
+        section_frames: set[str] = set()
+        for s in parse_sections(md_text):
+            if s.node_id == section_node_id:
+                section_frames = {f.node_id for f in s.frames}
+                break
+        all_body_ids = [nid for nid in all_body_ids if nid in section_frames]
+
+    if stale_only:
+        # Stale = frames whose content hash changed since last enrichment.
+        # Compare manifest frame_hashes (current) vs frontmatter
+        # enriched_frame_hashes (at last enrichment).
+        from figmaclaw.figma_sync_state import FigmaSyncState
+
+        state = FigmaSyncState(repo_dir)
+        state.load()
+        stale_ids: set[str] = set()
+        manifest_file = state.manifest.files.get(file_key)
+        if manifest_file:
+            page_entry = manifest_file.pages.get(fm.page_node_id)
+            if page_entry:
+                current_hashes = page_entry.frame_hashes
+                enriched_hashes = fm.enriched_frame_hashes or {}
+                for nid, h in current_hashes.items():
+                    if nid not in enriched_hashes or enriched_hashes[nid] != h:
+                        stale_ids.add(nid)
+                # Also include frames with no hash at all (new frames)
+                for nid in all_body_ids:
+                    if nid not in enriched_hashes:
+                        stale_ids.add(nid)
+        else:
+            # No manifest entry — all frames are stale
+            stale_ids = set(all_body_ids)
+        node_ids = [nid for nid in all_body_ids if nid in stale_ids]
+    elif pending_only:
+        # Pending = frames whose body table row has the placeholder
+        # description. Both the placeholder check and the node_id
+        # extraction come from figma_schema so this can't drift from the
+        # enrichment dispatcher's notion of "pending".
+        from figmaclaw.figma_schema import is_placeholder_row, parse_frame_row
         pending_ids: set[str] = set()
         for line in md_text.splitlines():
-            if "| (no description yet) |" in line:
-                import re
-                m = re.search(r"`([^`]+)`", line)
-                if m:
-                    pending_ids.add(m.group(1))
+            if not is_placeholder_row(line):
+                continue
+            row = parse_frame_row(line)
+            if row is not None:
+                pending_ids.add(row.node_id)
         node_ids = [nid for nid in all_body_ids if nid in pending_ids]
     else:
         node_ids = all_body_ids
@@ -106,7 +161,11 @@ async def _run(api_key: str, repo_dir: Path, md_path: Path, pending_only: bool) 
             all_urls: dict[str, str | None] = {}
             for i in range(0, len(node_ids), _FIGMA_IMAGE_BATCH):
                 batch = node_ids[i : i + _FIGMA_IMAGE_BATCH]
-                urls = await client.get_image_urls(file_key, batch)
+                try:
+                    urls = await client.get_image_urls(file_key, batch)
+                except Exception:
+                    # API error for this batch — mark all as failed
+                    urls = {nid: None for nid in batch}
                 all_urls.update(urls)
 
             semaphore = asyncio.Semaphore(_MAX_CONCURRENT_DOWNLOADS)
@@ -120,7 +179,16 @@ async def _run(api_key: str, repo_dir: Path, md_path: Path, pending_only: bool) 
         await asyncio.to_thread(_release, lock_fd)
 
     screenshots = [r for r in results if isinstance(r, dict)]
-    return {"file_key": file_key, "screenshots": screenshots}
+    # Frames where Figma returned null URL (hidden/deleted/unrenderable)
+    null_url = {nid for nid, url in all_urls.items() if url is None}
+    # Frames where download failed (URL existed but PNG download errored)
+    downloaded_ids = {r["node_id"] for r in screenshots}
+    download_failed = {
+        nid for nid, url in all_urls.items()
+        if url is not None and nid not in downloaded_ids
+    }
+    failed = sorted(null_url | download_failed)
+    return {"file_key": file_key, "screenshots": screenshots, "failed": failed}
 
 
 async def _download_one(

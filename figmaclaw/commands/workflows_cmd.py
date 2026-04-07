@@ -18,7 +18,11 @@ def _copy_workflow_files(repo_dir: Path) -> list[str]:
 
     workflows_pkg = importlib.resources.files("figmaclaw") / "workflows"
     written = []
-    for name in ("figmaclaw-sync.yaml", "figmaclaw-webhook.yaml"):
+    for name in (
+        "figmaclaw-sync.yaml",
+        "figmaclaw-webhook.yaml",
+        "figmaclaw-manage-webhooks.yaml",
+    ):
         src = workflows_pkg / name
         dst = wf_dir / name
         dst.write_text(src.read_text())

@@ -6,7 +6,7 @@ it costs Figma screenshots + LLM inference + human review. Losing it silently
 is unacceptable.
 
 These invariants are **law**. Every code path that touches `.md` files must
-obey them. Tests in `tests/test_body_preservation.py` and `tests/test_replace_body.py` prove each one.
+obey them. Tests in `tests/test_body_preservation.py` and `tests/test_write_body.py` prove each one.
 
 **Related docs:**
 - [`figmaclaw-md-format.md`](figmaclaw-md-format.md) — authoritative format spec (frontmatter schema, body structure, command table)
@@ -28,14 +28,14 @@ These prove that no code path can destroy LLM-authored body content.
 |---|---|---|
 | **BP-1** | `sync` on an existing file preserves the body byte-for-byte | `test_bp1_sync_preserves_body_byte_for_byte` |
 | **BP-2** | `pull_file` on an existing file preserves the body byte-for-byte | `test_bp2_pull_preserves_body_byte_for_byte` |
-| **BP-3** | `set-frames` on an existing file preserves the body byte-for-byte | `test_bp3_set_frames_preserves_body_byte_for_byte` |
+| **BP-3** | `set-flows` on an existing file preserves the body byte-for-byte | `test_bp3_set_flows_preserves_body_byte_for_byte` |
 | **BP-4** | `update_page_frontmatter()` preserves the body byte-for-byte | `test_bp4_update_page_frontmatter_preserves_body` |
 | **BP-5** | `scaffold_page()` is never called on existing files by `sync` or `pull` | `test_bp5_sync_does_not_call_scaffold_on_existing_file`, `test_bp5_pull_does_not_call_scaffold_on_existing_file` |
-| **BP-6** | `replace-body` preserves frontmatter byte-for-byte | `test_bp6_replace_body_preserves_frontmatter_byte_for_byte` |
+| **BP-6** | `write-body` preserves frontmatter byte-for-byte | `test_bp6_write_body_preserves_frontmatter_byte_for_byte` |
 
 **Bonus invariants (stress tests):**
 - Body survives 5 consecutive `sync` operations without degradation
-- Body survives interleaved `sync` + `set-frames` cycles
+- Body survives interleaved `sync` + `set-flows` cycles
 
 ## SC: Scaffold invariants
 

@@ -5,19 +5,26 @@ from __future__ import annotations
 import click
 
 from figmaclaw.commands.apply_webhook import apply_webhook_cmd
+from figmaclaw.commands.diff import diff_cmd
+from figmaclaw.commands.doctor import doctor_cmd
+from figmaclaw.commands.claude_run import claude_run_cmd
+from figmaclaw.commands.stream_format import stream_format_cmd
 from figmaclaw.commands.sync import sync_cmd
 from figmaclaw.commands.init import init_cmd
 from figmaclaw.commands.list_files import list_cmd
 from figmaclaw.commands.mark_enriched import mark_enriched_cmd
 from figmaclaw.commands.mark_stale import mark_stale_cmd
-from figmaclaw.commands.page_tree import page_tree_cmd
+from figmaclaw.commands.inspect import inspect_cmd
 from figmaclaw.commands.pull import pull_cmd
 from figmaclaw.commands.self_cmd import self_group
+from figmaclaw.commands.image_urls import image_urls_cmd
 from figmaclaw.commands.screenshots import screenshots_cmd
 from figmaclaw.commands.set_flows import set_flows_cmd
 from figmaclaw.commands.track import track_cmd
+from figmaclaw.commands.webhooks import webhooks_group
 from figmaclaw.commands.workflows_cmd import workflows_group
 from figmaclaw.commands.write_body import write_body_cmd
+from figmaclaw.commands.write_descriptions import write_descriptions_cmd
 
 
 def _version_callback(ctx: click.Context, _param: click.Parameter, value: bool) -> None:
@@ -59,16 +66,23 @@ def cli(ctx: click.Context, json_mode: bool, verbose: int, quiet: int, repo_dir:
 
 
 cli.add_command(apply_webhook_cmd)
+cli.add_command(claude_run_cmd)
+cli.add_command(diff_cmd)
+cli.add_command(doctor_cmd)
 cli.add_command(init_cmd)
 cli.add_command(list_cmd)
 cli.add_command(mark_enriched_cmd)
 cli.add_command(mark_stale_cmd)
-cli.add_command(page_tree_cmd)
+cli.add_command(inspect_cmd)
 cli.add_command(pull_cmd)
+cli.add_command(image_urls_cmd)
 cli.add_command(screenshots_cmd)
 cli.add_command(self_group)
+cli.add_command(stream_format_cmd)
 cli.add_command(set_flows_cmd)
 cli.add_command(sync_cmd)
 cli.add_command(track_cmd)
+cli.add_command(webhooks_group)
 cli.add_command(workflows_group)
 cli.add_command(write_body_cmd)
+cli.add_command(write_descriptions_cmd)
