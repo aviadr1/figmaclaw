@@ -58,7 +58,8 @@ Two independent version numbers track whether a file/page needs updating:
 Pull schema changelog:
   v1: initial — frames, flows, enriched_*
   v2: added raw_frames (screen pages), component_set_keys (component sections)
-  v3: added frame_sections (screen pages) — per-frame child position map for context frame building
+  v3: added raw_tokens frontmatter summary + sidecar .tokens.json files
+  v4: added frame_sections (screen pages) — per-frame child position map for context frame building
 
 Enrichment schema changelog:
   v1: initial enrichment format — frame table + page summary + Mermaid flows
@@ -73,7 +74,7 @@ from pydantic import BaseModel, Field, model_validator
 # Pull-pass schema version. Bump when pull_file writes new frontmatter fields.
 # Files in the manifest with pull_schema_version < this get frontmatter-refreshed
 # on the next pull run even if Figma content is unchanged. Body is never touched.
-CURRENT_PULL_SCHEMA_VERSION: int = 3
+CURRENT_PULL_SCHEMA_VERSION: int = 4
 
 # Enrichment schema version. Bump when the LLM prompt or output format changes.
 # Pages with enriched_schema_version < MIN_REQUIRED MUST be re-enriched (broken output).
@@ -104,6 +105,19 @@ class SectionNode(BaseModel):
     y: int
     w: int
     h: int
+
+
+class RawTokenCounts(BaseModel):
+    """Per-frame token binding counts written by the pull pass into raw_tokens frontmatter.
+
+    raw:   properties with no variable binding (hardcoded values)
+    stale: properties bound to the deprecated OLD_Gigaverse library
+    valid: properties correctly bound to the current DS library
+    """
+
+    raw: int = 0
+    stale: int = 0
+    valid: int = 0
 
 
 class FrameComposition(BaseModel):
@@ -147,6 +161,9 @@ class FigmaPageFrontmatter(BaseModel):
     component_set_keys: dict[str, str] = Field(default_factory=dict)
     # raw_frames: sparse dict of frames with raw children. Absent frames are fully componentized.
     raw_frames: dict[str, FrameComposition] = Field(default_factory=dict)
+    # raw_tokens: sparse dict of frames with unbound token properties (raw or stale).
+    # Absent frames have zero issues. Full per-node detail lives in .tokens.json sidecar.
+    raw_tokens: dict[str, RawTokenCounts] = Field(default_factory=dict)
     # frame_sections: per-frame map of direct children with their positions.
     # Dense (all screen frames included). Used by build-context to construct composite
     # "Usage in Context" frames and to answer component-coverage questions without

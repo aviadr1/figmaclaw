@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import yaml
 
-from figmaclaw.figma_frontmatter import FrameComposition, SectionNode
+from figmaclaw.figma_frontmatter import FrameComposition, RawTokenCounts, SectionNode
 from figmaclaw.figma_models import FigmaPage, FigmaSection
 from figmaclaw.figma_schema import (
     PLACEHOLDER_DESCRIPTION,
@@ -100,6 +100,7 @@ def _build_frontmatter(
     enriched_frame_hashes: dict[str, str] | None = None,
     component_set_keys: dict[str, str] | None = None,
     raw_frames: dict[str, FrameComposition] | None = None,
+    raw_tokens: dict[str, RawTokenCounts] | None = None,
     frame_sections: dict[str, list[SectionNode]] | None = None,
 ) -> str:
     """Render compact YAML frontmatter block (between --- markers)."""
@@ -122,6 +123,12 @@ def _build_frontmatter(
         fm["raw_frames"] = _FlowDict({
             k: _FlowDict({"raw": v.raw, "ds": _FlowList(v.ds)})
             for k, v in raw_frames.items()
+        })
+    if raw_tokens:
+        fm["raw_tokens"] = _FlowDict({
+            fid: _FlowDict({"raw": v.raw, "stale": v.stale, "valid": v.valid})
+            for fid, v in raw_tokens.items()
+            if v.raw > 0 or v.stale > 0
         })
     if frame_sections:
         fm["frame_sections"] = _FlowDict({
@@ -150,6 +157,7 @@ def build_page_frontmatter(
     enriched_at: str | None = None,
     enriched_frame_hashes: dict[str, str] | None = None,
     raw_frames: dict[str, FrameComposition] | None = None,
+    raw_tokens: dict[str, RawTokenCounts] | None = None,
     frame_sections: dict[str, list[SectionNode]] | None = None,
 ) -> str:
     """Build the YAML frontmatter block for a screen page from a FigmaPage model.
@@ -180,6 +188,7 @@ def build_page_frontmatter(
         enriched_at=enriched_at,
         enriched_frame_hashes=enriched_frame_hashes,
         raw_frames=raw_frames,
+        raw_tokens=raw_tokens,
         frame_sections=frame_sections,
     )
 
@@ -189,6 +198,7 @@ def scaffold_page(
     entry: PageEntry,
     *,
     raw_frames: dict[str, FrameComposition] | None = None,
+    raw_tokens: dict[str, RawTokenCounts] | None = None,
     frame_sections: dict[str, list[SectionNode]] | None = None,
 ) -> str:
     """Generate a skeleton markdown page with LLM placeholders for a NEW FigmaPage.
@@ -209,7 +219,7 @@ def scaffold_page(
     """
     parts: list[str] = []
 
-    parts.append(build_page_frontmatter(page, raw_frames=raw_frames, frame_sections=frame_sections))
+    parts.append(build_page_frontmatter(page, raw_frames=raw_frames, raw_tokens=raw_tokens, frame_sections=frame_sections))
     parts.append("")
 
     # H1 header — normalize empty file/page names to (Unnamed) so the
