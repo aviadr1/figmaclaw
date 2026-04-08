@@ -1340,7 +1340,11 @@ async def test_pull_file_processes_schema_stale_file_even_when_figma_unchanged(t
 
 @pytest.mark.asyncio
 async def test_pull_file_processes_schema_stale_pages_even_when_page_hash_unchanged(tmp_path: Path):
-    """INVARIANT: schema_stale bypasses page-level hash check so existing pages get new FM fields."""
+    """INVARIANT: schema_stale upgrades existing pages even when page hash is unchanged.
+
+    Schema-only upgrades (hash unchanged) go to pages_schema_upgraded, NOT pages_written.
+    They don't consume the max_pages budget so the upgrade always completes in a single pass.
+    """
     from figmaclaw.figma_client import FigmaClient
     from figmaclaw.figma_parse import parse_frontmatter
     state = FigmaSyncState(tmp_path)
@@ -1373,8 +1377,11 @@ async def test_pull_file_processes_schema_stale_pages_even_when_page_hash_unchan
 
     result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
-    # Page was re-processed (not skipped) despite page hash being unchanged
-    assert result.pages_written == 1
+    # Schema-only upgrade: page hash unchanged, goes to pages_schema_upgraded (not pages_written)
+    assert result.pages_written == 0
+    assert result.pages_schema_upgraded == 1
+    # Schema-only upgrades never set has_more=True even with max_pages limits
+    assert result.has_more is False
 
     # Body must be preserved — only frontmatter changed
     body_after = out.read_text().split("---\n", 2)[-1]
@@ -1400,6 +1407,52 @@ async def test_pull_file_skips_file_when_schema_current_and_figma_unchanged(tmp_
 
     assert result.skipped_file is True
     mock_client.get_page.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_schema_upgrade_does_not_cause_infinite_loop_with_max_pages(tmp_path: Path):
+    """INVARIANT: schema-stale files converge in one pass regardless of max_pages.
+
+    When pull_schema_version < CURRENT_PULL_SCHEMA_VERSION, pages with unchanged hashes
+    are treated as schema-only upgrades that don't consume the max_pages budget.
+    This prevents the infinite loop where the same N pages are reprocessed every batch
+    because has_more=True always prevents pull_schema_version from being updated.
+    """
+    from figmaclaw.figma_client import FigmaClient
+    from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+
+    mock_client = MagicMock(spec=FigmaClient)
+    page_node = _fake_page_node_with_children()
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2", "2026-03-31T12:00:00Z"))
+    mock_client.get_page = AsyncMock(return_value=page_node)
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+    mock_client.get_nodes = AsyncMock(return_value=_fake_get_nodes_response())
+
+    # First pull: write the page, schema version set to CURRENT
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+    assert state.manifest.files["abc123"].pull_schema_version == CURRENT_PULL_SCHEMA_VERSION
+
+    # Simulate schema bump: reset pull_schema_version so it appears stale
+    state.manifest.files["abc123"].pull_schema_version = 0
+    state.save()
+
+    # Second pull with max_pages=1 — schema-only upgrades must NOT consume the budget.
+    # Before the fix, schema_stale bypassed the hash check → pages_written=1 → has_more=True
+    # → pull_schema_version never reached CURRENT → infinite loop every batch.
+    result = await pull_file(
+        mock_client, "abc123", state, tmp_path, force=False, max_pages=1,
+    )
+
+    # Schema-only: no content changes consumed the budget, no has_more
+    assert result.pages_written == 0
+    assert result.pages_schema_upgraded >= 1
+    assert result.has_more is False
+
+    # pull_schema_version must be updated after a schema-only pass
+    assert state.manifest.files["abc123"].pull_schema_version == CURRENT_PULL_SCHEMA_VERSION
 
 
 @pytest.mark.asyncio

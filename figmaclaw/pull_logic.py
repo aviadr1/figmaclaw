@@ -54,6 +54,7 @@ from figmaclaw.figma_parse import parse_flows, parse_frontmatter
 from figmaclaw.figma_paths import component_path, page_path, slugify
 from figmaclaw.figma_render import build_page_frontmatter, render_component_section, scaffold_page
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
+from figmaclaw.token_catalog import load_catalog, merge_bindings, save_catalog
 from figmaclaw.token_scan import PageTokenScan, scan_page
 
 log = logging.getLogger(__name__)
@@ -68,6 +69,7 @@ class PullResult(BaseModel):
     pages_written: int = 0
     pages_skipped: int = 0
     pages_errored: int = 0
+    pages_schema_upgraded: int = 0  # schema-format-only refresh, hash unchanged, not counted toward max_pages
     md_paths: list[str] = Field(default_factory=list)
     component_sections_written: int = 0
     component_paths: list[str] = Field(default_factory=list)
@@ -200,6 +202,19 @@ def _write_token_sidecar(
         },
         "frames": frames_data,
     }
+
+    # Skip write when only generated_at changed — avoids spurious git commits every
+    # pull run when the page structure is unchanged but the timestamp differs.
+    if sidecar_path.exists():
+        try:
+            existing = json.loads(sidecar_path.read_text())
+            existing.pop("generated_at", None)
+            new_without_ts = {k: v for k, v in sidecar.items() if k != "generated_at"}
+            if existing == new_without_ts:
+                return
+        except Exception:
+            pass  # If comparison fails, write unconditionally
+
     sidecar_path.write_text(json.dumps(sidecar, indent=2))
 
 
@@ -307,6 +322,7 @@ async def pull_file(
             progress(msg)
 
     result = PullResult(file_key=file_key)
+    catalog = load_catalog(repo_root)
 
     # Level 1: file-level version check
     try:
@@ -386,8 +402,8 @@ async def pull_file(
                 continue
             new_hash = compute_page_hash(pn)
             stored_hash = state.get_page_hash(file_key, stub_id)
-            if not force and not schema_stale and stored_hash == new_hash:
-                continue  # page will be skipped — don't waste payload on its frames
+            if not force and stored_hash == new_hash:
+                continue  # hash unchanged — skip frames regardless of schema staleness
             for section in pn.get("children", []):
                 if section.get("type") == "SECTION":
                     for child in section.get("children", []):
@@ -424,8 +440,12 @@ async def pull_file(
                 continue
             page_node: dict = page_node_or_exc
         else:
-            # Sequential fetch — stop early if budget already hit
-            if pages_written_this_call >= max_pages:
+            # Sequential fetch.
+            # When schema is current: stop before fetching if content-change budget is hit.
+            # When schema is stale: always fetch so we can upgrade frontmatter format.
+            # Schema-only upgrades (hash unchanged) don't consume the budget, so they
+            # can't cause has_more=True and won't block pull_schema_version from updating.
+            if not schema_stale and pages_written_this_call >= max_pages:
                 result.has_more = True
                 _progress(f"  [{page_idx}/{total_pages}] {page_name} — reached max_pages={max_pages}, stopping")
                 break
@@ -439,12 +459,29 @@ async def pull_file(
         new_hash = compute_page_hash(page_node)
         stored_hash = state.get_page_hash(file_key, page_node_id)
 
-        if not force and not schema_stale and stored_hash == new_hash:
+        content_unchanged = not force and stored_hash is not None and stored_hash == new_hash
+
+        # Schema-only: content is identical but the pull schema version needs refreshing.
+        # Frontmatter gets re-rendered to pick up new fields; no token scan is run.
+        # These don't consume the max_pages budget so the whole file upgrades in one pass.
+        schema_only = content_unchanged and schema_stale
+
+        if content_unchanged and not schema_stale:
             _progress(f"  [{page_idx}/{total_pages}] {page_name} — unchanged (skip)")
             result.pages_skipped += 1
             continue
 
-        _progress(f"  [{page_idx}/{total_pages}] {page_name} — processing...")
+        # Content-changed pages in sequential mode: enforce budget here.
+        # (When schema_stale the early stop above was skipped; we check again here.)
+        if not schema_only and max_pages is not None and pages_written_this_call >= max_pages:
+            result.has_more = True
+            _progress(f"  [{page_idx}/{total_pages}] {page_name} — reached max_pages={max_pages}, stopping")
+            break
+
+        if schema_only:
+            _progress(f"  [{page_idx}/{total_pages}] {page_name} — schema upgrade (content unchanged)...")
+        else:
+            _progress(f"  [{page_idx}/{total_pages}] {page_name} — processing...")
 
         try:
             node_suffix = page_node_id.replace(":", "-")
@@ -495,9 +532,10 @@ async def pull_file(
                         )
 
             # Scan raw/stale token bindings — zero extra API calls, walks page_node already in memory.
+            # Skipped for schema-only upgrades: content is unchanged so token data can't have changed.
             token_scan: PageTokenScan | None = None
             raw_tokens: dict[str, dict[str, int]] | None = None
-            if screen_frame_ids:
+            if screen_frame_ids and not schema_only:
                 try:
                     token_scan = scan_page(page_node, set(screen_frame_ids))
                     # Sparse frontmatter summary — only frames with at least one issue
@@ -506,6 +544,9 @@ async def pull_file(
                         for fid, fscan in token_scan.frames.items()
                         if fscan.raw > 0 or fscan.stale > 0
                     }
+                    if token_scan.valid_bindings:
+                        merge_bindings(catalog, token_scan.valid_bindings)
+                        save_catalog(catalog, repo_root)
                 except Exception as exc:
                     log.warning(
                         "Failed to scan tokens for page %r (%s): %s — raw_tokens will be omitted",
@@ -543,7 +584,10 @@ async def pull_file(
                         )
                 written_screen_rel = str(written.relative_to(repo_root))
                 result.md_paths.append(written_screen_rel)
-                result.pages_written += 1
+                if schema_only:
+                    result.pages_schema_upgraded += 1
+                else:
+                    result.pages_written += 1
 
             written_component_rels: list[str] = []
             for section in component_sections:
@@ -565,7 +609,8 @@ async def pull_file(
 
             n_comps = len(written_component_rels)
             suffix = f" + {n_comps} component(s)" if n_comps else ""
-            _progress(f"  [{page_idx}/{total_pages}] {page_name} — wrote{suffix}")
+            verb = "schema-upgraded" if schema_only else "wrote"
+            _progress(f"  [{page_idx}/{total_pages}] {page_name} — {verb}{suffix}")
 
         except Exception as exc:
             log.error("Error processing page %r (%s): %s — skipping", page_name, page_node_id, exc)
@@ -584,7 +629,8 @@ async def pull_file(
         )
         state.set_page_entry(file_key, page_node_id, entry)
         state.save()
-        pages_written_this_call += 1
+        if not schema_only:
+            pages_written_this_call += 1
 
         # Notify caller so it can commit/push incrementally
         if on_page_written:

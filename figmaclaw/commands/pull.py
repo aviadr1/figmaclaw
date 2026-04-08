@@ -201,6 +201,8 @@ async def _run(
             all_results.append(result)
 
             if max_pages is not None and pages_budget is not None:
+                # Schema-only upgrades don't count toward the budget — they can't cause
+                # infinite loops and always complete in a single pass regardless of max_pages.
                 pages_budget -= result.pages_written
             if result.has_more:
                 has_more_global = True
@@ -224,7 +226,8 @@ async def _run(
                 click.echo(f"{key}: unchanged (skipped)")
             else:
                 errored = f", {result.pages_errored} error(s)" if result.pages_errored else ""
-                click.echo(f"{key}: wrote {result.pages_written} page(s), {result.component_sections_written} component(s), skipped {result.pages_skipped}{errored}")
+                upgraded = f", {result.pages_schema_upgraded} schema-upgraded" if result.pages_schema_upgraded else ""
+                click.echo(f"{key}: wrote {result.pages_written} page(s), {result.component_sections_written} component(s), skipped {result.pages_skipped}{upgraded}{errored}")
                 for path in result.md_paths:
                     click.echo(f"  → {path}")
                 for path in result.component_paths:
@@ -234,12 +237,17 @@ async def _run(
 
     all_screen_paths = [p for r in all_results for p in r.md_paths]
     all_comp_paths = [p for r in all_results for p in r.component_paths]
+    total_written = sum(r.pages_written for r in all_results)
+    total_schema_upgraded = sum(r.pages_schema_upgraded for r in all_results)
     if all_screen_paths or all_comp_paths:
         parts = []
-        if all_screen_paths:
-            parts.append(f"{len(all_screen_paths)} page(s)")
+        if total_written:
+            parts.append(f"{total_written} page(s)")
         if all_comp_paths:
             parts.append(f"{len(all_comp_paths)} component(s)")
+        if total_schema_upgraded and not total_written:
+            # Schema-only run: use a different verb so it's recognizable in git log
+            parts.append(f"{total_schema_upgraded} page(s) schema-upgraded")
         click.echo(f"COMMIT_MSG:sync: figmaclaw pull — {', '.join(parts)} updated")
 
     if has_more_global:
