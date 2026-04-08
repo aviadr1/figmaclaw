@@ -11,7 +11,7 @@ The only data entry point is the use_figma code string (≤50,000 chars).
 
 Strategy: split the source frame into sections, one use_figma call per section.
   - SVG preferred (live editable nodes): use if compressed SVG ≤ SVG_SIZE_LIMIT
-  - PNG fallback (flat image fill): base64-encoded PNG @scale=0.35, always fits
+  - PNG fallback (flat image fill): base64-encoded PNG @scale=0.25, always fits
 
 Section positions are read from figma page frontmatter (frame_sections field,
 written by the pull pass). No extra REST API call needed at build time.
@@ -29,13 +29,16 @@ from pathlib import Path
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_frontmatter import SectionNode
 
-# Max SVG string length that safely fits inside a use_figma code call alongside helpers.
-# The helpers JS is ~4KB; the 50K limit leaves ~45K for data.
-SVG_SIZE_LIMIT = 45_000
+# Max data string length that safely fits inside a use_figma code call alongside helpers.
+# Measured overhead per call: helpers (~9.8KB) + _find_page_js (~165 chars)
+# + placeContextSection boilerplate (~175 chars) ≈ 10_200 chars total.
+# Budget: 50_000 - 10_200 = 39_800. Use 38_000 for safety headroom.
+SVG_SIZE_LIMIT = 38_000
 
-# PNG export scale. 0.35 renders a 393×844 phone screen at ~138×295px.
-# At this scale: full Insights Tab (393×1584) → 43.9KB base64, well within 50K.
-PNG_SCALE = 0.35
+# PNG export scale. 0.25 renders a 393×854 section at ~98×213px (~16KB PNG / ~21KB base64).
+# Chosen to stay safely under SVG_SIZE_LIMIT for photo-heavy sections.
+# (0.35 scale was too large: a 393×854px section produced a 32KB PNG / 43KB base64.)
+PNG_SCALE = 0.25
 
 # Plugin helpers JS — pasted at the top of every use_figma code string.
 _HELPERS_PATH = Path(__file__).parent / "plugin" / "in-context.js"
@@ -57,7 +60,7 @@ async def fetch_section_data(
 ) -> SectionData:
     """Fetch SVG or PNG for one section.
 
-    Tries SVG first. Falls back to PNG @scale=0.35 if SVG exceeds SVG_SIZE_LIMIT.
+    Tries SVG first. Falls back to PNG @scale=0.25 if SVG exceeds SVG_SIZE_LIMIT.
     PNG always fits within the use_figma 50K code string limit at this scale.
     """
     svg_urls = await client.get_image_urls(file_key, [section.node_id], format="svg")

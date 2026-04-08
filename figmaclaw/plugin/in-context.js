@@ -20,11 +20,11 @@
 //
 //   For each section of the source frame:
 //     1. Export as SVG via REST API → compress with svgo
-//     2. If compressed SVG ≤ 45,000 chars → embed SVG → createNodeFromSvg
+//     2. If compressed SVG ≤ 38,000 chars → embed SVG → createNodeFromSvg
 //        Result: real editable Figma vector nodes (pixel perfect, live)
-//     3. Else → export as PNG @scale=0.35 → base64 encode
-//        If base64 ≤ 47,000 chars → embed PNG → createImage + rect fill
+//     3. Else → export as PNG @scale=0.25 → base64 encode
 //        Result: flat raster image (pixel perfect visually, not editable)
+//   Overhead per call: ~10,200 chars (helpers + boilerplate), budget = 50,000 - 10,200.
 //
 //   Sections with complex fills / embedded avatar images are PNG candidates.
 //   Simple sections (text + shapes only) compress well enough for SVG.
