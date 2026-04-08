@@ -100,6 +100,7 @@ def _build_frontmatter(
     enriched_frame_hashes: dict[str, str] | None = None,
     component_set_keys: dict[str, str] | None = None,
     raw_frames: dict[str, FrameComposition] | None = None,
+    raw_tokens: dict[str, dict[str, int]] | None = None,
 ) -> str:
     """Render compact YAML frontmatter block (between --- markers)."""
     fm: dict = {"file_key": file_key, "page_node_id": page_node_id}
@@ -122,6 +123,12 @@ def _build_frontmatter(
             k: _FlowDict({"raw": v.raw, "ds": _FlowList(v.ds)})
             for k, v in raw_frames.items()
         })
+    if raw_tokens:
+        fm["raw_tokens"] = _FlowDict({
+            fid: _FlowDict(counts)
+            for fid, counts in raw_tokens.items()
+            if counts.get("raw", 0) > 0 or counts.get("stale", 0) > 0
+        })
 
     body = yaml.dump(
         fm,
@@ -140,6 +147,7 @@ def build_page_frontmatter(
     enriched_at: str | None = None,
     enriched_frame_hashes: dict[str, str] | None = None,
     raw_frames: dict[str, FrameComposition] | None = None,
+    raw_tokens: dict[str, dict[str, int]] | None = None,
 ) -> str:
     """Build the YAML frontmatter block for a screen page from a FigmaPage model.
 
@@ -166,6 +174,7 @@ def build_page_frontmatter(
         enriched_at=enriched_at,
         enriched_frame_hashes=enriched_frame_hashes,
         raw_frames=raw_frames,
+        raw_tokens=raw_tokens,
     )
 
 
@@ -174,6 +183,7 @@ def scaffold_page(
     entry: PageEntry,
     *,
     raw_frames: dict[str, FrameComposition] | None = None,
+    raw_tokens: dict[str, dict[str, int]] | None = None,
 ) -> str:
     """Generate a skeleton markdown page with LLM placeholders for a NEW FigmaPage.
 
@@ -193,7 +203,7 @@ def scaffold_page(
     """
     parts: list[str] = []
 
-    parts.append(build_page_frontmatter(page, raw_frames=raw_frames))
+    parts.append(build_page_frontmatter(page, raw_frames=raw_frames, raw_tokens=raw_tokens))
     parts.append("")
 
     # H1 header — normalize empty file/page names to (Unnamed) so the

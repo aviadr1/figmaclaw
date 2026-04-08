@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import json
 import logging
 from collections.abc import Callable
 from pathlib import Path
@@ -53,6 +54,7 @@ from figmaclaw.figma_parse import parse_flows, parse_frontmatter
 from figmaclaw.figma_paths import component_path, page_path, slugify
 from figmaclaw.figma_render import build_page_frontmatter, render_component_section, scaffold_page
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
+from figmaclaw.token_scan import PageTokenScan, scan_page
 
 log = logging.getLogger(__name__)
 
@@ -78,6 +80,7 @@ def write_new_page(
     entry: PageEntry,
     *,
     raw_frames: dict[str, FrameComposition] | None = None,
+    raw_tokens: dict[str, dict[str, int]] | None = None,
 ) -> Path:
     """Write a NEW scaffold .md for a FigmaPage (screen sections only) and return the path.
 
@@ -89,7 +92,7 @@ def write_new_page(
     assert entry.md_path is not None, "entry.md_path must be set to call write_new_page()"
     out_path = repo_root / entry.md_path
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(scaffold_page(page, entry, raw_frames=raw_frames))
+    out_path.write_text(scaffold_page(page, entry, raw_frames=raw_frames, raw_tokens=raw_tokens))
     return out_path
 
 
@@ -99,6 +102,7 @@ def update_page_frontmatter(
     entry: PageEntry,
     *,
     raw_frames: dict[str, FrameComposition] | None = None,
+    raw_tokens: dict[str, dict[str, int]] | None = None,
 ) -> Path:
     """Update ONLY the frontmatter of an existing page .md file, preserving the body.
 
@@ -135,6 +139,7 @@ def update_page_frontmatter(
         enriched_at=enriched_at,
         enriched_frame_hashes=enriched_frame_hashes or None,
         raw_frames=raw_frames,
+        raw_tokens=raw_tokens,
     )
     out_path.write_text(f"{new_fm}\n{body}")
     return out_path
@@ -153,6 +158,49 @@ def write_component_section(
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(render_component_section(section, page, component_set_keys=component_set_keys))
     return out_path
+
+
+def _write_token_sidecar(
+    screen_md: Path,
+    file_key: str,
+    page_node_id: str,
+    token_scan: PageTokenScan,
+) -> None:
+    """Write the .tokens.json sidecar file next to the screen .md file.
+
+    The sidecar contains per-node token issues for all scanned frames.
+    pull always writes fix_variable_id as null — it is filled later by
+    suggest-tokens or human annotation.
+    """
+    sidecar_path = screen_md.with_suffix(".tokens.json")
+    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    frames_data: dict = {}
+    for fid, fscan in token_scan.frames.items():
+        issue_dicts = []
+        for issue in fscan.issues:
+            d = issue.model_dump(exclude_none=True)
+            # fix_variable_id is always null from pull — include it explicitly
+            d["fix_variable_id"] = None
+            issue_dicts.append(d)
+        frames_data[fid] = {
+            "name": fscan.name,
+            "summary": {"raw": fscan.raw, "stale": fscan.stale, "valid": fscan.valid},
+            "issues": issue_dicts,
+        }
+
+    sidecar = {
+        "file_key": file_key,
+        "page_node_id": page_node_id,
+        "generated_at": now,
+        "summary": {
+            "raw": token_scan.raw,
+            "stale": token_scan.stale,
+            "valid": token_scan.valid,
+        },
+        "frames": frames_data,
+    }
+    sidecar_path.write_text(json.dumps(sidecar, indent=2))
 
 
 def _compute_raw_frames(frame_docs: dict[str, dict]) -> dict[str, FrameComposition]:
@@ -446,6 +494,24 @@ async def pull_file(
                             page_name, page_node_id, exc,
                         )
 
+            # Scan raw/stale token bindings — zero extra API calls, walks page_node already in memory.
+            token_scan: PageTokenScan | None = None
+            raw_tokens: dict[str, dict[str, int]] | None = None
+            if screen_frame_ids:
+                try:
+                    token_scan = scan_page(page_node, set(screen_frame_ids))
+                    # Sparse frontmatter summary — only frames with at least one issue
+                    raw_tokens = {
+                        fid: {"raw": fscan.raw, "stale": fscan.stale, "valid": fscan.valid}
+                        for fid, fscan in token_scan.frames.items()
+                        if fscan.raw > 0 or fscan.stale > 0
+                    }
+                except Exception as exc:
+                    log.warning(
+                        "Failed to scan tokens for page %r (%s): %s — raw_tokens will be omitted",
+                        page_name, page_node_id, exc,
+                    )
+
             written_screen_rel: str | None = None
             if screen_sections:
                 screen_page = page.model_copy(update={"sections": screen_sections})
@@ -458,9 +524,23 @@ async def pull_file(
                     frame_hashes=frame_hashes,
                 )
                 if screen_md.exists():
-                    written = update_page_frontmatter(repo_root, screen_page, screen_entry, raw_frames=raw_frames)
+                    written = update_page_frontmatter(
+                        repo_root, screen_page, screen_entry,
+                        raw_frames=raw_frames, raw_tokens=raw_tokens,
+                    )
                 else:
-                    written = write_new_page(repo_root, screen_page, screen_entry, raw_frames=raw_frames)
+                    written = write_new_page(
+                        repo_root, screen_page, screen_entry,
+                        raw_frames=raw_frames, raw_tokens=raw_tokens,
+                    )
+                if token_scan is not None:
+                    try:
+                        _write_token_sidecar(written, page.file_key, page_node_id, token_scan)
+                    except Exception as exc:
+                        log.warning(
+                            "Failed to write token sidecar for page %r: %s",
+                            page_name, exc,
+                        )
                 written_screen_rel = str(written.relative_to(repo_root))
                 result.md_paths.append(written_screen_rel)
                 result.pages_written += 1
