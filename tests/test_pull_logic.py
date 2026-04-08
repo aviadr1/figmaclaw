@@ -973,33 +973,46 @@ def test_compute_raw_frames_counts_raw_children_and_ds_names():
         "11:1": {
             "id": "11:1",
             "type": "FRAME",
+            "absoluteBoundingBox": {"x": 0, "y": 0, "width": 400, "height": 300},
             "children": [
-                {"type": "INSTANCE", "name": "AvatarV2"},
-                {"type": "INSTANCE", "name": "ButtonV2"},
-                {"type": "FRAME", "name": "raw-child"},
-                {"type": "TEXT", "name": "label"},
+                {"id": "11:2", "type": "INSTANCE", "name": "AvatarV2",
+                 "absoluteBoundingBox": {"x": 0, "y": 0, "width": 40, "height": 40}},
+                {"id": "11:3", "type": "INSTANCE", "name": "ButtonV2",
+                 "absoluteBoundingBox": {"x": 40, "y": 0, "width": 80, "height": 40}},
+                {"id": "11:4", "type": "FRAME", "name": "raw-child",
+                 "absoluteBoundingBox": {"x": 0, "y": 40, "width": 400, "height": 120}},
+                {"id": "11:5", "type": "TEXT", "name": "label",
+                 "absoluteBoundingBox": {"x": 0, "y": 160, "width": 200, "height": 20}},
             ],
         }
     }
-    result = _compute_raw_frames(frame_docs)
-    assert "11:1" in result
-    assert result["11:1"].raw == 2
-    assert result["11:1"].ds == ["AvatarV2", "ButtonV2"]
+    raw_frames, frame_sections = _compute_raw_frames(frame_docs)
+    assert "11:1" in raw_frames
+    assert raw_frames["11:1"].raw == 2
+    assert raw_frames["11:1"].ds == ["AvatarV2", "ButtonV2"]
+    # frame_sections is populated for all frames
+    assert "11:1" in frame_sections
+    assert len(frame_sections["11:1"]) == 4
 
 
-def test_compute_raw_frames_omits_fully_componentized_frames():
-    """INVARIANT: Frames with zero raw children (all INSTANCE) are absent from raw_frames."""
+def test_compute_raw_frames_omits_fully_componentized_frames_from_raw_frames():
+    """INVARIANT: Fully componentized frames are absent from raw_frames but present in frame_sections."""
     from figmaclaw.pull_logic import _compute_raw_frames
     frame_docs = {
         "11:1": {
+            "absoluteBoundingBox": {"x": 0, "y": 0, "width": 200, "height": 100},
             "children": [
-                {"type": "INSTANCE", "name": "AvatarV2"},
-                {"type": "INSTANCE", "name": "ButtonV2"},
+                {"id": "11:2", "type": "INSTANCE", "name": "AvatarV2",
+                 "absoluteBoundingBox": {"x": 0, "y": 0, "width": 40, "height": 40}},
+                {"id": "11:3", "type": "INSTANCE", "name": "ButtonV2",
+                 "absoluteBoundingBox": {"x": 40, "y": 0, "width": 80, "height": 40}},
             ]
         }
     }
-    result = _compute_raw_frames(frame_docs)
-    assert "11:1" not in result  # fully componentized — absent signals "clean"
+    raw_frames, frame_sections = _compute_raw_frames(frame_docs)
+    assert "11:1" not in raw_frames  # fully componentized — absent signals "clean"
+    assert "11:1" in frame_sections  # but still tracked for context building
+    assert len(frame_sections["11:1"]) == 2
 
 
 def test_compute_raw_frames_preserves_ds_duplicates():
@@ -1007,21 +1020,49 @@ def test_compute_raw_frames_preserves_ds_duplicates():
     from figmaclaw.pull_logic import _compute_raw_frames
     frame_docs = {
         "11:1": {
+            "absoluteBoundingBox": {"x": 0, "y": 0, "width": 200, "height": 100},
             "children": [
-                {"type": "INSTANCE", "name": "ButtonV2"},
-                {"type": "INSTANCE", "name": "ButtonV2"},
-                {"type": "RECTANGLE", "name": "bg"},
+                {"id": "11:2", "type": "INSTANCE", "name": "ButtonV2",
+                 "absoluteBoundingBox": {"x": 0, "y": 0, "width": 80, "height": 40}},
+                {"id": "11:3", "type": "INSTANCE", "name": "ButtonV2",
+                 "absoluteBoundingBox": {"x": 80, "y": 0, "width": 80, "height": 40}},
+                {"id": "11:4", "type": "RECTANGLE", "name": "bg",
+                 "absoluteBoundingBox": {"x": 0, "y": 40, "width": 200, "height": 60}},
             ]
         }
     }
-    result = _compute_raw_frames(frame_docs)
-    assert result["11:1"].ds == ["ButtonV2", "ButtonV2"]
+    raw_frames, _ = _compute_raw_frames(frame_docs)
+    assert raw_frames["11:1"].ds == ["ButtonV2", "ButtonV2"]
 
 
 def test_compute_raw_frames_returns_empty_for_no_input():
-    """INVARIANT: _compute_raw_frames returns {} for empty frame_docs."""
+    """INVARIANT: _compute_raw_frames returns empty dicts for empty frame_docs."""
     from figmaclaw.pull_logic import _compute_raw_frames
-    assert _compute_raw_frames({}) == {}
+    raw_frames, frame_sections = _compute_raw_frames({})
+    assert raw_frames == {}
+    assert frame_sections == {}
+
+
+def test_compute_raw_frames_section_positions_are_relative_to_frame():
+    """INVARIANT: SectionNode positions are relative to the parent frame, not absolute canvas coords."""
+    from figmaclaw.pull_logic import _compute_raw_frames
+    frame_docs = {
+        "11:1": {
+            "absoluteBoundingBox": {"x": 100, "y": 200, "width": 393, "height": 300},
+            "children": [
+                {"id": "11:2", "type": "FRAME", "name": "Header",
+                 "absoluteBoundingBox": {"x": 100, "y": 200, "width": 393, "height": 60}},
+                {"id": "11:3", "type": "FRAME", "name": "Content",
+                 "absoluteBoundingBox": {"x": 116, "y": 260, "width": 361, "height": 240}},
+            ]
+        }
+    }
+    _, frame_sections = _compute_raw_frames(frame_docs)
+    sections = frame_sections["11:1"]
+    header = next(s for s in sections if s.name == "Header")
+    content = next(s for s in sections if s.name == "Content")
+    assert header.x == 0 and header.y == 0
+    assert content.x == 16 and content.y == 60  # relative to frame origin
 
 
 # --- _build_component_set_keys ---

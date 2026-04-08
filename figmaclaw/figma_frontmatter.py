@@ -58,6 +58,7 @@ Two independent version numbers track whether a file/page needs updating:
 Pull schema changelog:
   v1: initial — frames, flows, enriched_*
   v2: added raw_frames (screen pages), component_set_keys (component sections)
+  v3: added frame_sections (screen pages) — per-frame child position map for context frame building
 
 Enrichment schema changelog:
   v1: initial enrichment format — frame table + page summary + Mermaid flows
@@ -72,7 +73,7 @@ from pydantic import BaseModel, Field, model_validator
 # Pull-pass schema version. Bump when pull_file writes new frontmatter fields.
 # Files in the manifest with pull_schema_version < this get frontmatter-refreshed
 # on the next pull run even if Figma content is unchanged. Body is never touched.
-CURRENT_PULL_SCHEMA_VERSION: int = 2
+CURRENT_PULL_SCHEMA_VERSION: int = 3
 
 # Enrichment schema version. Bump when the LLM prompt or output format changes.
 # Pages with enriched_schema_version < MIN_REQUIRED MUST be re-enriched (broken output).
@@ -82,6 +83,27 @@ CURRENT_PULL_SCHEMA_VERSION: int = 2
 # To make a bump "SHOULD": bump only CURRENT, leave MIN_REQUIRED.
 CURRENT_ENRICHMENT_SCHEMA_VERSION: int = 1
 MIN_REQUIRED_ENRICHMENT_SCHEMA_VERSION: int = 1
+
+
+class SectionNode(BaseModel):
+    """Position and identity of one direct child within a screen frame.
+
+    Written by the pull pass into the frame_sections frontmatter field.
+    Provides the section map needed to build composite "Usage in Context" frames
+    without a separate REST API call — see figmaclaw issue #38.
+
+    node_id: Figma node ID of the child (e.g. '7424:16018')
+    name:    display name of the child node
+    x, y:   position relative to the parent frame's top-left corner
+    w, h:   width and height in Figma units
+    """
+
+    node_id: str
+    name: str
+    x: int
+    y: int
+    w: int
+    h: int
 
 
 class FrameComposition(BaseModel):
@@ -125,6 +147,11 @@ class FigmaPageFrontmatter(BaseModel):
     component_set_keys: dict[str, str] = Field(default_factory=dict)
     # raw_frames: sparse dict of frames with raw children. Absent frames are fully componentized.
     raw_frames: dict[str, FrameComposition] = Field(default_factory=dict)
+    # frame_sections: per-frame map of direct children with their positions.
+    # Dense (all screen frames included). Used by build-context to construct composite
+    # "Usage in Context" frames and to answer component-coverage questions without
+    # extra REST API calls. See figmaclaw issues #35 and #38.
+    frame_sections: dict[str, list[SectionNode]] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
