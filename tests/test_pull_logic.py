@@ -1400,3 +1400,26 @@ async def test_pull_file_skips_file_when_schema_current_and_figma_unchanged(tmp_
 
     assert result.skipped_file is True
     mock_client.get_page.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pull_file_sets_no_access_on_http_400(tmp_path: Path):
+    """INVARIANT: pull_file returns no_access=True when get_file_meta raises HTTP 400."""
+    import httpx
+    from figmaclaw.figma_client import FigmaClient
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+
+    mock_client = MagicMock(spec=FigmaClient)
+    response_mock = MagicMock()
+    response_mock.status_code = 400
+    mock_client.get_file_meta = AsyncMock(
+        side_effect=httpx.HTTPStatusError("400", request=MagicMock(), response=response_mock)
+    )
+
+    result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    assert result.no_access is True
+    assert result.skipped_file is True

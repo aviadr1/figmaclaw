@@ -41,6 +41,8 @@ import logging
 from collections.abc import Callable
 from pathlib import Path
 
+import httpx
+
 from pydantic import BaseModel, Field
 
 from figmaclaw.figma_client import FigmaClient
@@ -60,6 +62,7 @@ class PullResult(BaseModel):
 
     file_key: str
     skipped_file: bool = False
+    no_access: bool = False  # True when get_file_meta returns HTTP 400 (restricted file)
     pages_written: int = 0
     pages_skipped: int = 0
     pages_errored: int = 0
@@ -261,8 +264,13 @@ async def pull_file(
     try:
         meta = await client.get_file_meta(file_key)
     except Exception as exc:
-        log.error("Failed to fetch file meta for %r: %s — skipping file", file_key, exc)
-        result.skipped_file = True
+        if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 400:
+            log.warning("No access to %r (HTTP 400) — will be moved to skipped_files", file_key)
+            result.skipped_file = True
+            result.no_access = True
+        else:
+            log.error("Failed to fetch file meta for %r: %s — skipping file", file_key, exc)
+            result.skipped_file = True
         return result
     api_version = meta.version
     api_last_modified = meta.lastModified

@@ -205,7 +205,14 @@ async def _run(
             if result.has_more:
                 has_more_global = True
 
-            if result.skipped_file:
+            if result.no_access:
+                # Permanently inaccessible — move out of tracked_files into skipped_files.
+                reason = "no access — get_file_meta returns 400 (restricted file)"
+                state.manifest.skipped_files[key] = reason
+                if key in state.manifest.tracked_files:
+                    state.manifest.tracked_files.remove(key)
+                click.echo(f"{key}: skipped — {reason} — removed from tracked_files")
+            elif result.skipped_file:
                 # If pull failed (e.g. 400 on get_file_meta) and we know the listing
                 # last_modified, stamp it into the manifest so future runs pre-filter
                 # this file without making a wasted API call.
