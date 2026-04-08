@@ -422,3 +422,53 @@ def test_scan_page_frames_inside_sections():
     result = scan_page(page, {"1:1"})
     assert "1:1" in result.frames
     assert result.raw == 1
+
+
+def test_scan_page_component_node_type_is_scanned():
+    """INVARIANT: COMPONENT nodes (not just FRAME) in frame_ids are scanned."""
+    raw_fill, _ = _solid_fill(RED_COLOR)
+    comp = {"id": "1:1", "name": "Comp", "type": "COMPONENT", "children": [_rect(fills=[raw_fill])]}
+    page = _page([comp])
+
+    result = scan_page(page, {"1:1"})
+    assert result.raw == 1
+    assert "1:1" in result.frames
+
+
+# --- edge cases: fills_bv / cornerRadius / styles.text ---
+
+def test_scan_frame_fills_bv_shorter_than_fills():
+    """INVARIANT: if fills_bv has fewer entries than fills, the unpaired fills are raw."""
+    fill_a, bv_a = _solid_fill(RED_COLOR, var_id=DS_VAR_ID)  # index 0 — valid
+    fill_b, _ = _solid_fill(DARK_COLOR)                       # index 1 — raw (no bv entry)
+    # fills has 2 entries, fills_bv has only 1
+    node = _rect(node_id="2:1", fills=[fill_a, fill_b], fills_bv=[bv_a])
+    frame = _frame(children=[node])
+    result = scan_frame(frame)
+
+    assert result.valid == 1
+    assert result.raw == 1
+    assert result.issues[0].index == 1  # the second fill is the raw one
+
+
+def test_scan_frame_corner_radius_mixed_is_skipped():
+    """INVARIANT: cornerRadius='mixed' (individual corners set) is not classified."""
+    node = _rect(node_id="2:1")
+    node["cornerRadius"] = "mixed"
+    frame = _frame(children=[node])
+    result = scan_frame(frame)
+
+    cr_issues = [i for i in result.issues if i.property == "cornerRadius"]
+    assert cr_issues == []
+
+
+def test_scan_frame_styles_text_covers_font_props():
+    """INVARIANT: styles.text (API-style text style reference) marks all font props valid."""
+    text = _text(font_size=16.0, font_family="Figtree", font_weight=400.0)
+    text["styles"] = {"text": "S:body-style"}  # API-style, no textStyleId key
+    frame = _frame(children=[text])
+    result = scan_frame(frame)
+
+    assert result.raw == 0
+    assert result.valid == 3
+    assert result.issues == []
