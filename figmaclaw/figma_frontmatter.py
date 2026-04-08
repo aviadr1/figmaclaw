@@ -85,6 +85,19 @@ CURRENT_ENRICHMENT_SCHEMA_VERSION: int = 1
 MIN_REQUIRED_ENRICHMENT_SCHEMA_VERSION: int = 1
 
 
+class RawTokenCounts(BaseModel):
+    """Per-frame token binding counts written by the pull pass into raw_tokens frontmatter.
+
+    raw:   properties with no variable binding (hardcoded values)
+    stale: properties bound to the deprecated OLD_Gigaverse library
+    valid: properties correctly bound to the current DS library
+    """
+
+    raw: int = 0
+    stale: int = 0
+    valid: int = 0
+
+
 class FrameComposition(BaseModel):
     """Composition signals for a single screen frame.
 
@@ -127,9 +140,8 @@ class FigmaPageFrontmatter(BaseModel):
     # raw_frames: sparse dict of frames with raw children. Absent frames are fully componentized.
     raw_frames: dict[str, FrameComposition] = Field(default_factory=dict)
     # raw_tokens: sparse dict of frames with unbound token properties (raw or stale).
-    # {frame_id: {"raw": N, "stale": N, "valid": N}}. Absent frames have zero issues.
-    # Full per-node detail lives in the companion .tokens.json sidecar file.
-    raw_tokens: dict[str, dict[str, int]] = Field(default_factory=dict)
+    # Absent frames have zero issues. Full per-node detail lives in .tokens.json sidecar.
+    raw_tokens: dict[str, RawTokenCounts] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod

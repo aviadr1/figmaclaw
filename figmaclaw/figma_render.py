@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import yaml
 
-from figmaclaw.figma_frontmatter import FrameComposition
+from figmaclaw.figma_frontmatter import FrameComposition, RawTokenCounts
 from figmaclaw.figma_models import FigmaPage, FigmaSection
 from figmaclaw.figma_schema import (
     PLACEHOLDER_DESCRIPTION,
@@ -100,7 +100,7 @@ def _build_frontmatter(
     enriched_frame_hashes: dict[str, str] | None = None,
     component_set_keys: dict[str, str] | None = None,
     raw_frames: dict[str, FrameComposition] | None = None,
-    raw_tokens: dict[str, dict[str, int]] | None = None,
+    raw_tokens: dict[str, RawTokenCounts] | None = None,
 ) -> str:
     """Render compact YAML frontmatter block (between --- markers)."""
     fm: dict = {"file_key": file_key, "page_node_id": page_node_id}
@@ -125,9 +125,9 @@ def _build_frontmatter(
         })
     if raw_tokens:
         fm["raw_tokens"] = _FlowDict({
-            fid: _FlowDict(counts)
-            for fid, counts in raw_tokens.items()
-            if counts.get("raw", 0) > 0 or counts.get("stale", 0) > 0
+            fid: _FlowDict({"raw": v.raw, "stale": v.stale, "valid": v.valid})
+            for fid, v in raw_tokens.items()
+            if v.raw > 0 or v.stale > 0
         })
 
     body = yaml.dump(
@@ -147,7 +147,7 @@ def build_page_frontmatter(
     enriched_at: str | None = None,
     enriched_frame_hashes: dict[str, str] | None = None,
     raw_frames: dict[str, FrameComposition] | None = None,
-    raw_tokens: dict[str, dict[str, int]] | None = None,
+    raw_tokens: dict[str, RawTokenCounts] | None = None,
 ) -> str:
     """Build the YAML frontmatter block for a screen page from a FigmaPage model.
 
@@ -183,7 +183,7 @@ def scaffold_page(
     entry: PageEntry,
     *,
     raw_frames: dict[str, FrameComposition] | None = None,
-    raw_tokens: dict[str, dict[str, int]] | None = None,
+    raw_tokens: dict[str, RawTokenCounts] | None = None,
 ) -> str:
     """Generate a skeleton markdown page with LLM placeholders for a NEW FigmaPage.
 

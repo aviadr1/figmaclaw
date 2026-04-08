@@ -47,7 +47,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 from figmaclaw.figma_client import FigmaClient
-from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION, FrameComposition
+from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION, FrameComposition, RawTokenCounts
 from figmaclaw.figma_hash import compute_frame_hashes, compute_page_hash
 from figmaclaw.figma_models import FigmaPage, FigmaSection, from_page_node
 from figmaclaw.figma_parse import parse_flows, parse_frontmatter
@@ -80,7 +80,7 @@ def write_new_page(
     entry: PageEntry,
     *,
     raw_frames: dict[str, FrameComposition] | None = None,
-    raw_tokens: dict[str, dict[str, int]] | None = None,
+    raw_tokens: dict[str, RawTokenCounts] | None = None,
 ) -> Path:
     """Write a NEW scaffold .md for a FigmaPage (screen sections only) and return the path.
 
@@ -102,7 +102,7 @@ def update_page_frontmatter(
     entry: PageEntry,
     *,
     raw_frames: dict[str, FrameComposition] | None = None,
-    raw_tokens: dict[str, dict[str, int]] | None = None,
+    raw_tokens: dict[str, RawTokenCounts] | None = None,
 ) -> Path:
     """Update ONLY the frontmatter of an existing page .md file, preserving the body.
 
@@ -502,7 +502,7 @@ async def pull_file(
                     token_scan = scan_page(page_node, set(screen_frame_ids))
                     # Sparse frontmatter summary — only frames with at least one issue
                     raw_tokens = {
-                        fid: {"raw": fscan.raw, "stale": fscan.stale, "valid": fscan.valid}
+                        fid: RawTokenCounts(raw=fscan.raw, stale=fscan.stale, valid=fscan.valid)
                         for fid, fscan in token_scan.frames.items()
                         if fscan.raw > 0 or fscan.stale > 0
                     }
