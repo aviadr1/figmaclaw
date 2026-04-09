@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 
@@ -40,7 +40,7 @@ def parse_since(since: str) -> datetime | None:
         raise ValueError(f"Cannot parse --since {since!r}. Use e.g. '3m', '7d', '1y', or 'all'.")
     n, unit = int(m.group(1)), m.group(2)
     days = {"d": 1, "w": 7, "m": 30, "y": 365}[unit] * n
-    return datetime.now(timezone.utc) - timedelta(days=days)
+    return datetime.now(UTC) - timedelta(days=days)
 
 
 def write_json_if_changed(

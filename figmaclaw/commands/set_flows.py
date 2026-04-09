@@ -9,7 +9,6 @@ No Figma API call is made.
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
 import click
@@ -42,7 +41,10 @@ def _apply_flows(md: str, flows: list[list[str]]) -> str:
         fm_data["enriched_frame_hashes"] = _FlowDict(fm.enriched_frame_hashes)
 
     new_fm_body = yaml.dump(
-        fm_data, Dumper=_FrontmatterDumper, default_flow_style=False, allow_unicode=True,
+        fm_data,
+        Dumper=_FrontmatterDumper,
+        default_flow_style=False,
+        allow_unicode=True,
         width=2**20,
     ).rstrip()
     parts = split_frontmatter(md)
@@ -91,6 +93,5 @@ def set_flows_cmd(
     rel = str(md_path.relative_to(repo_dir) if md_path.is_relative_to(repo_dir) else md_path)
     click.echo(f"set-flows: updated flows in {rel}")
 
-    if auto_commit:
-        if git_commit(repo_dir, [rel], f"sync: set-flows {rel}"):
-            click.echo(f"  committed: {rel}")
+    if auto_commit and git_commit(repo_dir, [rel], f"sync: set-flows {rel}"):
+        click.echo(f"  committed: {rel}")

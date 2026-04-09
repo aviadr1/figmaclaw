@@ -9,16 +9,12 @@ INVARIANTS:
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-import pytest
-import yaml
 from click.testing import CliRunner
 
 from figmaclaw.figma_frontmatter import (
     CURRENT_ENRICHMENT_SCHEMA_VERSION,
-    FrameComposition,
 )
 from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection
 from figmaclaw.figma_render import scaffold_page
@@ -85,13 +81,19 @@ def test_mark_enriched_writes_enriched_schema_version(tmp_path: Path) -> None:
     """INVARIANT: mark-enriched writes enriched_schema_version = CURRENT to frontmatter."""
     md_path = _setup(tmp_path)
     runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "mark-enriched", str(md_path),
-    ])
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "mark-enriched",
+            str(md_path),
+        ],
+    )
 
     assert result.exit_code == 0, result.output
     from figmaclaw.figma_parse import parse_frontmatter
+
     fm = parse_frontmatter(md_path.read_text())
     assert fm is not None
     assert fm.enriched_schema_version == CURRENT_ENRICHMENT_SCHEMA_VERSION
@@ -103,13 +105,19 @@ def test_mark_enriched_preserves_raw_frames_from_pull_pass(tmp_path: Path) -> No
     md_path = _setup(tmp_path, extra_frontmatter=raw_frames_yaml)
 
     runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "mark-enriched", str(md_path),
-    ])
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "mark-enriched",
+            str(md_path),
+        ],
+    )
 
     assert result.exit_code == 0, result.output
     from figmaclaw.figma_parse import parse_frontmatter
+
     fm = parse_frontmatter(md_path.read_text())
     assert fm is not None
     assert "11:1" in fm.raw_frames
@@ -123,13 +131,19 @@ def test_mark_enriched_preserves_component_set_keys_from_pull_pass(tmp_path: Pat
     md_path = _setup(tmp_path, extra_frontmatter=csk_yaml)
 
     runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "mark-enriched", str(md_path),
-    ])
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "mark-enriched",
+            str(md_path),
+        ],
+    )
 
     assert result.exit_code == 0, result.output
     from figmaclaw.figma_parse import parse_frontmatter
+
     fm = parse_frontmatter(md_path.read_text())
     assert fm is not None
     assert fm.component_set_keys == {"ButtonV2": "abc123key", "AvatarV2": "def456key"}
@@ -142,10 +156,15 @@ def test_mark_enriched_preserves_llm_body(tmp_path: Path) -> None:
     body_before = original_text.split("---\n", 2)[-1]
 
     runner = CliRunner()
-    runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "mark-enriched", str(md_path),
-    ])
+    runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "mark-enriched",
+            str(md_path),
+        ],
+    )
 
     body_after = md_path.read_text().split("---\n", 2)[-1]
     assert body_before == body_after

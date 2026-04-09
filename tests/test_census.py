@@ -159,7 +159,10 @@ class TestCensusSkipBehavior:
         out = tmp_path / "figma" / "web-app" / "_census.md"
         content_before = out.read_text()
 
-        cs_after = [_make_component_set("Button", "aabb1122"), _make_component_set("Input", "ccdd3344")]
+        cs_after = [
+            _make_component_set("Button", "aabb1122"),
+            _make_component_set("Input", "ccdd3344"),
+        ]
         await self._run_census(tmp_path, cs_after)
 
         assert out.read_text() != content_before

@@ -573,7 +573,7 @@ async def test_body_survives_repeated_sync(tmp_path: Path) -> None:
 
     mock_client = _mock_figma_client()
 
-    for i in range(5):
+    for _i in range(5):
         with patch.object(sync_module, "FigmaClient") as MockClientClass:
             MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -598,7 +598,7 @@ async def test_body_survives_sync_then_set_flows_cycle(tmp_path: Path) -> None:
     mock_client = _mock_figma_client()
     runner = CliRunner()
 
-    for i in range(3):
+    for _i in range(3):
         # sync
         with patch.object(sync_module, "FigmaClient") as MockClientClass:
             MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)

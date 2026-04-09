@@ -63,7 +63,10 @@ def mark_stale_cmd(ctx: click.Context, md_path: Path, auto_commit: bool) -> None
     # enriched_* intentionally omitted
 
     new_fm_body = yaml.dump(
-        fm_data, Dumper=_FrontmatterDumper, default_flow_style=False, allow_unicode=True,
+        fm_data,
+        Dumper=_FrontmatterDumper,
+        default_flow_style=False,
+        allow_unicode=True,
         width=2**20,
     ).rstrip()
 
@@ -72,6 +75,5 @@ def mark_stale_cmd(ctx: click.Context, md_path: Path, auto_commit: bool) -> None
     rel = str(md_path.relative_to(repo_dir) if md_path.is_relative_to(repo_dir) else md_path)
     click.echo(f"mark-stale: cleared enrichment state from {rel}")
 
-    if auto_commit:
-        if git_commit(repo_dir, [rel], f"sync: mark {rel} as stale"):
-            click.echo(f"  committed: {rel}")
+    if auto_commit and git_commit(repo_dir, [rel], f"sync: mark {rel} as stale"):
+        click.echo(f"  committed: {rel}")

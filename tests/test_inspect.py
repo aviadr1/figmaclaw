@@ -24,8 +24,16 @@ from figmaclaw.main import cli
 
 def _make_page(with_descriptions: bool = False) -> FigmaPage:
     frames = [
-        FigmaFrame(node_id="11:1", name="welcome", description="Welcome screen." if with_descriptions else ""),
-        FigmaFrame(node_id="11:2", name="permissions", description="Permissions." if with_descriptions else ""),
+        FigmaFrame(
+            node_id="11:1",
+            name="welcome",
+            description="Welcome screen." if with_descriptions else "",
+        ),
+        FigmaFrame(
+            node_id="11:2",
+            name="permissions",
+            description="Permissions." if with_descriptions else "",
+        ),
     ]
     section = FigmaSection(node_id="10:1", name="onboarding", frames=frames)
     return FigmaPage(
@@ -63,10 +71,16 @@ def test_inspect_json_output_has_expected_schema(tmp_path: Path) -> None:
     """INVARIANT: --json output is a dict with file_key, page_node_id, total_frames, missing_descriptions, sections."""
     md_path = _write_md(tmp_path, _make_page())
     runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "inspect", str(md_path), "--json",
-    ])
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "inspect",
+            str(md_path),
+            "--json",
+        ],
+    )
 
     data = json.loads(result.output)
     assert "file_key" in data
@@ -81,10 +95,16 @@ def test_inspect_json_carries_file_key_and_page_node_id(tmp_path: Path) -> None:
     """INVARIANT: --json output carries the file_key and page_node_id from frontmatter."""
     md_path = _write_md(tmp_path, _make_page())
     runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "inspect", str(md_path), "--json",
-    ])
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "inspect",
+            str(md_path),
+            "--json",
+        ],
+    )
 
     data = json.loads(result.output)
     assert data["file_key"] == "abc123"
@@ -95,10 +115,16 @@ def test_inspect_json_includes_all_frames(tmp_path: Path) -> None:
     """INVARIANT: --json output includes every frame from the .md file."""
     md_path = _write_md(tmp_path, _make_page())
     runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "inspect", str(md_path), "--json",
-    ])
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "inspect",
+            str(md_path),
+            "--json",
+        ],
+    )
 
     data = json.loads(result.output)
     assert data["total_frames"] == 2
@@ -110,10 +136,16 @@ def test_inspect_exit_0_with_placeholders(tmp_path: Path) -> None:
     """INVARIANT: inspect always exits 0 on success. Placeholder count is in JSON, not exit code."""
     md_path = _write_md(tmp_path, _make_page(with_descriptions=False))
     runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "inspect", str(md_path), "--json",
-    ])
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "inspect",
+            str(md_path),
+            "--json",
+        ],
+    )
 
     assert result.exit_code == 0
     data = json.loads(result.output)
@@ -125,10 +157,16 @@ def test_inspect_exit_0_when_all_described(tmp_path: Path) -> None:
     """INVARIANT: inspect exits 0 with zero missing descriptions when all frames described."""
     md_path = _write_md(tmp_path, _make_page(with_descriptions=True))
     runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "inspect", str(md_path), "--json",
-    ])
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "inspect",
+            str(md_path),
+            "--json",
+        ],
+    )
 
     assert result.exit_code == 0
     data = json.loads(result.output)
@@ -157,10 +195,16 @@ def test_inspect_shows_needs_enrichment_for_unenriched_page(tmp_path: Path) -> N
     md_path = _write_md(tmp_path, page)
 
     runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "inspect", str(md_path), "--json",
-    ])
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "inspect",
+            str(md_path),
+            "--json",
+        ],
+    )
 
     assert result.exit_code == 0
     data = json.loads(result.output)
@@ -171,10 +215,16 @@ def test_inspect_json_per_section_pending_counts(tmp_path: Path) -> None:
     """INVARIANT: --json output includes per-section pending_frames counts."""
     md_path = _write_md(tmp_path, _make_page(with_descriptions=False))
     runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "inspect", str(md_path), "--json",
-    ])
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "inspect",
+            str(md_path),
+            "--json",
+        ],
+    )
 
     data = json.loads(result.output)
     assert "total_sections" in data
@@ -193,10 +243,16 @@ def test_inspect_json_per_section_zero_pending_when_described(tmp_path: Path) ->
     """INVARIANT: described sections have pending_frames=0."""
     md_path = _write_md(tmp_path, _make_page(with_descriptions=True))
     runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "inspect", str(md_path), "--json",
-    ])
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "inspect",
+            str(md_path),
+            "--json",
+        ],
+    )
 
     data = json.loads(result.output)
     assert data["pending_sections"] == 0
@@ -207,10 +263,16 @@ def test_inspect_json_section_threshold(tmp_path: Path) -> None:
     """INVARIANT: section_threshold is included in --json output."""
     md_path = _write_md(tmp_path, _make_page())
     runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "inspect", str(md_path), "--json",
-    ])
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "inspect",
+            str(md_path),
+            "--json",
+        ],
+    )
 
     data = json.loads(result.output)
     assert "section_threshold" in data
@@ -223,15 +285,21 @@ def test_inspect_exit_code_2_for_non_figmaclaw_file(tmp_path: Path) -> None:
     md_path.write_text("# Plain markdown\n\nNo frontmatter here.\n")
 
     runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "inspect", str(md_path),
-    ])
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "inspect",
+            str(md_path),
+        ],
+    )
 
     assert result.exit_code == 2
 
 
 # --- Schema version staleness reporting ---
+
 
 def _write_md_with_enrichment(tmp_path: Path, enriched_schema_version: int = 0) -> Path:
     """Write a fully-described page .md that has been enriched at a given schema version."""
@@ -256,10 +324,16 @@ def test_inspect_json_includes_schema_version_fields(tmp_path: Path) -> None:
     """INVARIANT: --json output includes all schema staleness fields."""
     md_path = _write_md(tmp_path, _make_page())
     runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "inspect", str(md_path), "--json",
-    ])
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "inspect",
+            str(md_path),
+            "--json",
+        ],
+    )
 
     data = json.loads(result.output)
     assert "pull_schema_stale" in data
@@ -275,7 +349,7 @@ def test_inspect_json_includes_schema_version_fields(tmp_path: Path) -> None:
 def test_inspect_reports_pull_schema_stale_when_manifest_version_behind(tmp_path: Path) -> None:
     """INVARIANT: pull_schema_stale=True when manifest file has pull_schema_version < current."""
     from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
-    from figmaclaw.figma_sync_state import FileEntry, FigmaSyncState
+    from figmaclaw.figma_sync_state import FigmaSyncState, FileEntry
 
     md_path = _write_md(tmp_path, _make_page())
 
@@ -291,10 +365,16 @@ def test_inspect_reports_pull_schema_stale_when_manifest_version_behind(tmp_path
     state.save()
 
     runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "inspect", str(md_path), "--json",
-    ])
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "inspect",
+            str(md_path),
+            "--json",
+        ],
+    )
 
     data = json.loads(result.output)
     assert data["pull_schema_stale"] is True
@@ -305,7 +385,7 @@ def test_inspect_reports_pull_schema_stale_when_manifest_version_behind(tmp_path
 def test_inspect_reports_pull_schema_current_when_manifest_version_matches(tmp_path: Path) -> None:
     """INVARIANT: pull_schema_stale=False when manifest has pull_schema_version == current."""
     from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
-    from figmaclaw.figma_sync_state import FileEntry, FigmaSyncState
+    from figmaclaw.figma_sync_state import FigmaSyncState, FileEntry
 
     md_path = _write_md(tmp_path, _make_page())
 
@@ -320,10 +400,16 @@ def test_inspect_reports_pull_schema_current_when_manifest_version_matches(tmp_p
     state.save()
 
     runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "inspect", str(md_path), "--json",
-    ])
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "inspect",
+            str(md_path),
+            "--json",
+        ],
+    )
 
     data = json.loads(result.output)
     assert data["pull_schema_stale"] is False
@@ -337,10 +423,16 @@ def test_inspect_reports_enrichment_must_update_when_below_required(tmp_path: Pa
     md_path = _write_md_with_enrichment(tmp_path, enriched_schema_version=0)
 
     runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "inspect", str(md_path), "--json",
-    ])
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "inspect",
+            str(md_path),
+            "--json",
+        ],
+    )
 
     data = json.loads(result.output)
     if MIN_REQUIRED_ENRICHMENT_SCHEMA_VERSION > 0:
@@ -352,28 +444,39 @@ def test_inspect_reports_enrichment_must_update_when_below_required(tmp_path: Pa
         assert data["enrichment_must_update"] is False
 
 
-def test_inspect_reports_enrichment_should_update_when_below_current_but_above_required(tmp_path: Path) -> None:
+def test_inspect_reports_enrichment_should_update_when_below_current_but_above_required(
+    tmp_path: Path,
+) -> None:
     """INVARIANT: enrichment_should_update=True when MIN_REQUIRED <= esv < CURRENT."""
     from figmaclaw.figma_frontmatter import (
         CURRENT_ENRICHMENT_SCHEMA_VERSION,
         MIN_REQUIRED_ENRICHMENT_SCHEMA_VERSION,
     )
+
     # This test is only meaningful when CURRENT > MIN_REQUIRED (SHOULD bucket exists)
     if CURRENT_ENRICHMENT_SCHEMA_VERSION <= MIN_REQUIRED_ENRICHMENT_SCHEMA_VERSION:
         pytest.skip("No SHOULD bucket: CURRENT == MIN_REQUIRED")
 
     # Enrich at MIN_REQUIRED — valid but not latest
-    md_path = _write_md_with_enrichment(tmp_path, enriched_schema_version=MIN_REQUIRED_ENRICHMENT_SCHEMA_VERSION)
+    md_path = _write_md_with_enrichment(
+        tmp_path, enriched_schema_version=MIN_REQUIRED_ENRICHMENT_SCHEMA_VERSION
+    )
 
     runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "inspect", str(md_path), "--json",
-    ])
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "inspect",
+            str(md_path),
+            "--json",
+        ],
+    )
 
     data = json.loads(result.output)
-    assert data["enrichment_must_update"] is False   # valid output
-    assert data["enrichment_should_update"] is True   # but outdated
+    assert data["enrichment_must_update"] is False  # valid output
+    assert data["enrichment_should_update"] is True  # but outdated
 
 
 def test_inspect_no_schema_staleness_when_all_current(tmp_path: Path) -> None:
@@ -382,9 +485,11 @@ def test_inspect_no_schema_staleness_when_all_current(tmp_path: Path) -> None:
         CURRENT_ENRICHMENT_SCHEMA_VERSION,
         CURRENT_PULL_SCHEMA_VERSION,
     )
-    from figmaclaw.figma_sync_state import FileEntry, FigmaSyncState
+    from figmaclaw.figma_sync_state import FigmaSyncState, FileEntry
 
-    md_path = _write_md_with_enrichment(tmp_path, enriched_schema_version=CURRENT_ENRICHMENT_SCHEMA_VERSION)
+    md_path = _write_md_with_enrichment(
+        tmp_path, enriched_schema_version=CURRENT_ENRICHMENT_SCHEMA_VERSION
+    )
 
     state = FigmaSyncState(tmp_path)
     state.load()
@@ -397,10 +502,16 @@ def test_inspect_no_schema_staleness_when_all_current(tmp_path: Path) -> None:
     state.save()
 
     runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "inspect", str(md_path), "--json",
-    ])
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "inspect",
+            str(md_path),
+            "--json",
+        ],
+    )
 
     data = json.loads(result.output)
     assert data["pull_schema_stale"] is False

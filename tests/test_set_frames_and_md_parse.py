@@ -10,12 +10,9 @@ from __future__ import annotations
 
 import textwrap
 
-import pytest
-
 from figmaclaw.figma_md_parse import parse_sections, section_line_ranges
 from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection
 from figmaclaw.figma_render import scaffold_page
-from figmaclaw.figma_parse import parse_frontmatter
 from figmaclaw.figma_sync_state import PageEntry
 
 
@@ -51,6 +48,7 @@ def _rendered_md_with_frame(node_id: str, name: str, description: str = "") -> s
 
 
 # --- parse_sections: structure extraction ---
+
 
 def test_parse_sections_extracts_section_names_and_node_ids():
     """INVARIANT: Section names and node IDs are parsed from body H2 headers."""
@@ -281,9 +279,7 @@ def test_empty_name_section_heading_preserves_node_id():
     """
     sections = parse_sections(_LEGACY_EMPTY_NAME_SECTION_MD)
     by_id = {s.node_id: s for s in sections}
-    assert "20:1" in by_id, (
-        "Empty-name section was dropped — this is the figmaclaw#25 regression"
-    )
+    assert "20:1" in by_id, "Empty-name section was dropped — this is the figmaclaw#25 regression"
 
 
 def test_empty_name_section_frames_are_enumerable():
@@ -310,8 +306,7 @@ def test_render_then_parse_preserves_all_frames_even_with_empty_section_name():
     via scaffold_page, then parse it back. Every frame must survive.
     """
     frames_in_empty = [
-        FigmaFrame(node_id=f"21:{i}", name=f"Frame {i}", description="")
-        for i in range(1, 6)
+        FigmaFrame(node_id=f"21:{i}", name=f"Frame {i}", description="") for i in range(1, 6)
     ]
     frames_in_named = [
         FigmaFrame(node_id="11:1", name="Welcome", description=""),

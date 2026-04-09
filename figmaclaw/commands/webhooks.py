@@ -228,8 +228,7 @@ async def sync(
             keep = matches[0]
             extras = matches[1:]
             click.echo(
-                f"  {file_key}: duplicate webhooks {[wh.id for wh in extras]} "
-                f"(keeping {keep.id})"
+                f"  {file_key}: duplicate webhooks {[wh.id for wh in extras]} (keeping {keep.id})"
             )
             for wh in extras:
                 if dry_run:
@@ -271,9 +270,7 @@ async def register(
 
     duplicates = [fk for fk in file_keys if len(by_file.get(fk, [])) > 1]
     if duplicates:
-        click.echo(
-            f"Warning: {len(duplicates)} files have duplicate webhooks — " f"run 'sync' to fix"
-        )
+        click.echo(f"Warning: {len(duplicates)} files have duplicate webhooks — run 'sync' to fix")
 
     created, failed = await _create_missing(
         client,
@@ -334,7 +331,7 @@ def webhooks_group() -> None:
     """Manage Figma file-level webhooks for tracked files."""
 
 
-def _run(coro):
+def _run(coro: Any) -> Any:
     return asyncio.run(coro)
 
 

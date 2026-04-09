@@ -1,4 +1,5 @@
 """figmaclaw suggest-tokens — match raw token values to DS variable candidates."""
+
 from __future__ import annotations
 
 import json
@@ -7,17 +8,25 @@ from pathlib import Path
 
 import click
 
-from figmaclaw.token_catalog import TokenCatalog, load_catalog, suggest_for_sidecar
+from figmaclaw.token_catalog import load_catalog, suggest_for_sidecar
 
 
 @click.command("suggest-tokens")
-@click.option("--sidecar", "sidecar_path", required=True, type=click.Path(exists=True),
-              help="Path to the .tokens.json sidecar file.")
-@click.option("--frame", "frames", multiple=True,
-              help="Only process frames matching this name substring (case-insensitive). "
-                   "May be specified multiple times.")
-@click.option("--dry-run", is_flag=True,
-              help="Print summary but don't write changes.")
+@click.option(
+    "--sidecar",
+    "sidecar_path",
+    required=True,
+    type=click.Path(exists=True),
+    help="Path to the .tokens.json sidecar file.",
+)
+@click.option(
+    "--frame",
+    "frames",
+    multiple=True,
+    help="Only process frames matching this name substring (case-insensitive). "
+    "May be specified multiple times.",
+)
+@click.option("--dry-run", is_flag=True, help="Print summary but don't write changes.")
 @click.pass_context
 def suggest_tokens_cmd(
     ctx: click.Context,
@@ -38,7 +47,6 @@ def suggest_tokens_cmd(
 
     # Apply frame filter if requested
     if frames:
-
         filtered_frames = {
             fid: fdata
             for fid, fdata in sidecar.get("frames", {}).items()
@@ -66,7 +74,6 @@ def suggest_tokens_cmd(
 
     # Collect results stats
     auto = ambiguous = no_match = 0
-    prop_no_match: Counter[str] = Counter()
     prop_value_no_match: Counter[tuple[str, str]] = Counter()
 
     for fdata in work_sidecar.get("frames", {}).values():

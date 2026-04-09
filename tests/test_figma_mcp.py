@@ -46,15 +46,18 @@ def _mock_three_step(
     Defaults to the normal happy-path responses when not overridden.
     Pass a list to *capture* to collect all requests made during the test.
     """
-    responses: deque[httpx.Response] = deque([
-        init_resp or httpx.Response(
-            200,
-            json=_init_response(),
-            headers={"Mcp-Session-Id": SESSION_ID},
-        ),
-        notify_resp or httpx.Response(202),
-        call_resp or httpx.Response(200, json=_tools_call_response()),
-    ])
+    responses: deque[httpx.Response] = deque(
+        [
+            init_resp
+            or httpx.Response(
+                200,
+                json=_init_response(),
+                headers={"Mcp-Session-Id": SESSION_ID},
+            ),
+            notify_resp or httpx.Response(202),
+            call_resp or httpx.Response(200, json=_tools_call_response()),
+        ]
+    )
 
     def _side_effect(request: httpx.Request) -> httpx.Response:
         if capture is not None:
@@ -99,15 +102,19 @@ class TestFromEnv:
     def test_raises_when_env_var_missing(self) -> None:
         """INVARIANT: from_env() raises FigmaMcpError when env var is absent."""
         env = {k: v for k, v in os.environ.items() if k != "FIGMA_MCP_TOKEN"}
-        with patch.dict(os.environ, env, clear=True):
-            with pytest.raises(FigmaMcpError, match="FIGMA_MCP_TOKEN"):
-                FigmaMcpClient.from_env()
+        with (
+            patch.dict(os.environ, env, clear=True),
+            pytest.raises(FigmaMcpError, match="FIGMA_MCP_TOKEN"),
+        ):
+            FigmaMcpClient.from_env()
 
     def test_raises_when_env_var_empty(self) -> None:
         """INVARIANT: from_env() raises FigmaMcpError when env var is empty string."""
-        with patch.dict(os.environ, {"FIGMA_MCP_TOKEN": ""}):
-            with pytest.raises(FigmaMcpError, match="FIGMA_MCP_TOKEN"):
-                FigmaMcpClient.from_env()
+        with (
+            patch.dict(os.environ, {"FIGMA_MCP_TOKEN": ""}),
+            pytest.raises(FigmaMcpError, match="FIGMA_MCP_TOKEN"),
+        ):
+            FigmaMcpClient.from_env()
 
     def test_custom_var_name(self) -> None:
         """INVARIANT: from_env() supports a custom environment variable name."""
@@ -124,15 +131,18 @@ class TestFromClaudeCredentials:
 
     def test_reads_token_from_mcp_oauth(self, tmp_path: Path) -> None:
         """INVARIANT: from_claude_credentials() reads token from mcpOAuth (primary path)."""
-        self._write_creds(tmp_path, {
-            "mcpOAuth": {
-                "plugin:figma:figma|abc123": {
-                    "accessToken": "mcp-figma-token",
-                    "refreshToken": "r",
-                    "expiresAt": 9999999999,
+        self._write_creds(
+            tmp_path,
+            {
+                "mcpOAuth": {
+                    "plugin:figma:figma|abc123": {
+                        "accessToken": "mcp-figma-token",
+                        "refreshToken": "r",
+                        "expiresAt": 9999999999,
+                    }
                 }
-            }
-        })
+            },
+        )
         with patch.object(Path, "home", return_value=tmp_path):
             client = FigmaMcpClient.from_claude_credentials()
         assert client._token == "mcp-figma-token"
@@ -140,35 +150,44 @@ class TestFromClaudeCredentials:
     def test_falls_back_to_claude_ai_oauth_token(self, tmp_path: Path) -> None:
         """INVARIANT: from_claude_credentials() falls back to claudeAiOauthToken when
         mcpOAuth has no Figma key."""
-        self._write_creds(tmp_path, {
-            "mcpOAuth": {"plugin:slack:slack|xyz": {"accessToken": "slack-token"}},
-            "claudeAiOauthToken": {"accessToken": "claude-oauth-token"},
-        })
+        self._write_creds(
+            tmp_path,
+            {
+                "mcpOAuth": {"plugin:slack:slack|xyz": {"accessToken": "slack-token"}},
+                "claudeAiOauthToken": {"accessToken": "claude-oauth-token"},
+            },
+        )
         with patch.object(Path, "home", return_value=tmp_path):
             client = FigmaMcpClient.from_claude_credentials()
         assert client._token == "claude-oauth-token"
 
     def test_raises_when_file_missing(self, tmp_path: Path) -> None:
         """INVARIANT: from_claude_credentials() raises FigmaMcpError when file absent."""
-        with patch.object(Path, "home", return_value=tmp_path):
-            with pytest.raises(FigmaMcpError, match="not found"):
-                FigmaMcpClient.from_claude_credentials()
+        with (
+            patch.object(Path, "home", return_value=tmp_path),
+            pytest.raises(FigmaMcpError, match="not found"),
+        ):
+            FigmaMcpClient.from_claude_credentials()
 
     def test_raises_when_file_is_invalid_json(self, tmp_path: Path) -> None:
         """INVARIANT: from_claude_credentials() raises FigmaMcpError on bad JSON."""
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir()
         (claude_dir / ".credentials.json").write_text("not-json{{{")
-        with patch.object(Path, "home", return_value=tmp_path):
-            with pytest.raises(FigmaMcpError, match="Failed to parse"):
-                FigmaMcpClient.from_claude_credentials()
+        with (
+            patch.object(Path, "home", return_value=tmp_path),
+            pytest.raises(FigmaMcpError, match="Failed to parse"),
+        ):
+            FigmaMcpClient.from_claude_credentials()
 
     def test_raises_when_no_figma_token_anywhere(self, tmp_path: Path) -> None:
         """INVARIANT: from_claude_credentials() raises FigmaMcpError when no Figma token."""
         self._write_creds(tmp_path, {"other": "data"})
-        with patch.object(Path, "home", return_value=tmp_path):
-            with pytest.raises(FigmaMcpError, match="Could not find"):
-                FigmaMcpClient.from_claude_credentials()
+        with (
+            patch.object(Path, "home", return_value=tmp_path),
+            pytest.raises(FigmaMcpError, match="Could not find"),
+        ):
+            FigmaMcpClient.from_claude_credentials()
 
 
 class TestAuto:
@@ -182,15 +201,15 @@ class TestAuto:
         """INVARIANT: auto() reads from credentials file when env var is absent."""
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir()
-        (claude_dir / ".credentials.json").write_text(json.dumps({
-            "mcpOAuth": {
-                "plugin:figma:figma|abc": {"accessToken": "cred-token"}
-            }
-        }))
+        (claude_dir / ".credentials.json").write_text(
+            json.dumps({"mcpOAuth": {"plugin:figma:figma|abc": {"accessToken": "cred-token"}}})
+        )
         env = {k: v for k, v in os.environ.items() if k != "FIGMA_MCP_TOKEN"}
-        with patch.dict(os.environ, env, clear=True):
-            with patch.object(Path, "home", return_value=tmp_path):
-                client = FigmaMcpClient.auto()
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch.object(Path, "home", return_value=tmp_path),
+        ):
+            client = FigmaMcpClient.auto()
         assert client._token == "cred-token"
 
 
@@ -275,13 +294,15 @@ class TestSessionLifecycle:
     async def test_reuses_single_handshake_for_multiple_calls(self) -> None:
         """INVARIANT: open_session() initializes once and can run many tools/call requests."""
         captured: list[httpx.Request] = []
-        responses: deque[httpx.Response] = deque([
-            httpx.Response(200, json=_init_response(), headers={"Mcp-Session-Id": SESSION_ID}),
-            httpx.Response(202),
-            httpx.Response(200, json=_tools_call_response()),
-            httpx.Response(200, json=_tools_call_response()),
-            httpx.Response(204),
-        ])
+        responses: deque[httpx.Response] = deque(
+            [
+                httpx.Response(200, json=_init_response(), headers={"Mcp-Session-Id": SESSION_ID}),
+                httpx.Response(202),
+                httpx.Response(200, json=_tools_call_response()),
+                httpx.Response(200, json=_tools_call_response()),
+                httpx.Response(204),
+            ]
+        )
 
         def _side_effect(request: httpx.Request) -> httpx.Response:
             captured.append(request)
@@ -298,7 +319,9 @@ class TestSessionLifecycle:
                 await sess.close(best_effort=False)
 
         methods = [
-            f"{req.method}:{json.loads(req.content)['method']}" if req.method == "POST" else req.method
+            f"{req.method}:{json.loads(req.content)['method']}"
+            if req.method == "POST"
+            else req.method
             for req in captured
         ]
         assert methods == [
@@ -358,9 +381,7 @@ class TestSessionLifecycle:
             "error": {"code": -32600, "message": "Invalid Request"},
         }
         with _mock_three_step(
-            init_resp=httpx.Response(
-                200, json=error_body, headers={"Mcp-Session-Id": SESSION_ID}
-            ),
+            init_resp=httpx.Response(200, json=error_body, headers={"Mcp-Session-Id": SESSION_ID}),
         ):
             client = FigmaMcpClient(_TOKEN)
             with pytest.raises(FigmaMcpError, match="Invalid Request"):
@@ -406,9 +427,7 @@ class TestSessionLifecycle:
             ),
         ):
             client = FigmaMcpClient(_TOKEN)
-            result = await client.use_figma(
-                file_key=FILE_KEY, code="1+1", description="test"
-            )
+            result = await client.use_figma(file_key=FILE_KEY, code="1+1", description="test")
 
         assert result == _tools_call_response()["result"]
 
@@ -424,8 +443,6 @@ class TestSessionLifecycle:
             ),
         ):
             client = FigmaMcpClient(_TOKEN)
-            result = await client.use_figma(
-                file_key=FILE_KEY, code="1+1", description="test"
-            )
+            result = await client.use_figma(file_key=FILE_KEY, code="1+1", description="test")
 
         assert result == _tools_call_response()["result"]

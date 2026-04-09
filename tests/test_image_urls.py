@@ -27,10 +27,7 @@ from figmaclaw.main import cli
 
 def _make_page(node_ids: list[str] | None = None) -> FigmaPage:
     ids = node_ids or ["11:1", "11:2", "11:3"]
-    frames = [
-        FigmaFrame(node_id=nid, name=f"frame-{nid}", description="")
-        for nid in ids
-    ]
+    frames = [FigmaFrame(node_id=nid, name=f"frame-{nid}", description="") for nid in ids]
     section = FigmaSection(node_id="10:1", name="onboarding", frames=frames)
     return FigmaPage(
         file_key="abc123",
@@ -66,17 +63,24 @@ async def test_image_urls_returns_urls_for_specified_nodes(tmp_path: Path) -> No
     md_path = _write_md(tmp_path, _make_page())
 
     mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_image_urls = AsyncMock(return_value={
-        "11:1": "https://s3.example.com/1.png",
-        "11:2": "https://s3.example.com/2.png",
-    })
+    mock_client.get_image_urls = AsyncMock(
+        return_value={
+            "11:1": "https://s3.example.com/1.png",
+            "11:2": "https://s3.example.com/2.png",
+        }
+    )
 
     with patch.object(image_urls_module, "FigmaClient") as MockClientClass:
         MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
 
         result = await image_urls_module._run(
-            "fake-key", tmp_path, md_path, nodes="11:1,11:2", scale=0.5, img_format="png",
+            "fake-key",
+            tmp_path,
+            md_path,
+            nodes="11:1,11:2",
+            scale=0.5,
+            img_format="png",
         )
 
     assert result["file_key"] == "abc123"
@@ -85,7 +89,10 @@ async def test_image_urls_returns_urls_for_specified_nodes(tmp_path: Path) -> No
         "11:2": "https://s3.example.com/2.png",
     }
     mock_client.get_image_urls.assert_called_once_with(
-        "abc123", ["11:1", "11:2"], scale=0.5, format="png",
+        "abc123",
+        ["11:1", "11:2"],
+        scale=0.5,
+        format="png",
     )
 
 
@@ -95,18 +102,25 @@ async def test_image_urls_uses_all_frames_when_no_nodes(tmp_path: Path) -> None:
     md_path = _write_md(tmp_path, _make_page(["11:1", "11:2", "11:3"]))
 
     mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_image_urls = AsyncMock(return_value={
-        "11:1": "https://s3.example.com/1.png",
-        "11:2": "https://s3.example.com/2.png",
-        "11:3": "https://s3.example.com/3.png",
-    })
+    mock_client.get_image_urls = AsyncMock(
+        return_value={
+            "11:1": "https://s3.example.com/1.png",
+            "11:2": "https://s3.example.com/2.png",
+            "11:3": "https://s3.example.com/3.png",
+        }
+    )
 
     with patch.object(image_urls_module, "FigmaClient") as MockClientClass:
         MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
 
         result = await image_urls_module._run(
-            "fake-key", tmp_path, md_path, nodes=None, scale=0.5, img_format="png",
+            "fake-key",
+            tmp_path,
+            md_path,
+            nodes=None,
+            scale=0.5,
+            img_format="png",
         )
 
     assert len(result["images"]) == 3
@@ -130,8 +144,13 @@ async def test_image_urls_batches_over_50_nodes(tmp_path: Path) -> None:
         MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        result = await image_urls_module._run(
-            "fake-key", tmp_path, md_path, nodes=None, scale=0.5, img_format="png",
+        await image_urls_module._run(
+            "fake-key",
+            tmp_path,
+            md_path,
+            nodes=None,
+            scale=0.5,
+            img_format="png",
         )
 
     # Two batches: 50 + 25
@@ -148,20 +167,30 @@ async def test_image_urls_passes_scale_and_format(tmp_path: Path) -> None:
     md_path = _write_md(tmp_path, _make_page(["11:1"]))
 
     mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_image_urls = AsyncMock(return_value={
-        "11:1": "https://s3.example.com/1.svg",
-    })
+    mock_client.get_image_urls = AsyncMock(
+        return_value={
+            "11:1": "https://s3.example.com/1.svg",
+        }
+    )
 
     with patch.object(image_urls_module, "FigmaClient") as MockClientClass:
         MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
 
         result = await image_urls_module._run(
-            "fake-key", tmp_path, md_path, nodes="11:1", scale=2.0, img_format="svg",
+            "fake-key",
+            tmp_path,
+            md_path,
+            nodes="11:1",
+            scale=2.0,
+            img_format="svg",
         )
 
     mock_client.get_image_urls.assert_called_once_with(
-        "abc123", ["11:1"], scale=2.0, format="svg",
+        "abc123",
+        ["11:1"],
+        scale=2.0,
+        format="svg",
     )
     assert result["images"]["11:1"] == "https://s3.example.com/1.svg"
 
@@ -199,7 +228,12 @@ async def test_image_urls_empty_when_no_frames(tmp_path: Path) -> None:
     md_path = _write_md(tmp_path, page)
 
     result = await image_urls_module._run(
-        "fake-key", tmp_path, md_path, nodes=None, scale=0.5, img_format="png",
+        "fake-key",
+        tmp_path,
+        md_path,
+        nodes=None,
+        scale=0.5,
+        img_format="png",
     )
 
     assert result["file_key"] == "abc123"

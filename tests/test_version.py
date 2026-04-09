@@ -14,9 +14,9 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import figmaclaw._build_info as _build_info
 from click.testing import CliRunner
 
+import figmaclaw._build_info as _build_info
 from figmaclaw.main import cli
 
 
@@ -40,7 +40,11 @@ def test_version_shows_commit_message_first_line() -> None:
     with (
         patch.object(_build_info, "__version__", "1.0.0"),
         patch.object(_build_info, "__commit__", "deadbeef12345678"),
-        patch.object(_build_info, "__commit_message__", "fix: repair the thing\n\nLonger body that must not appear."),
+        patch.object(
+            _build_info,
+            "__commit_message__",
+            "fix: repair the thing\n\nLonger body that must not appear.",
+        ),
         patch.object(_build_info, "__pr__", None),
     ):
         result = runner.invoke(cli, ["--version"])
@@ -89,7 +93,9 @@ def test_version_no_second_line_when_message_empty() -> None:
     ):
         result = runner.invoke(cli, ["--version"])
     assert result.exit_code == 0
-    assert result.output.strip().count("\n") == 0, "should be exactly one line when message is empty"
+    assert (
+        result.output.strip().count("\n") == 0
+    ), "should be exactly one line when message is empty"
 
 
 def test_version_no_pr_suffix_when_pr_is_none() -> None:

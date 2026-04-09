@@ -86,9 +86,7 @@ def compute_page_hash(page_node: dict) -> str:
                 continue
             if not is_visible(grandchild):
                 continue
-            tuples.append(
-                (grandchild["id"], grandchild.get("name", ""), gc_type, child["id"])
-            )
+            tuples.append((grandchild["id"], grandchild.get("name", ""), gc_type, child["id"]))
 
     # Sort for stability — order in the Figma JSON should not matter.
     canonical = json.dumps(sorted(tuples), separators=(",", ":"))

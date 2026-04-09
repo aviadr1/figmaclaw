@@ -399,7 +399,7 @@ async def _run(
             for (fk, fn, _, _, _), d in zip(active_files, diffs, strict=False):
                 if isinstance(d, BaseException):
                     click.echo(
-                        f"  WARNING: failed to diff {fn} ({fk}): " f"{type(d).__name__}: {d}",
+                        f"  WARNING: failed to diff {fn} ({fk}): {type(d).__name__}: {d}",
                         err=True,
                     )
                     continue

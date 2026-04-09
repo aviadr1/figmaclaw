@@ -36,7 +36,6 @@ from figmaclaw.figma_schema import (
     UNGROUPED_SECTION,
     UNNAMED,
     FrameRow,
-    SectionHeading,
     assert_frame_row_round_trip,
     assert_section_round_trip,
     is_component,
@@ -56,7 +55,6 @@ from figmaclaw.figma_schema import (
     render_section_heading,
     render_variant_table_header,
 )
-
 
 # ---------------------------------------------------------------------------
 # SCH-1 / SCH-2 — name normalization.

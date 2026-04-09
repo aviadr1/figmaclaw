@@ -40,7 +40,9 @@ def _count_pending_in_range(lines: list[str], start: int, end: int) -> int:
 
 
 def _stale_frame_ids(
-    repo_dir: Path, file_key: str, page_node_id: str,
+    repo_dir: Path,
+    file_key: str,
+    page_node_id: str,
     enriched_frame_hashes: dict[str, str] | None,
 ) -> set[str]:
     """Return frame IDs whose manifest hash differs from enriched hash.
@@ -51,6 +53,7 @@ def _stale_frame_ids(
     """
     try:
         from figmaclaw.figma_sync_state import FigmaSyncState
+
         state = FigmaSyncState(repo_dir)
         state.load()
     except Exception:
@@ -79,13 +82,18 @@ def _stale_frame_ids(
 @click.command("inspect")
 @click.argument("md_path", type=click.Path(exists=True, path_type=Path))
 @click.option(
-    "--needs-enrichment", "needs_enrichment_only", is_flag=True,
+    "--needs-enrichment",
+    "needs_enrichment_only",
+    is_flag=True,
     help="Show only frames/pages that need enrichment.",
 )
 @click.option("--json", "json_output", is_flag=True, help="Output structured JSON.")
 @click.pass_context
 def inspect_cmd(
-    ctx: click.Context, md_path: Path, needs_enrichment_only: bool, json_output: bool,
+    ctx: click.Context,
+    md_path: Path,
+    needs_enrichment_only: bool,
+    json_output: bool,
 ) -> None:
     """Inspect a figmaclaw page .md — show sections, frames, and enrichment status.
 
@@ -109,7 +117,10 @@ def inspect_cmd(
 
     # Compute stale frames from manifest vs enriched hashes
     stale_ids = _stale_frame_ids(
-        repo_dir, meta.file_key, meta.page_node_id, meta.enriched_frame_hashes,
+        repo_dir,
+        meta.file_key,
+        meta.page_node_id,
+        meta.enriched_frame_hashes,
     )
 
     total = 0
@@ -127,39 +138,40 @@ def inspect_cmd(
         total += section_frames
         section_pending = _count_pending_in_range(lines, start, end)
         missing += section_pending
-        section_stale = sum(
-            1 for f in section.frames if f.node_id in stale_ids
-        )
+        section_stale = sum(1 for f in section.frames if f.node_id in stale_ids)
         if section_pending > 0:
             pending_section_count += 1
         if section_stale > 0:
             stale_section_count += 1
 
-        section_data.append({
-            "name": section.name,
-            "node_id": section.node_id,
-            "total_frames": section_frames,
-            "pending_frames": section_pending,
-            "stale_frames": section_stale,
-            "frames": [
-                {
-                    "name": f.name,
-                    "node_id": f.node_id,
-                    "in_frontmatter": f.node_id in frame_ids,
-                }
-                for f in section.frames
-            ],
-        })
+        section_data.append(
+            {
+                "name": section.name,
+                "node_id": section.node_id,
+                "total_frames": section_frames,
+                "pending_frames": section_pending,
+                "stale_frames": section_stale,
+                "frames": [
+                    {
+                        "name": f.name,
+                        "node_id": f.node_id,
+                        "in_frontmatter": f.node_id in frame_ids,
+                    }
+                    for f in section.frames
+                ],
+            }
+        )
 
     has_placeholders = missing > 0 or "<!-- LLM:" in md_text
 
     # Schema staleness: pull-pass frontmatter fields
     try:
         from figmaclaw.figma_sync_state import FigmaSyncState as _FSS
+
         _state = _FSS(repo_dir)
         _state.load()
         _file_entry = _state.manifest.files.get(meta.file_key)
-        file_pull_schema_version = (_file_entry.pull_schema_version if _file_entry else 0)
+        file_pull_schema_version = _file_entry.pull_schema_version if _file_entry else 0
     except Exception:
         file_pull_schema_version = 0
     pull_schema_stale = file_pull_schema_version < CURRENT_PULL_SCHEMA_VERSION
@@ -179,9 +191,7 @@ def inspect_cmd(
     if json_output:
         output = {
             "md_path": str(
-                md_path.relative_to(repo_dir)
-                if md_path.is_relative_to(repo_dir)
-                else md_path
+                md_path.relative_to(repo_dir) if md_path.is_relative_to(repo_dir) else md_path
             ),
             "file_key": meta.file_key,
             "page_node_id": meta.page_node_id,
@@ -208,17 +218,25 @@ def inspect_cmd(
         click.echo(f"{rel}")
         click.echo(f"  file_key: {meta.file_key}  page_node_id: {meta.page_node_id}")
         click.echo(f"  {total} frame(s) total, {missing} pending, {len(stale_ids)} stale")
-        click.echo(f"  {total_sections} sections ({pending_section_count} pending, {stale_section_count} stale)")
+        click.echo(
+            f"  {total_sections} sections ({pending_section_count} pending, {stale_section_count} stale)"
+        )
         if meta.enriched_hash:
             click.echo(f"  enriched_hash: {meta.enriched_hash}  enriched_at: {meta.enriched_at}")
         else:
             click.echo("  NOT enriched")
         if pull_schema_stale:
-            click.echo(f"  [PULL-SCHEMA STALE] frontmatter v{file_pull_schema_version} < current v{CURRENT_PULL_SCHEMA_VERSION} — pull-only refresh needed")
+            click.echo(
+                f"  [PULL-SCHEMA STALE] frontmatter v{file_pull_schema_version} < current v{CURRENT_PULL_SCHEMA_VERSION} — pull-only refresh needed"
+            )
         if enrichment_must_update:
-            click.echo(f"  [ENRICH MUST] enrichment v{esv} < required v{MIN_REQUIRED_ENRICHMENT_SCHEMA_VERSION} — body must be re-enriched")
+            click.echo(
+                f"  [ENRICH MUST] enrichment v{esv} < required v{MIN_REQUIRED_ENRICHMENT_SCHEMA_VERSION} — body must be re-enriched"
+            )
         elif enrichment_should_update:
-            click.echo(f"  [ENRICH SHOULD] enrichment v{esv} < current v{CURRENT_ENRICHMENT_SCHEMA_VERSION} — body should be re-enriched (opportunistic)")
+            click.echo(
+                f"  [ENRICH SHOULD] enrichment v{esv} < current v{CURRENT_ENRICHMENT_SCHEMA_VERSION} — body should be re-enriched (opportunistic)"
+            )
         click.echo("")
         for sd in section_data:
             status = ""

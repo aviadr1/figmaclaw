@@ -67,18 +67,22 @@ async def test_screenshots_returns_manifest_with_file_key(tmp_path: Path) -> Non
     md_path = _write_md(tmp_path, _make_page())
 
     mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_image_urls = AsyncMock(return_value={
-        "11:1": "http://example.com/1.png",
-        "11:2": "http://example.com/2.png",
-        "11:3": "http://example.com/3.png",
-    })
+    mock_client.get_image_urls = AsyncMock(
+        return_value={
+            "11:1": "http://example.com/1.png",
+            "11:2": "http://example.com/2.png",
+            "11:3": "http://example.com/3.png",
+        }
+    )
     mock_client.download_url = AsyncMock(return_value=b"\x89PNG\r\n")
 
     with patch.object(screenshots_module, "FigmaClient") as MockClientClass:
         MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        result = await screenshots_module._run("fake-key", tmp_path, md_path, pending_only=False, stale_only=False)
+        result = await screenshots_module._run(
+            "fake-key", tmp_path, md_path, pending_only=False, stale_only=False
+        )
 
     assert result["file_key"] == "abc123"
     assert "screenshots" in result
@@ -90,17 +94,21 @@ async def test_screenshots_successful_downloads_in_manifest(tmp_path: Path) -> N
     md_path = _write_md(tmp_path, _make_page(["11:1", "11:2"]))
 
     mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_image_urls = AsyncMock(return_value={
-        "11:1": "http://example.com/1.png",
-        "11:2": "http://example.com/2.png",
-    })
+    mock_client.get_image_urls = AsyncMock(
+        return_value={
+            "11:1": "http://example.com/1.png",
+            "11:2": "http://example.com/2.png",
+        }
+    )
     mock_client.download_url = AsyncMock(return_value=b"\x89PNG\r\n")
 
     with patch.object(screenshots_module, "FigmaClient") as MockClientClass:
         MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        result = await screenshots_module._run("fake-key", tmp_path, md_path, pending_only=False, stale_only=False)
+        result = await screenshots_module._run(
+            "fake-key", tmp_path, md_path, pending_only=False, stale_only=False
+        )
 
     node_ids = {s["node_id"] for s in result["screenshots"]}
     assert node_ids == {"11:1", "11:2"}
@@ -124,18 +132,22 @@ async def test_screenshots_failed_download_does_not_abort_batch(tmp_path: Path) 
         return b"\x89PNG\r\n"
 
     mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_image_urls = AsyncMock(return_value={
-        "11:1": "http://example.com/1.png",
-        "11:2": "http://example.com/2.png",
-        "11:3": "http://example.com/3.png",
-    })
+    mock_client.get_image_urls = AsyncMock(
+        return_value={
+            "11:1": "http://example.com/1.png",
+            "11:2": "http://example.com/2.png",
+            "11:3": "http://example.com/3.png",
+        }
+    )
     mock_client.download_url = AsyncMock(side_effect=download_side_effect)
 
     with patch.object(screenshots_module, "FigmaClient") as MockClientClass:
         MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        result = await screenshots_module._run("fake-key", tmp_path, md_path, pending_only=False, stale_only=False)
+        result = await screenshots_module._run(
+            "fake-key", tmp_path, md_path, pending_only=False, stale_only=False
+        )
 
     # All 3 downloads were attempted
     assert call_count == 3
@@ -170,7 +182,9 @@ async def test_screenshots_empty_when_no_frames(tmp_path: Path) -> None:
         MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        result = await screenshots_module._run("fake-key", tmp_path, md_path, pending_only=False, stale_only=False)
+        result = await screenshots_module._run(
+            "fake-key", tmp_path, md_path, pending_only=False, stale_only=False
+        )
 
     assert result["screenshots"] == []
 
@@ -205,7 +219,9 @@ async def test_screenshots_pending_only_skips_described_frames(tmp_path: Path) -
         MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        result = await screenshots_module._run("fake-key", tmp_path, md_path, pending_only=True, stale_only=False)
+        result = await screenshots_module._run(
+            "fake-key", tmp_path, md_path, pending_only=True, stale_only=False
+        )
 
     # Only the undescribed frame was requested
     mock_client.get_image_urls.assert_called_once_with("abc123", ["11:2"])
