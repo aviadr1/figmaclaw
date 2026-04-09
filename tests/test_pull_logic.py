@@ -49,7 +49,7 @@ from tests.conftest import (
 # Schema version registry — must contain every version that has been superseded.
 # When you bump CURRENT_PULL_SCHEMA_VERSION from N to N+1, add N here and add
 # a corresponding convergence test (like test_schema_upgrade_does_not_cause_infinite_loop_with_max_pages).
-TESTED_UPGRADE_FROM_VERSIONS: frozenset[int] = frozenset({1, 2})
+TESTED_UPGRADE_FROM_VERSIONS: frozenset[int] = frozenset({1, 2, 3, 4, 5})
 
 
 def test_schema_upgrade_coverage_is_current():
@@ -921,34 +921,85 @@ def test_compute_raw_frames_counts_raw_children_and_ds_names():
         "11:1": {
             "id": "11:1",
             "type": "FRAME",
+            "absoluteBoundingBox": {"x": 0, "y": 0, "width": 400, "height": 300},
             "children": [
-                {"type": "INSTANCE", "name": "AvatarV2"},
-                {"type": "INSTANCE", "name": "ButtonV2"},
-                {"type": "FRAME", "name": "raw-child"},
-                {"type": "TEXT", "name": "label"},
+                {
+                    "id": "11:2",
+                    "type": "INSTANCE",
+                    "name": "AvatarV2",
+                    "componentId": "42:1001",
+                    "absoluteBoundingBox": {"x": 0, "y": 0, "width": 40, "height": 40},
+                    "children": [],
+                },
+                {
+                    "id": "11:3",
+                    "type": "INSTANCE",
+                    "name": "ButtonV2",
+                    "componentId": "42:1002",
+                    "absoluteBoundingBox": {"x": 40, "y": 0, "width": 80, "height": 40},
+                    "children": [],
+                },
+                {
+                    "id": "11:4",
+                    "type": "FRAME",
+                    "name": "raw-child",
+                    "absoluteBoundingBox": {"x": 0, "y": 40, "width": 400, "height": 120},
+                    "children": [
+                        {"id": "11:4:1", "type": "INSTANCE", "name": "CardV2"},
+                        {"id": "11:4:2", "type": "RECTANGLE", "name": "bg"},
+                    ],
+                },
+                {
+                    "id": "11:5",
+                    "type": "TEXT",
+                    "name": "label",
+                    "absoluteBoundingBox": {"x": 0, "y": 160, "width": 200, "height": 20},
+                    "children": [],
+                },
             ],
         }
     }
-    result = _compute_raw_frames(frame_docs)
-    assert "11:1" in result
-    assert result["11:1"].raw == 2
-    assert result["11:1"].ds == ["AvatarV2", "ButtonV2"]
+    raw_frames, frame_sections = _compute_raw_frames(frame_docs)
+    assert "11:1" in raw_frames
+    assert raw_frames["11:1"].raw == 2
+    assert raw_frames["11:1"].ds == ["AvatarV2", "ButtonV2"]
+    # frame_sections is populated for all frames
+    assert "11:1" in frame_sections
+    assert len(frame_sections["11:1"]) == 4
+    # per-section direct-child inventory exists
+    raw_child = next(s for s in frame_sections["11:1"] if s.node_id == "11:4")
+    assert raw_child.instances == ["CardV2"]
+    assert raw_child.instance_component_ids == []
+    assert raw_child.raw_count == 1
 
 
-def test_compute_raw_frames_omits_fully_componentized_frames():
-    """INVARIANT: Frames with zero raw children (all INSTANCE) are absent from raw_frames."""
+def test_compute_raw_frames_omits_fully_componentized_frames_from_raw_frames():
+    """INVARIANT: Fully componentized frames are absent from raw_frames but present in frame_sections."""
     from figmaclaw.pull_logic import _compute_raw_frames
 
     frame_docs = {
         "11:1": {
+            "absoluteBoundingBox": {"x": 0, "y": 0, "width": 200, "height": 100},
             "children": [
-                {"type": "INSTANCE", "name": "AvatarV2"},
-                {"type": "INSTANCE", "name": "ButtonV2"},
-            ]
+                {
+                    "id": "11:2",
+                    "type": "INSTANCE",
+                    "name": "AvatarV2",
+                    "absoluteBoundingBox": {"x": 0, "y": 0, "width": 40, "height": 40},
+                },
+                {
+                    "id": "11:3",
+                    "type": "INSTANCE",
+                    "name": "ButtonV2",
+                    "absoluteBoundingBox": {"x": 40, "y": 0, "width": 80, "height": 40},
+                },
+            ],
         }
     }
-    result = _compute_raw_frames(frame_docs)
-    assert "11:1" not in result  # fully componentized — absent signals "clean"
+    raw_frames, frame_sections = _compute_raw_frames(frame_docs)
+    assert "11:1" not in raw_frames  # fully componentized — absent signals "clean"
+    assert "11:1" in frame_sections  # but still tracked for context building
+    assert len(frame_sections["11:1"]) == 2
 
 
 def test_compute_raw_frames_preserves_ds_duplicates():
@@ -957,22 +1008,120 @@ def test_compute_raw_frames_preserves_ds_duplicates():
 
     frame_docs = {
         "11:1": {
+            "absoluteBoundingBox": {"x": 0, "y": 0, "width": 200, "height": 100},
             "children": [
-                {"type": "INSTANCE", "name": "ButtonV2"},
-                {"type": "INSTANCE", "name": "ButtonV2"},
-                {"type": "RECTANGLE", "name": "bg"},
-            ]
+                {
+                    "id": "11:2",
+                    "type": "INSTANCE",
+                    "name": "ButtonV2",
+                    "absoluteBoundingBox": {"x": 0, "y": 0, "width": 80, "height": 40},
+                },
+                {
+                    "id": "11:3",
+                    "type": "INSTANCE",
+                    "name": "ButtonV2",
+                    "absoluteBoundingBox": {"x": 80, "y": 0, "width": 80, "height": 40},
+                },
+                {
+                    "id": "11:4",
+                    "type": "RECTANGLE",
+                    "name": "bg",
+                    "absoluteBoundingBox": {"x": 0, "y": 40, "width": 200, "height": 60},
+                },
+            ],
         }
     }
-    result = _compute_raw_frames(frame_docs)
-    assert result["11:1"].ds == ["ButtonV2", "ButtonV2"]
+    raw_frames, _ = _compute_raw_frames(frame_docs)
+    assert raw_frames["11:1"].ds == ["ButtonV2", "ButtonV2"]
 
 
 def test_compute_raw_frames_returns_empty_for_no_input():
-    """INVARIANT: _compute_raw_frames returns {} for empty frame_docs."""
+    """INVARIANT: _compute_raw_frames returns empty dicts for empty frame_docs."""
     from figmaclaw.pull_logic import _compute_raw_frames
 
-    assert _compute_raw_frames({}) == {}
+    raw_frames, frame_sections = _compute_raw_frames({})
+    assert raw_frames == {}
+    assert frame_sections == {}
+
+
+def test_compute_raw_frames_handles_non_dict_input_defensively():
+    """INVARIANT: _compute_raw_frames returns empty dicts for malformed non-dict input."""
+    from figmaclaw.pull_logic import _compute_raw_frames
+
+    raw_frames, frame_sections = _compute_raw_frames(None)  # type: ignore[arg-type]
+    assert raw_frames == {}
+    assert frame_sections == {}
+
+
+def test_compute_raw_frames_section_positions_are_relative_to_frame():
+    """INVARIANT: SectionNode positions are relative to the parent frame, not absolute canvas coords."""
+    from figmaclaw.pull_logic import _compute_raw_frames
+
+    frame_docs = {
+        "11:1": {
+            "absoluteBoundingBox": {"x": 100, "y": 200, "width": 393, "height": 300},
+            "children": [
+                {
+                    "id": "11:2",
+                    "type": "FRAME",
+                    "name": "Header",
+                    "absoluteBoundingBox": {"x": 100, "y": 200, "width": 393, "height": 60},
+                },
+                {
+                    "id": "11:3",
+                    "type": "FRAME",
+                    "name": "Content",
+                    "absoluteBoundingBox": {"x": 116, "y": 260, "width": 361, "height": 240},
+                },
+            ],
+        }
+    }
+    _, frame_sections = _compute_raw_frames(frame_docs)
+    sections = frame_sections["11:1"]
+    header = next(s for s in sections if s.name == "Header")
+    content = next(s for s in sections if s.name == "Content")
+    assert header.x == 0 and header.y == 0
+    assert content.x == 16 and content.y == 60  # relative to frame origin
+
+
+def test_compute_raw_frames_section_inventory_counts_direct_children():
+    """INVARIANT: frame_sections entries include direct-child instance list and raw_count."""
+    from figmaclaw.pull_logic import _compute_raw_frames
+
+    frame_docs = {
+        "11:1": {
+            "absoluteBoundingBox": {"x": 100, "y": 200, "width": 393, "height": 300},
+            "children": [
+                {
+                    "id": "11:2",
+                    "type": "FRAME",
+                    "name": "Header",
+                    "absoluteBoundingBox": {"x": 100, "y": 200, "width": 393, "height": 60},
+                    "children": [
+                        {"id": "11:2:1", "type": "INSTANCE", "name": "IconStat"},
+                        {
+                            "id": "11:2:2",
+                            "type": "INSTANCE",
+                            "name": "IconStat",
+                            "componentId": "55:3001",
+                        },
+                        {
+                            "id": "11:2:3",
+                            "type": "INSTANCE",
+                            "name": "IconStat",
+                            "componentId": "55:3001",
+                        },
+                        {"id": "11:2:4", "type": "TEXT", "name": "Title"},
+                    ],
+                }
+            ],
+        }
+    }
+    _, frame_sections = _compute_raw_frames(frame_docs)
+    section = frame_sections["11:1"][0]
+    assert section.instances == ["IconStat", "IconStat", "IconStat"]
+    assert section.instance_component_ids == ["55:3001", "55:3001"]
+    assert section.raw_count == 1
 
 
 # --- _build_component_set_keys ---
@@ -1070,6 +1219,37 @@ async def test_pull_file_writes_raw_frames_to_new_page_frontmatter(pull_env: Pul
     assert "11:1" in fm.raw_frames
     assert fm.raw_frames["11:1"].raw == 2  # RECTANGLE + TEXT
     assert fm.raw_frames["11:1"].ds == ["AvatarV2"]
+    # frame_sections now carries per-section inventory needed by #38
+    assert "11:1" in fm.frame_sections
+    first = fm.frame_sections["11:1"][0]
+    assert first.instances == []
+    assert first.instance_component_ids == []
+    assert first.raw_count == 0
+
+
+@pytest.mark.asyncio
+async def test_pull_file_is_idempotent_for_frame_sections_inventory(pull_env: PullEnv):
+    """INVARIANT: repeated unchanged pulls preserve frame_sections inventory byte-for-byte."""
+    from figmaclaw.figma_parse import parse_frontmatter
+
+    state, mock_client, tmp_path = pull_env.state, pull_env.client, pull_env.tmp_path
+    mock_client.get_page = AsyncMock(return_value=fake_page_node_with_children())
+    mock_client.get_nodes = AsyncMock(return_value=fake_get_nodes_response())
+
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+    out = tmp_path / "figma" / "web-app" / "pages" / "onboarding-7741-45837.md"
+    first_text = out.read_text()
+    fm1 = parse_frontmatter(first_text)
+    assert fm1 is not None
+    assert "11:1" in fm1.frame_sections
+
+    # Force a second run (same content) to assert frontmatter stability.
+    await pull_file(mock_client, "abc123", state, tmp_path, force=True)
+    second_text = out.read_text()
+    fm2 = parse_frontmatter(second_text)
+    assert fm2 is not None
+    assert fm2.frame_sections == fm1.frame_sections
+    assert first_text == second_text
 
 
 @pytest.mark.asyncio
@@ -1207,6 +1387,8 @@ async def test_pull_file_processes_schema_stale_pages_even_when_page_hash_unchan
     Schema-only upgrades (hash unchanged) go to pages_schema_upgraded, NOT pages_written.
     They don't consume the max_pages budget so the upgrade always completes in a single pass.
     """
+    from figmaclaw.figma_parse import parse_frontmatter
+
     state = FigmaSyncState(tmp_path)
     state.load()
     state.add_tracked_file("abc123", "Web App")
@@ -1224,6 +1406,11 @@ async def test_pull_file_processes_schema_stale_pages_even_when_page_hash_unchan
 
     out = tmp_path / "figma" / "web-app" / "pages" / "onboarding-7741-45837.md"
     body_before = out.read_text().split("---\n", 2)[-1]  # capture body
+    fm_before = parse_frontmatter(out.read_text())
+    assert fm_before is not None
+    assert "11:1" in fm_before.frame_sections
+    first_before = fm_before.frame_sections["11:1"][0]
+    assert hasattr(first_before, "instance_component_ids")
 
     # Simulate schema staleness: reset pull_schema_version to 0 (pre-versioning)
     state.manifest.files["abc123"].pull_schema_version = 0
@@ -1235,6 +1422,7 @@ async def test_pull_file_processes_schema_stale_pages_even_when_page_hash_unchan
 
     mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2", "2026-03-31T12:00:00Z"))
 
+    get_nodes_calls_before = mock_client.get_nodes.await_count
     result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
     # Schema-only upgrade: page hash unchanged, goes to pages_schema_upgraded (not pages_written)
@@ -1246,6 +1434,14 @@ async def test_pull_file_processes_schema_stale_pages_even_when_page_hash_unchan
     # Body must be preserved — only frontmatter changed
     body_after = out.read_text().split("---\n", 2)[-1]
     assert body_before == body_after
+    fm_after = parse_frontmatter(out.read_text())
+    assert fm_after is not None
+    assert "11:1" in fm_after.frame_sections
+    first_after = fm_after.frame_sections["11:1"][0]
+    # v6 schema upgrade must backfill stable identifiers, not only legacy names/raw_count.
+    assert hasattr(first_after, "instance_component_ids")
+    # Parallel schema-only pass must still fetch frame docs for unchanged pages.
+    assert mock_client.get_nodes.await_count > get_nodes_calls_before
 
 
 @pytest.mark.asyncio

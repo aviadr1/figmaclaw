@@ -11,3 +11,6 @@ dist/
 # Coverage outputs
 .coverage
 .coverage.*
+
+# Local test artifacts
+test-results/

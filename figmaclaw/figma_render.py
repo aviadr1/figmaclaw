@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import yaml
 
-from figmaclaw.figma_frontmatter import FrameComposition, RawTokenCounts
+from figmaclaw.figma_frontmatter import FrameComposition, RawTokenCounts, SectionNode
 from figmaclaw.figma_models import FigmaPage, FigmaSection
 from figmaclaw.figma_schema import (
     PLACEHOLDER_DESCRIPTION,
@@ -98,6 +98,7 @@ def _build_frontmatter(
     component_set_keys: dict[str, str] | None = None,
     raw_frames: dict[str, FrameComposition] | None = None,
     raw_tokens: dict[str, RawTokenCounts] | None = None,
+    frame_sections: dict[str, list[SectionNode]] | None = None,
 ) -> str:
     """Render compact YAML frontmatter block (between --- markers)."""
     fm: dict = {"file_key": file_key, "page_node_id": page_node_id}
@@ -127,6 +128,30 @@ def _build_frontmatter(
                 if v.raw > 0 or v.stale > 0
             }
         )
+    if frame_sections:
+        fm["frame_sections"] = _FlowDict(
+            {
+                k: _FlowList(
+                    [
+                        _FlowDict(
+                            {
+                                "node_id": s.node_id,
+                                "name": s.name,
+                                "x": s.x,
+                                "y": s.y,
+                                "w": s.w,
+                                "h": s.h,
+                                "instances": _FlowList(s.instances),
+                                "instance_component_ids": _FlowList(s.instance_component_ids),
+                                "raw_count": s.raw_count,
+                            }
+                        )
+                        for s in sections
+                    ]
+                )
+                for k, sections in frame_sections.items()
+            }
+        )
 
     body = yaml.dump(
         fm,
@@ -146,6 +171,7 @@ def build_page_frontmatter(
     enriched_frame_hashes: dict[str, str] | None = None,
     raw_frames: dict[str, FrameComposition] | None = None,
     raw_tokens: dict[str, RawTokenCounts] | None = None,
+    frame_sections: dict[str, list[SectionNode]] | None = None,
 ) -> str:
     """Build the YAML frontmatter block for a screen page from a FigmaPage model.
 
@@ -155,6 +181,11 @@ def build_page_frontmatter(
     raw_frames: sparse dict of frames with raw (non-INSTANCE) children, computed
     by the pull pass. Only frames with raw > 0 are included. None means not yet
     computed (field is omitted from frontmatter); {} means computed but all clean.
+
+    frame_sections: dense dict of all screen frames → direct children with positions
+    and per-section direct-child inventory (instances/raw_count + stable
+    instance_component_ids). Used by build-context and coverage queries
+    without extra API calls.
     """
     screen_sections = [s for s in page.sections if not s.is_component_library]
     frame_ids: list[str] = [
@@ -171,6 +202,7 @@ def build_page_frontmatter(
         enriched_frame_hashes=enriched_frame_hashes,
         raw_frames=raw_frames,
         raw_tokens=raw_tokens,
+        frame_sections=frame_sections,
     )
 
 
@@ -180,6 +212,7 @@ def scaffold_page(
     *,
     raw_frames: dict[str, FrameComposition] | None = None,
     raw_tokens: dict[str, RawTokenCounts] | None = None,
+    frame_sections: dict[str, list[SectionNode]] | None = None,
 ) -> str:
     """Generate a skeleton markdown page with LLM placeholders for a NEW FigmaPage.
 
@@ -199,7 +232,11 @@ def scaffold_page(
     """
     parts: list[str] = []
 
-    parts.append(build_page_frontmatter(page, raw_frames=raw_frames, raw_tokens=raw_tokens))
+    parts.append(
+        build_page_frontmatter(
+            page, raw_frames=raw_frames, raw_tokens=raw_tokens, frame_sections=frame_sections
+        )
+    )
     parts.append("")
 
     # H1 header — normalize empty file/page names to (Unnamed) so the

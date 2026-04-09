@@ -49,6 +49,7 @@ from figmaclaw.figma_frontmatter import (
     CURRENT_PULL_SCHEMA_VERSION,
     FrameComposition,
     RawTokenCounts,
+    SectionNode,
 )
 from figmaclaw.figma_hash import compute_frame_hashes, compute_page_hash
 from figmaclaw.figma_models import FigmaPage, FigmaSection, from_page_node
@@ -88,6 +89,7 @@ def write_new_page(
     *,
     raw_frames: dict[str, FrameComposition] | None = None,
     raw_tokens: dict[str, RawTokenCounts] | None = None,
+    frame_sections: dict[str, list[SectionNode]] | None = None,
 ) -> Path:
     """Write a NEW scaffold .md for a FigmaPage (screen sections only) and return the path.
 
@@ -99,7 +101,11 @@ def write_new_page(
     assert entry.md_path is not None, "entry.md_path must be set to call write_new_page()"
     out_path = repo_root / entry.md_path
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(scaffold_page(page, entry, raw_frames=raw_frames, raw_tokens=raw_tokens))
+    out_path.write_text(
+        scaffold_page(
+            page, entry, raw_frames=raw_frames, raw_tokens=raw_tokens, frame_sections=frame_sections
+        )
+    )
     return out_path
 
 
@@ -110,6 +116,7 @@ def update_page_frontmatter(
     *,
     raw_frames: dict[str, FrameComposition] | None = None,
     raw_tokens: dict[str, RawTokenCounts] | None = None,
+    frame_sections: dict[str, list[SectionNode]] | None = None,
 ) -> Path:
     """Update ONLY the frontmatter of an existing page .md file, preserving the body.
 
@@ -122,6 +129,7 @@ def update_page_frontmatter(
     raw_frames: freshly computed from the pull pass for this page. Replaces any
     existing raw_frames value (pull-pass data is always current). None means the
     field was not computed and is omitted from the output frontmatter.
+    frame_sections: freshly computed per-frame section map. Same semantics as raw_frames.
     """
     assert entry.md_path is not None, "entry.md_path must be set"
     out_path = repo_root / entry.md_path
@@ -147,6 +155,7 @@ def update_page_frontmatter(
         enriched_frame_hashes=enriched_frame_hashes or None,
         raw_frames=raw_frames,
         raw_tokens=raw_tokens,
+        frame_sections=frame_sections,
     )
     out_path.write_text(f"{new_fm}\n{body}")
     return out_path
@@ -261,30 +270,90 @@ def _write_token_sidecar(
     write_json_if_changed(sidecar_path, sidecar, ignore_keys=frozenset({"generated_at"}))
 
 
-def _compute_raw_frames(frame_docs: dict[str, dict]) -> dict[str, FrameComposition]:
-    """Classify direct children of each frame node into raw vs DS-component instances.
+def _compute_raw_frames(
+    frame_docs: dict[str, dict],
+) -> tuple[dict[str, FrameComposition], dict[str, list[SectionNode]]]:
+    """Classify direct children of each frame node into raw vs DS-component instances,
+    and extract per-child section position data.
 
     frame_docs: {node_id: document_node} as returned by FigmaClient.get_nodes().
-    Returns a sparse dict containing only frames that have at least one raw child.
-    Frames with zero raw children (fully componentized) are omitted — their absence
-    signals "clean" to audit skills, so they skip the expensive get_design_context call.
+
+    Returns a 2-tuple:
+      raw_frames:     sparse dict — only frames with at least one raw child.
+                      Absence means fully componentized (signals "clean" to audit skills).
+      frame_sections: dense dict — ALL frames, each with their direct children's positions
+                      plus direct-child composition inventory (instances/raw_count).
+                      Used by build-context + component coverage queries (#35/#38).
 
     raw:  count of non-INSTANCE direct children (FRAME, GROUP, RECTANGLE, TEXT, etc.)
     ds:   names of INSTANCE children with duplicates — [ButtonV2, ButtonV2] means 2 instances.
     """
-    result: dict[str, FrameComposition] = {}
+    raw_frames: dict[str, FrameComposition] = {}
+    frame_sections: dict[str, list[SectionNode]] = {}
+    if not isinstance(frame_docs, dict):
+        return raw_frames, frame_sections
+
+    def _section_inventory(section_node: dict) -> tuple[list[str], list[str], int]:
+        """Return (instance_names, instance_component_ids, raw_count) for one section node."""
+        children_raw = section_node.get("children", [])
+        if not isinstance(children_raw, list):
+            return ([], [], 0)
+        direct_children = [c for c in children_raw if isinstance(c, dict)]
+        instances: list[str] = []
+        instance_component_ids: list[str] = []
+        raw_count = 0
+        for child in direct_children:
+            if child.get("type") == "INSTANCE":
+                instances.append(child.get("name", ""))
+                component_id = str(child.get("componentId", "")).strip()
+                if component_id:
+                    instance_component_ids.append(component_id)
+            else:
+                raw_count += 1
+        return (instances, instance_component_ids, raw_count)
+
     for node_id, node in frame_docs.items():
-        children: list[dict] = node.get("children", [])
+        if not isinstance(node, dict):
+            continue
+        children_raw = node.get("children", [])
+        if not isinstance(children_raw, list):
+            children_raw = []
+        children: list[dict] = [c for c in children_raw if isinstance(c, dict)]
+        frame_bb = node.get("absoluteBoundingBox", {})
+        frame_x: float = frame_bb.get("x", 0)
+        frame_y: float = frame_bb.get("y", 0)
+
         raw_count = 0
         ds_names: list[str] = []
+        sections: list[SectionNode] = []
+
         for child in children:
+            child_bb = child.get("absoluteBoundingBox", {})
+            instances, component_ids, section_raw_count = _section_inventory(child)
+            sections.append(
+                SectionNode(
+                    node_id=child.get("id", ""),
+                    name=child.get("name", ""),
+                    x=round(child_bb.get("x", 0) - frame_x),
+                    y=round(child_bb.get("y", 0) - frame_y),
+                    w=round(child_bb.get("width", 0)),
+                    h=round(child_bb.get("height", 0)),
+                    instances=instances,
+                    instance_component_ids=component_ids,
+                    raw_count=section_raw_count,
+                )
+            )
             if child.get("type") == "INSTANCE":
                 ds_names.append(child.get("name", ""))
             else:
                 raw_count += 1
+
         if raw_count > 0:
-            result[node_id] = FrameComposition(raw=raw_count, ds=ds_names)
-    return result
+            raw_frames[node_id] = FrameComposition(raw=raw_count, ds=ds_names)
+        if sections:
+            frame_sections[node_id] = sections
+
+    return raw_frames, frame_sections
 
 
 def _build_component_set_keys(
@@ -459,8 +528,11 @@ async def pull_file(
                 continue
             new_hash = compute_page_hash(pn)
             stored_hash = state.get_page_hash(file_key, stub_id)
-            if not force and stored_hash == new_hash:
-                continue  # hash unchanged — skip frames regardless of schema staleness
+            if not force and stored_hash == new_hash and not schema_stale:
+                # When schema is stale we still need frame children for unchanged pages
+                # so newly introduced frontmatter fields (e.g. frame_sections) can be
+                # backfilled in one schema-upgrade pass.
+                continue
             for section in pn.get("children", []):
                 if section.get("type") == "SECTION":
                     for child in section.get("children", []):
@@ -472,16 +544,23 @@ async def pull_file(
                 chunk_size = 200
                 for i in range(0, len(all_screen_frame_ids), chunk_size):
                     chunk = all_screen_frame_ids[i : i + chunk_size]
-                    chunk_docs = await client.get_nodes(file_key, chunk, depth=1)
+                    chunk_docs = await client.get_nodes(file_key, chunk, depth=2)
+                    if not isinstance(chunk_docs, dict):
+                        log.warning(
+                            "get_nodes returned non-dict for chunk %d-%d (got %s)",
+                            i,
+                            i + len(chunk),
+                            type(chunk_docs).__name__,
+                        )
+                        continue
                     all_frame_docs.update(chunk_docs)
                 log.debug(
                     "Batch-fetched %d frame nodes for file %r", len(all_screen_frame_ids), file_key
                 )
             except Exception as exc:
                 log.warning(
-                    "Failed to batch-fetch frame children for %r: %s — raw_frames will be omitted",
-                    file_key,
-                    exc,
+                    "Failed to batch-fetch frame children (%s) — raw_frames will be omitted",
+                    type(exc).__name__,
                 )
 
     for page_idx, page_stub in enumerate(page_stubs, 1):
@@ -590,8 +669,10 @@ async def pull_file(
             screen_sections = [s for s in page.sections if not s.is_component_library]
             component_sections = [s for s in page.sections if s.is_component_library]
 
-            # Compute raw_frames from pre-fetched batch (parallel mode) or per-page call (sequential).
+            # Compute raw_frames + frame_sections from pre-fetched batch (parallel mode)
+            # or per-page call (sequential).
             raw_frames: dict[str, FrameComposition] | None = None
+            frame_sections: dict[str, list[SectionNode]] | None = None
             screen_frame_ids = [f.node_id for s in screen_sections for f in s.frames]
             if screen_frame_ids:
                 if max_pages is None:
@@ -600,9 +681,8 @@ async def pull_file(
                         page_frame_docs = {
                             k: v for k, v in all_frame_docs.items() if k in set(screen_frame_ids)
                         }
-                        raw_frames = (
-                            _compute_raw_frames(page_frame_docs) if page_frame_docs else None
-                        )
+                        if page_frame_docs:
+                            raw_frames, frame_sections = _compute_raw_frames(page_frame_docs)
                     except Exception as exc:
                         log.warning(
                             "Failed to compute raw_frames for page %r (%s): %s — raw_frames will be omitted",
@@ -613,8 +693,8 @@ async def pull_file(
                 else:
                     # Sequential mode: must fetch per-page (we don't have all page nodes upfront).
                     try:
-                        frame_docs = await client.get_nodes(file_key, screen_frame_ids, depth=1)
-                        raw_frames = _compute_raw_frames(frame_docs)
+                        frame_docs = await client.get_nodes(file_key, screen_frame_ids, depth=2)
+                        raw_frames, frame_sections = _compute_raw_frames(frame_docs)
                     except Exception as exc:
                         log.warning(
                             "Failed to fetch frame children for page %r (%s): %s — raw_frames will be omitted",
@@ -665,6 +745,7 @@ async def pull_file(
                         screen_entry,
                         raw_frames=raw_frames,
                         raw_tokens=raw_tokens,
+                        frame_sections=frame_sections,
                     )
                 else:
                     written = write_new_page(
@@ -673,6 +754,7 @@ async def pull_file(
                         screen_entry,
                         raw_frames=raw_frames,
                         raw_tokens=raw_tokens,
+                        frame_sections=frame_sections,
                     )
                 if token_scan is not None:
                     try:
@@ -750,14 +832,18 @@ async def pull_file(
         state.manifest.files[file_key].pull_schema_version = CURRENT_PULL_SCHEMA_VERSION
         state.save()
 
-    # Structural invariant: schema-only upgrades must never cause has_more=True.
-    # has_more=True with pages_written=0 is only valid when the budget was zero from
-    # the start (max_pages=0). If pages_schema_upgraded>0 alongside has_more=True and
-    # pages_written=0, a bypass path consumed the budget — that makes the CI loop infinite.
+    # Structural invariant: schema-only upgrades must never *by themselves* cause has_more=True.
+    # If has_more=True while zero content-changed pages consumed the budget in this call
+    # (pages_written_this_call == 0) and at least one schema-only upgrade happened, then a
+    # schema-only path incorrectly triggered pagination cutoff — that can cause CI loops.
+    #
+    # Use pages_written_this_call (budget counter), not result.pages_written, because
+    # component-only pages increment budget without incrementing pages_written.
     assert not (
-        result.has_more and result.pages_written == 0 and result.pages_schema_upgraded > 0
+        result.has_more and pages_written_this_call == 0 and result.pages_schema_upgraded > 0
     ), (
-        f"BUG: has_more=True, pages_written=0, pages_schema_upgraded={result.pages_schema_upgraded} — "
+        "BUG: has_more=True with no budget consumption from content-changed pages "
+        f"(pages_written_this_call=0), pages_schema_upgraded={result.pages_schema_upgraded} — "
         "schema-only upgrades must not consume the max_pages budget (causes infinite CI loop)"
     )
 

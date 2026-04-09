@@ -73,3 +73,4 @@ packages = ["figmaclaw"]
 "figmaclaw/workflows" = "figmaclaw/workflows"
 "figmaclaw/skills" = "figmaclaw/skills"
 "figmaclaw/prompts" = "figmaclaw/prompts"
+"figmaclaw/plugin" = "figmaclaw/plugin"

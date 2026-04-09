@@ -59,6 +59,11 @@ Pull schema changelog:
   v1: initial — frames, flows, enriched_*
   v2: added raw_frames (screen pages), component_set_keys (component sections)
   v3: added raw_tokens frontmatter summary + sidecar .tokens.json files
+  v4: added frame_sections (screen pages) — per-frame child position map for context frame building
+  v5: extended frame_sections entries with per-section direct-child inventory:
+      instances[] and raw_count (issue #38 coverage queries)
+  v6: extended frame_sections inventory with stable instance_component_ids[] to
+      support rename-robust coverage/autodiscovery queries
 
 Enrichment schema changelog:
   v1: initial enrichment format — frame table + page summary + Mermaid flows
@@ -73,7 +78,7 @@ from pydantic import BaseModel, Field, model_validator
 # Pull-pass schema version. Bump when pull_file writes new frontmatter fields.
 # Files in the manifest with pull_schema_version < this get frontmatter-refreshed
 # on the next pull run even if Figma content is unchanged. Body is never touched.
-CURRENT_PULL_SCHEMA_VERSION: int = 3
+CURRENT_PULL_SCHEMA_VERSION: int = 6
 
 # Enrichment schema version. Bump when the LLM prompt or output format changes.
 # Pages with enriched_schema_version < MIN_REQUIRED MUST be re-enriched (broken output).
@@ -83,6 +88,37 @@ CURRENT_PULL_SCHEMA_VERSION: int = 3
 # To make a bump "SHOULD": bump only CURRENT, leave MIN_REQUIRED.
 CURRENT_ENRICHMENT_SCHEMA_VERSION: int = 1
 MIN_REQUIRED_ENRICHMENT_SCHEMA_VERSION: int = 1
+
+
+class SectionNode(BaseModel):
+    """Position and identity of one direct child within a screen frame.
+
+    Written by the pull pass into the frame_sections frontmatter field.
+    Provides the section map needed to build composite "Usage in Context" frames
+    without a separate REST API call — see figmaclaw issue #38.
+
+    node_id: Figma node ID of the child (e.g. '7424:16018')
+    name:    display name of the child node
+    x, y:   position relative to the parent frame's top-left corner
+    w, h:   width and height in Figma units
+    """
+
+    node_id: str
+    name: str
+    x: int
+    y: int
+    w: int
+    h: int
+    # v5-ish extension of the frame_sections payload (schema version tracked at file level):
+    # direct-child inventory of this section node.
+    # instances keeps duplicates to preserve multiplicity (N x ButtonV2).
+    instances: list[str] = Field(default_factory=list)
+    # Stable component IDs for INSTANCE children (Figma's componentId field).
+    # Duplicates preserved so multiplicity is queryable.
+    # Unlike display names, these remain stable across renames.
+    instance_component_ids: list[str] = Field(default_factory=list)
+    # non-INSTANCE direct children count under this section node.
+    raw_count: int = 0
 
 
 class RawTokenCounts(BaseModel):
@@ -146,6 +182,11 @@ class FigmaPageFrontmatter(BaseModel):
     # raw_tokens: sparse dict of frames with unbound token properties (raw or stale).
     # Absent frames have zero issues. Full per-node detail lives in .tokens.json sidecar.
     raw_tokens: dict[str, RawTokenCounts] = Field(default_factory=dict)
+    # frame_sections: per-frame map of direct children with their positions.
+    # Dense (all screen frames included). Used by build-context to construct composite
+    # "Usage in Context" frames and to answer component-coverage questions without
+    # extra REST API calls. See figmaclaw issues #35 and #38.
+    frame_sections: dict[str, list[SectionNode]] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
