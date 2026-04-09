@@ -1,10 +1,11 @@
-"""Tests for _write_token_sidecar idempotency.
+"""Tests for _write_token_sidecar idempotency and schema v2 aggregation.
 
 INVARIANTS:
 - _write_token_sidecar writes the correct structure on first call
 - _write_token_sidecar does NOT modify the file when token data is unchanged
   (only generated_at would differ — suppressed to avoid spurious git commits)
 - _write_token_sidecar DOES update the file when token data changes
+- Schema v2: issues are aggregated by (property, classification, value) with count
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ def _make_token_scan(raw: int = 2, stale: int = 1) -> PageTokenScan:
 
 
 def test_write_token_sidecar_creates_file_with_correct_structure(tmp_path: Path):
-    """INVARIANT: sidecar file contains file_key, page_node_id, generated_at, summary, frames."""
+    """INVARIANT: sidecar contains schema_version, file_key, page_node_id, generated_at, summary, frames."""
     screen_md = tmp_path / "page.md"
     screen_md.write_text("---\nfile_key: abc123\n---\n")
     token_scan = _make_token_scan()
@@ -42,6 +43,7 @@ def test_write_token_sidecar_creates_file_with_correct_structure(tmp_path: Path)
     sidecar = tmp_path / "page.tokens.json"
     assert sidecar.exists()
     data = json.loads(sidecar.read_text())
+    assert data["schema_version"] == 2
     assert data["file_key"] == "abc123"
     assert data["page_node_id"] == "7741:45837"
     assert "generated_at" in data
@@ -49,6 +51,7 @@ def test_write_token_sidecar_creates_file_with_correct_structure(tmp_path: Path)
     assert "11:1" in data["frames"]
     assert data["frames"]["11:1"]["name"] == "welcome"
     assert len(data["frames"]["11:1"]["issues"]) == 1
+    assert data["frames"]["11:1"]["issues"][0]["count"] == 1
 
 
 def test_write_token_sidecar_is_idempotent_when_data_unchanged(tmp_path: Path):
