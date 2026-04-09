@@ -72,19 +72,20 @@ def suggest_tokens_cmd(
 
     suggest_for_sidecar(work_sidecar, catalog)
 
-    # Collect results stats
+    # Collect results stats — use count field (schema v2) or default to 1 (v1)
     auto = ambiguous = no_match = 0
     prop_value_no_match: Counter[tuple[str, str]] = Counter()
 
     for fdata in work_sidecar.get("frames", {}).values():
         for issue in fdata.get("issues", []):
+            count = issue.get("count", 1)
             status = issue.get("suggest_status", "no_match")
             if status == "auto":
-                auto += 1
+                auto += count
             elif status == "ambiguous":
-                ambiguous += 1
+                ambiguous += count
             else:
-                no_match += 1
+                no_match += count
                 prop = issue.get("property", "unknown")
                 val = issue.get("current_value")
                 if isinstance(val, float):
@@ -95,7 +96,7 @@ def suggest_tokens_cmd(
                     val_str = issue.get("hex", str(val))
                 else:
                     val_str = str(val)
-                prop_value_no_match[(prop, val_str)] += 1
+                prop_value_no_match[(prop, val_str)] += count
 
     click.echo("")
     click.echo("Results:")

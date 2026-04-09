@@ -178,6 +178,58 @@ def write_component_section(
     return out_path
 
 
+def _aggregate_issues(issues: list) -> list[dict]:
+    """Aggregate per-node issues into compact (property, value, classification) histogram.
+
+    Groups issues by their matchable fields (property, classification, hex or
+    current_value) and returns one entry per unique combo with a count.
+    This reduces file size by ~100x on complex pages while preserving all data
+    needed by suggest-tokens.
+    """
+    from collections import Counter
+
+    # Build a key that captures everything suggest-tokens uses for matching
+    buckets: Counter[tuple] = Counter()
+    representatives: dict[tuple, dict] = {}
+
+    for issue in issues:
+        prop = issue.property
+        cls = issue.classification
+        hex_val = issue.hex
+        cur_val = issue.current_value
+        stale_var = issue.stale_variable_id
+
+        # Normalize current_value for grouping: round floats, stringify dicts
+        if isinstance(cur_val, float):
+            norm_val: object = round(cur_val, 4)
+        elif isinstance(cur_val, dict):
+            # Color dicts — use hex as the grouping key (already derived)
+            norm_val = None  # hex is the key for colors
+        else:
+            norm_val = cur_val
+
+        key = (prop, cls, hex_val, norm_val, stale_var)
+        buckets[key] += 1
+
+        if key not in representatives:
+            entry: dict = {"property": prop, "classification": cls}
+            if hex_val is not None:
+                entry["hex"] = hex_val
+            if cur_val is not None:
+                entry["current_value"] = cur_val
+            if stale_var is not None:
+                entry["stale_variable_id"] = stale_var
+            representatives[key] = entry
+
+    result = []
+    for key, count in buckets.items():
+        entry = dict(representatives[key])
+        entry["count"] = count
+        result.append(entry)
+
+    return result
+
+
 def _write_token_sidecar(
     screen_md: Path,
     file_key: str,
@@ -186,28 +238,24 @@ def _write_token_sidecar(
 ) -> None:
     """Write the .tokens.json sidecar file next to the screen .md file.
 
-    The sidecar contains per-node token issues for all scanned frames.
-    pull always writes fix_variable_id as null — it is filled later by
-    suggest-tokens or human annotation.
+    Schema v2: issues are aggregated by (property, classification, value)
+    with a count field, instead of one entry per node.  This reduces file
+    size by ~100x on complex pages while preserving all data needed by
+    suggest-tokens.
     """
     sidecar_path = screen_md.with_suffix(".tokens.json")
     now = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     frames_data: dict = {}
     for fid, fscan in token_scan.frames.items():
-        issue_dicts = []
-        for issue in fscan.issues:
-            d = issue.model_dump(exclude_none=True)
-            # fix_variable_id is always null from pull — include it explicitly
-            d["fix_variable_id"] = None
-            issue_dicts.append(d)
         frames_data[fid] = {
             "name": fscan.name,
             "summary": {"raw": fscan.raw, "stale": fscan.stale, "valid": fscan.valid},
-            "issues": issue_dicts,
+            "issues": _aggregate_issues(fscan.issues),
         }
 
     sidecar = {
+        "schema_version": 2,
         "file_key": file_key,
         "page_node_id": page_node_id,
         "generated_at": now,

@@ -288,6 +288,7 @@ async def _run(
     target: Path,
     since: str,
     progress: bool = False,
+    _now: datetime | None = None,
 ) -> tuple[list[FileDiff], datetime, datetime]:
     """Main async entry point. Scans .md files to discover tracked Figma files,
     then uses the Figma API to compute real diffs.
@@ -298,9 +299,11 @@ async def _run(
     3. Fetch versions only for recently modified files
     4. For each active file, fetch tracked pages at current + old version
     5. Compare in memory — no more API calls
+
+    *_now* is injectable for deterministic testing; defaults to ``datetime.now(UTC)``.
     """
     delta = _parse_duration(since)
-    now = datetime.now(UTC)
+    now = _now if _now is not None else datetime.now(UTC)
     cutoff = now - delta
 
     # Discover tracked files from .md frontmatter
