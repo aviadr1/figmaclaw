@@ -169,6 +169,162 @@ def test_aggregate_preserves_current_value_for_colors():
     assert result[0]["current_value"] == RED
 
 
+# _aggregate_issues: invariants
+
+
+def test_aggregate_sum_of_counts_equals_input_length():
+    """INVARIANT: sum of all counts in aggregated output equals the number of input issues."""
+    issues = (
+        [_issue(node_id=f"{i}:1", current_value=RED, hex="#FF0000") for i in range(40)]
+        + [_issue(node_id=f"{i}:2", current_value=BLUE, hex="#0000FF") for i in range(25)]
+        + [
+            _issue(node_id=f"{i}:3", prop="cornerRadius", current_value=8.0, hex=None)
+            for i in range(15)
+        ]
+    )
+    result = _aggregate_issues(issues)
+    assert sum(e["count"] for e in result) == 80
+
+
+def test_aggregate_is_deterministic_regardless_of_input_order():
+    """INVARIANT: aggregation produces identical output regardless of input order."""
+    import random
+
+    issues_a = [
+        _issue(node_id="1:1", current_value=RED, hex="#FF0000"),
+        _issue(node_id="2:1", current_value=BLUE, hex="#0000FF"),
+        _issue(node_id="3:1", current_value=RED, hex="#FF0000"),
+        _issue(node_id="4:1", prop="cornerRadius", current_value=8.0, hex=None),
+        _issue(node_id="5:1", current_value=BLUE, hex="#0000FF"),
+        _issue(node_id="6:1", prop="cornerRadius", current_value=8.0, hex=None),
+    ]
+
+    result_a = _aggregate_issues(issues_a)
+
+    # Shuffle and aggregate again — must produce same result
+    issues_b = list(issues_a)
+    random.seed(42)
+    random.shuffle(issues_b)
+    result_b = _aggregate_issues(issues_b)
+
+    # Sort both by a stable key for comparison
+    def sort_key(entry: dict) -> tuple:
+        return (entry["property"], entry.get("hex", ""), str(entry.get("current_value", "")))
+
+    assert sorted(result_a, key=sort_key) == sorted(result_b, key=sort_key)
+    assert sum(e["count"] for e in result_a) == sum(e["count"] for e in result_b) == 6
+
+
+def test_aggregate_each_entry_has_all_required_fields():
+    """INVARIANT: every aggregated entry has property, classification, and count."""
+    issues = [
+        _issue(prop="fill", current_value=RED, hex="#FF0000"),
+        _issue(prop="cornerRadius", current_value=8.0, hex=None),
+        _issue(
+            prop="stroke",
+            classification="stale",
+            current_value=BLUE,
+            hex="#0000FF",
+            stale_variable_id=f"VariableID:{OLD_LIB_PREFIX}abc/1:1",
+        ),
+    ]
+    result = _aggregate_issues(issues)
+    for entry in result:
+        assert "property" in entry
+        assert "classification" in entry
+        assert "count" in entry
+        assert isinstance(entry["count"], int)
+        assert entry["count"] >= 1
+
+
+# _write_token_sidecar: idempotency with aggregation
+
+
+def test_sidecar_idempotent_with_aggregated_multi_issue_input(tmp_path: Path):
+    """INVARIANT: repeated writes of the same multi-issue input produce byte-identical files.
+
+    This is the critical idempotency property that prevents spurious git commits.
+    With aggregation, the output must be stable across calls — same grouping,
+    same order, same counts.
+    """
+    screen_md = tmp_path / "page.md"
+    screen_md.write_text("---\nfile_key: abc\n---\n")
+
+    issues = (
+        [_issue(node_id=f"{i}:1", current_value=RED, hex="#FF0000") for i in range(50)]
+        + [_issue(node_id=f"{i}:2", current_value=BLUE, hex="#0000FF") for i in range(30)]
+        + [
+            _issue(node_id=f"{i}:3", prop="cornerRadius", current_value=8.0, hex=None)
+            for i in range(20)
+        ]
+    )
+    fscan = FrameTokenScan(name="frame", raw=100, issues=issues)
+    scan = PageTokenScan(raw=100, frames={"1:1": fscan})
+
+    _write_token_sidecar(screen_md, "abc", "0:1", scan)
+    sidecar = tmp_path / "page.tokens.json"
+    content_first = sidecar.read_text()
+    mtime_first = sidecar.stat().st_mtime_ns
+
+    _write_token_sidecar(screen_md, "abc", "0:1", scan)
+    content_second = sidecar.read_text()
+    mtime_second = sidecar.stat().st_mtime_ns
+
+    assert content_first == content_second
+    assert mtime_first == mtime_second
+
+
+def test_sidecar_not_idempotent_when_issues_change(tmp_path: Path):
+    """INVARIANT: sidecar IS rewritten when issue data changes (change detection works)."""
+    screen_md = tmp_path / "page.md"
+    screen_md.write_text("---\nfile_key: abc\n---\n")
+
+    issues_v1 = [_issue(node_id=f"{i}:1") for i in range(10)]
+    scan_v1 = PageTokenScan(
+        raw=10, frames={"1:1": FrameTokenScan(name="f", raw=10, issues=issues_v1)}
+    )
+    _write_token_sidecar(screen_md, "abc", "0:1", scan_v1)
+    sidecar = tmp_path / "page.tokens.json"
+    content_before = sidecar.read_text()
+
+    # Add a new type of issue
+    issues_v2 = issues_v1 + [
+        _issue(node_id="99:1", prop="cornerRadius", current_value=16.0, hex=None)
+    ]
+    scan_v2 = PageTokenScan(
+        raw=11, frames={"1:1": FrameTokenScan(name="f", raw=11, issues=issues_v2)}
+    )
+    _write_token_sidecar(screen_md, "abc", "0:1", scan_v2)
+    content_after = sidecar.read_text()
+
+    assert content_before != content_after
+    data = json.loads(content_after)
+    assert data["summary"]["raw"] == 11
+    assert len(data["frames"]["1:1"]["issues"]) == 2
+
+
+def test_sidecar_not_idempotent_when_counts_change(tmp_path: Path):
+    """INVARIANT: sidecar IS rewritten when the same value appears more/fewer times."""
+    screen_md = tmp_path / "page.md"
+    screen_md.write_text("---\nfile_key: abc\n---\n")
+
+    issues_5 = [_issue(node_id=f"{i}:1") for i in range(5)]
+    scan_5 = PageTokenScan(raw=5, frames={"1:1": FrameTokenScan(name="f", raw=5, issues=issues_5)})
+    _write_token_sidecar(screen_md, "abc", "0:1", scan_5)
+    sidecar = tmp_path / "page.tokens.json"
+    data_before = json.loads(sidecar.read_text())
+
+    issues_10 = [_issue(node_id=f"{i}:1") for i in range(10)]
+    scan_10 = PageTokenScan(
+        raw=10, frames={"1:1": FrameTokenScan(name="f", raw=10, issues=issues_10)}
+    )
+    _write_token_sidecar(screen_md, "abc", "0:1", scan_10)
+    data_after = json.loads(sidecar.read_text())
+
+    assert data_before["frames"]["1:1"]["issues"][0]["count"] == 5
+    assert data_after["frames"]["1:1"]["issues"][0]["count"] == 10
+
+
 # _write_token_sidecar: schema v2 structure
 
 
