@@ -37,24 +37,26 @@ from __future__ import annotations
 
 import asyncio
 import datetime
-import json
 import logging
 from collections.abc import Callable
 from pathlib import Path
 
 import httpx
-
 from pydantic import BaseModel, Field
 
 from figmaclaw.figma_client import FigmaClient
-from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION, FrameComposition, RawTokenCounts
-from figmaclaw.figma_utils import write_json_if_changed
+from figmaclaw.figma_frontmatter import (
+    CURRENT_PULL_SCHEMA_VERSION,
+    FrameComposition,
+    RawTokenCounts,
+)
 from figmaclaw.figma_hash import compute_frame_hashes, compute_page_hash
 from figmaclaw.figma_models import FigmaPage, FigmaSection, from_page_node
 from figmaclaw.figma_parse import parse_flows, parse_frontmatter
 from figmaclaw.figma_paths import component_path, page_path, slugify
 from figmaclaw.figma_render import build_page_frontmatter, render_component_section, scaffold_page
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
+from figmaclaw.figma_utils import write_json_if_changed
 from figmaclaw.token_catalog import load_catalog, merge_bindings, save_catalog
 from figmaclaw.token_scan import PageTokenScan, scan_page
 
@@ -70,7 +72,9 @@ class PullResult(BaseModel):
     pages_written: int = 0
     pages_skipped: int = 0
     pages_errored: int = 0
-    pages_schema_upgraded: int = 0  # schema-format-only refresh, hash unchanged, not counted toward max_pages
+    pages_schema_upgraded: int = (
+        0  # schema-format-only refresh, hash unchanged, not counted toward max_pages
+    )
     md_paths: list[str] = Field(default_factory=list)
     component_sections_written: int = 0
     component_paths: list[str] = Field(default_factory=list)
@@ -159,7 +163,9 @@ def write_component_section(
     """Render a single component library section to disk and return the absolute path written."""
     out_path = repo_root / md_rel_path
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(render_component_section(section, page, component_set_keys=component_set_keys))
+    out_path.write_text(
+        render_component_section(section, page, component_set_keys=component_set_keys)
+    )
     return out_path
 
 
@@ -176,7 +182,7 @@ def _write_token_sidecar(
     suggest-tokens or human annotation.
     """
     sidecar_path = screen_md.with_suffix(".tokens.json")
-    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     frames_data: dict = {}
     for fid, fscan in token_scan.frames.items():
@@ -252,7 +258,8 @@ def _build_component_set_keys(
         cs["name"]: cs["key"]
         for cs in component_sets
         if cs.get("containing_frame", {}).get("pageId") == page_node_id
-        and cs.get("key") and cs.get("name")
+        and cs.get("key")
+        and cs.get("name")
     }
 
 
@@ -305,6 +312,7 @@ async def pull_file(
 
     Returns a PullResult describing what was done.
     """
+
     def _progress(msg: str) -> None:
         log.info(msg)
         if progress:
@@ -331,14 +339,22 @@ async def pull_file(
 
     stored = state.manifest.files.get(file_key)
     schema_stale = (stored.pull_schema_version if stored else 0) < CURRENT_PULL_SCHEMA_VERSION
-    if not force and not schema_stale and stored and stored.version == api_version and stored.last_modified == api_last_modified:
+    if (
+        not force
+        and not schema_stale
+        and stored
+        and stored.version == api_version
+        and stored.last_modified == api_last_modified
+    ):
         _progress(f"{file_name}: unchanged (version {api_version}), skipping all pages")
         result.skipped_file = True
         return result
     if schema_stale and stored and stored.version == api_version:
-        _progress(f"{file_name}: pull schema stale (v{stored.pull_schema_version} → v{CURRENT_PULL_SCHEMA_VERSION}), refreshing frontmatter")
+        _progress(
+            f"{file_name}: pull schema stale (v{stored.pull_schema_version} → v{CURRENT_PULL_SCHEMA_VERSION}), refreshing frontmatter"
+        )
 
-    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    now = datetime.datetime.now(datetime.UTC).isoformat()
     state.set_file_meta(
         file_key,
         version=api_version,
@@ -351,7 +367,11 @@ async def pull_file(
     try:
         component_sets = await client.get_component_sets(file_key)
     except Exception as exc:
-        log.warning("Failed to fetch component sets for %r: %s — component_set_keys will be empty", file_key, exc)
+        log.warning(
+            "Failed to fetch component sets for %r: %s — component_set_keys will be empty",
+            file_key,
+            exc,
+        )
         component_sets = []
 
     page_stubs = meta.canvas_pages
@@ -374,7 +394,7 @@ async def pull_file(
 
         fetched = await asyncio.gather(*[_fetch(s.id) for s in fetch_stubs])
         page_nodes_map: dict[str, dict | Exception] = {
-            stub.id: result for stub, result in zip(fetch_stubs, fetched)
+            stub.id: result for stub, result in zip(fetch_stubs, fetched, strict=False)
         }
     else:
         page_nodes_map = {}  # populated lazily below
@@ -406,16 +426,24 @@ async def pull_file(
                     chunk = all_screen_frame_ids[i : i + chunk_size]
                     chunk_docs = await client.get_nodes(file_key, chunk, depth=1)
                     all_frame_docs.update(chunk_docs)
-                log.debug("Batch-fetched %d frame nodes for file %r", len(all_screen_frame_ids), file_key)
+                log.debug(
+                    "Batch-fetched %d frame nodes for file %r", len(all_screen_frame_ids), file_key
+                )
             except Exception as exc:
-                log.warning("Failed to batch-fetch frame children for %r: %s — raw_frames will be omitted", file_key, exc)
+                log.warning(
+                    "Failed to batch-fetch frame children for %r: %s — raw_frames will be omitted",
+                    file_key,
+                    exc,
+                )
 
     for page_idx, page_stub in enumerate(page_stubs, 1):
         page_node_id: str = page_stub.id
         page_name: str = page_stub.name
 
         if state.should_skip_page(page_name):
-            _progress(f"  [{page_idx}/{total_pages}] {page_name} — skipped (matches skip_pages pattern)")
+            _progress(
+                f"  [{page_idx}/{total_pages}] {page_name} — skipped (matches skip_pages pattern)"
+            )
             result.pages_skipped += 1
             continue
 
@@ -424,7 +452,12 @@ async def pull_file(
             # Already fetched above
             page_node_or_exc = page_nodes_map[page_node_id]
             if isinstance(page_node_or_exc, Exception):
-                log.error("Failed to fetch page %r (%s): %s — skipping", page_name, page_node_id, page_node_or_exc)
+                log.error(
+                    "Failed to fetch page %r (%s): %s — skipping",
+                    page_name,
+                    page_node_id,
+                    page_node_or_exc,
+                )
                 result.pages_errored += 1
                 continue
             page_node: dict = page_node_or_exc
@@ -436,12 +469,16 @@ async def pull_file(
             # can't cause has_more=True and won't block pull_schema_version from updating.
             if not schema_stale and pages_written_this_call >= max_pages:
                 result.has_more = True
-                _progress(f"  [{page_idx}/{total_pages}] {page_name} — reached max_pages={max_pages}, stopping")
+                _progress(
+                    f"  [{page_idx}/{total_pages}] {page_name} — reached max_pages={max_pages}, stopping"
+                )
                 break
             try:
                 page_node = await client.get_page(file_key, page_node_id)
             except Exception as exc:
-                log.error("Failed to fetch page %r (%s): %s — skipping", page_name, page_node_id, exc)
+                log.error(
+                    "Failed to fetch page %r (%s): %s — skipping", page_name, page_node_id, exc
+                )
                 result.pages_errored += 1
                 continue
 
@@ -464,11 +501,15 @@ async def pull_file(
         # (When schema_stale the early stop above was skipped; we check again here.)
         if not schema_only and max_pages is not None and pages_written_this_call >= max_pages:
             result.has_more = True
-            _progress(f"  [{page_idx}/{total_pages}] {page_name} — reached max_pages={max_pages}, stopping")
+            _progress(
+                f"  [{page_idx}/{total_pages}] {page_name} — reached max_pages={max_pages}, stopping"
+            )
             break
 
         if schema_only:
-            _progress(f"  [{page_idx}/{total_pages}] {page_name} — schema upgrade (content unchanged)...")
+            _progress(
+                f"  [{page_idx}/{total_pages}] {page_name} — schema upgrade (content unchanged)..."
+            )
         else:
             _progress(f"  [{page_idx}/{total_pages}] {page_name} — processing...")
 
@@ -476,7 +517,13 @@ async def pull_file(
             node_suffix = page_node_id.replace(":", "-")
             page_slug = f"{slugify(page_name)}-{node_suffix}"
             page = from_page_node(page_node, file_key=file_key, file_name=file_name)
-            page = page.model_copy(update={"page_slug": page_slug, "version": api_version, "last_modified": api_last_modified})
+            page = page.model_copy(
+                update={
+                    "page_slug": page_slug,
+                    "version": api_version,
+                    "last_modified": api_last_modified,
+                }
+            )
 
             # Merge flows from existing .md (descriptions live in body, not frontmatter)
             existing_flows: list[tuple[str, str]] = []
@@ -502,12 +549,18 @@ async def pull_file(
                 if max_pages is None:
                     # Use the file-level batch already fetched above — O(1) lookup, no extra API call.
                     try:
-                        page_frame_docs = {k: v for k, v in all_frame_docs.items() if k in set(screen_frame_ids)}
-                        raw_frames = _compute_raw_frames(page_frame_docs) if page_frame_docs else None
+                        page_frame_docs = {
+                            k: v for k, v in all_frame_docs.items() if k in set(screen_frame_ids)
+                        }
+                        raw_frames = (
+                            _compute_raw_frames(page_frame_docs) if page_frame_docs else None
+                        )
                     except Exception as exc:
                         log.warning(
                             "Failed to compute raw_frames for page %r (%s): %s — raw_frames will be omitted",
-                            page_name, page_node_id, exc,
+                            page_name,
+                            page_node_id,
+                            exc,
                         )
                 else:
                     # Sequential mode: must fetch per-page (we don't have all page nodes upfront).
@@ -517,7 +570,9 @@ async def pull_file(
                     except Exception as exc:
                         log.warning(
                             "Failed to fetch frame children for page %r (%s): %s — raw_frames will be omitted",
-                            page_name, page_node_id, exc,
+                            page_name,
+                            page_node_id,
+                            exc,
                         )
 
             # Scan raw/stale token bindings — zero extra API calls, walks page_node already in memory.
@@ -539,7 +594,9 @@ async def pull_file(
                 except Exception as exc:
                     log.warning(
                         "Failed to scan tokens for page %r (%s): %s — raw_tokens will be omitted",
-                        page_name, page_node_id, exc,
+                        page_name,
+                        page_node_id,
+                        exc,
                     )
 
             written_screen_rel: str | None = None
@@ -555,13 +612,19 @@ async def pull_file(
                 )
                 if screen_md.exists():
                     written = update_page_frontmatter(
-                        repo_root, screen_page, screen_entry,
-                        raw_frames=raw_frames, raw_tokens=raw_tokens,
+                        repo_root,
+                        screen_page,
+                        screen_entry,
+                        raw_frames=raw_frames,
+                        raw_tokens=raw_tokens,
                     )
                 else:
                     written = write_new_page(
-                        repo_root, screen_page, screen_entry,
-                        raw_frames=raw_frames, raw_tokens=raw_tokens,
+                        repo_root,
+                        screen_page,
+                        screen_entry,
+                        raw_frames=raw_frames,
+                        raw_tokens=raw_tokens,
                     )
                 if token_scan is not None:
                     try:
@@ -569,7 +632,8 @@ async def pull_file(
                     except Exception as exc:
                         log.warning(
                             "Failed to write token sidecar for page %r: %s",
-                            page_name, exc,
+                            page_name,
+                            exc,
                         )
                 written_screen_rel = str(written.relative_to(repo_root))
                 result.md_paths.append(written_screen_rel)
@@ -587,7 +651,10 @@ async def pull_file(
                 comp_rel = component_path(file_slug, sect_slug)
                 sect_keys = _build_component_set_keys(page.page_node_id, component_sets)
                 written = write_component_section(
-                    repo_root, section, page, comp_rel,
+                    repo_root,
+                    section,
+                    page,
+                    comp_rel,
                     component_set_keys=sect_keys or None,
                 )
                 written_component_rels.append(str(written.relative_to(repo_root)))
@@ -623,7 +690,9 @@ async def pull_file(
 
         # Notify caller so it can commit/push incrementally
         if on_page_written:
-            all_written = ([written_screen_rel] if written_screen_rel else []) + written_component_rels
+            all_written = (
+                [written_screen_rel] if written_screen_rel else []
+            ) + written_component_rels
             on_page_written(f"{file_name} / {page_name}", all_written)
 
     # Record that all pages in this file are now at the current pull schema version.
@@ -637,7 +706,9 @@ async def pull_file(
     # has_more=True with pages_written=0 is only valid when the budget was zero from
     # the start (max_pages=0). If pages_schema_upgraded>0 alongside has_more=True and
     # pages_written=0, a bypass path consumed the budget — that makes the CI loop infinite.
-    assert not (result.has_more and result.pages_written == 0 and result.pages_schema_upgraded > 0), (
+    assert not (
+        result.has_more and result.pages_written == 0 and result.pages_schema_upgraded > 0
+    ), (
         f"BUG: has_more=True, pages_written=0, pages_schema_upgraded={result.pages_schema_upgraded} — "
         "schema-only upgrades must not consume the max_pages budget (causes infinite CI loop)"
     )

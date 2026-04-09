@@ -14,7 +14,7 @@ INVARIANTS:
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -47,28 +47,28 @@ class TestParseSince:
         """INVARIANT: '7d' produces a datetime approximately 7 days in the past."""
         result = parse_since("7d")
         assert result is not None
-        delta = datetime.now(timezone.utc) - result
+        delta = datetime.now(UTC) - result
         assert 6 < delta.days < 8
 
     def test_weeks(self):
         """INVARIANT: '2w' produces a datetime approximately 14 days in the past."""
         result = parse_since("2w")
         assert result is not None
-        delta = datetime.now(timezone.utc) - result
+        delta = datetime.now(UTC) - result
         assert 13 < delta.days < 15
 
     def test_months(self):
         """INVARIANT: '3m' produces a datetime approximately 90 days in the past."""
         result = parse_since("3m")
         assert result is not None
-        delta = datetime.now(timezone.utc) - result
+        delta = datetime.now(UTC) - result
         assert 89 < delta.days < 91
 
     def test_years(self):
         """INVARIANT: '1y' produces a datetime approximately 365 days in the past."""
         result = parse_since("1y")
         assert result is not None
-        delta = datetime.now(timezone.utc) - result
+        delta = datetime.now(UTC) - result
         assert 364 < delta.days < 366
 
     def test_result_is_timezone_aware(self):
@@ -104,11 +104,15 @@ class TestWriteJsonIfChanged:
         This is the core contract that prevents spurious git commits every pull run.
         """
         path = tmp_path / "out.json"
-        write_json_if_changed(path, {"data": "x", "ts": "2026-01-01"}, ignore_keys=frozenset({"ts"}))
+        write_json_if_changed(
+            path, {"data": "x", "ts": "2026-01-01"}, ignore_keys=frozenset({"ts"})
+        )
         mtime_first = path.stat().st_mtime_ns
         content_first = path.read_text()
 
-        written = write_json_if_changed(path, {"data": "x", "ts": "2099-12-31"}, ignore_keys=frozenset({"ts"}))
+        written = write_json_if_changed(
+            path, {"data": "x", "ts": "2099-12-31"}, ignore_keys=frozenset({"ts"})
+        )
 
         assert written is False
         assert path.stat().st_mtime_ns == mtime_first
@@ -117,9 +121,13 @@ class TestWriteJsonIfChanged:
     def test_writes_when_non_ignored_content_changes(self, tmp_path: Path):
         """INVARIANT: write_json_if_changed returns True and updates the file when payload data changes."""
         path = tmp_path / "out.json"
-        write_json_if_changed(path, {"data": "old", "ts": "2026-01-01"}, ignore_keys=frozenset({"ts"}))
+        write_json_if_changed(
+            path, {"data": "old", "ts": "2026-01-01"}, ignore_keys=frozenset({"ts"})
+        )
 
-        written = write_json_if_changed(path, {"data": "new", "ts": "2026-01-01"}, ignore_keys=frozenset({"ts"}))
+        written = write_json_if_changed(
+            path, {"data": "new", "ts": "2026-01-01"}, ignore_keys=frozenset({"ts"})
+        )
 
         assert written is True
         assert json.loads(path.read_text())["data"] == "new"

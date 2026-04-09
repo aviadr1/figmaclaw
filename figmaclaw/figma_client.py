@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import httpx
 
@@ -82,8 +83,12 @@ class FigmaClient:
             await self._pace()
             try:
                 response = await client.get(url, params=params)
-            except (httpx.RemoteProtocolError, httpx.ReadError,
-                    httpx.ReadTimeout, httpx.ConnectError) as e:
+            except (
+                httpx.RemoteProtocolError,
+                httpx.ReadError,
+                httpx.ReadTimeout,
+                httpx.ConnectError,
+            ) as e:
                 # Connection dropped mid-transfer — retry with backoff.
                 # Large file trees (e.g. 50+ pages) sometimes get truncated.
                 last_exc = e
@@ -118,7 +123,8 @@ class FigmaClient:
         """
         data = await self._get(f"/v1/files/{file_key}", params={"depth": "1"})
         return _validate(
-            FileMetaResponse, data,
+            FileMetaResponse,
+            data,
             endpoint="GET /v1/files/{key}?depth=1",
             context=f"file_key={file_key}",
         )
@@ -140,7 +146,8 @@ class FigmaClient:
             params={"ids": page_node_id},
         )
         validated = _validate(
-            NodesResponse, data,
+            NodesResponse,
+            data,
             endpoint="GET /v1/files/{key}/nodes",
             context=f"file_key={file_key} ids={page_node_id}",
         )
@@ -150,8 +157,11 @@ class FigmaClient:
         return entry.document
 
     async def get_pages(
-        self, file_key: str, page_node_ids: list[str],
-        *, version: str | None = None,
+        self,
+        file_key: str,
+        page_node_ids: list[str],
+        *,
+        version: str | None = None,
         batch_size: int = 10,
     ) -> dict[str, dict[str, Any]]:
         """GET /v1/files/{file_key}/nodes?ids=... — batch fetch multiple pages.
@@ -183,7 +193,8 @@ class FigmaClient:
                             if version:
                                 p["version"] = version
                             data = await self._get(
-                                f"/v1/files/{file_key}/nodes", params=p,
+                                f"/v1/files/{file_key}/nodes",
+                                params=p,
                             )
                             entry = data.get("nodes", {}).get(pid, {})
                             doc = entry.get("document", {})
@@ -200,7 +211,10 @@ class FigmaClient:
         return result
 
     async def get_file_shallow(
-        self, file_key: str, *, version: str | None = None,
+        self,
+        file_key: str,
+        *,
+        version: str | None = None,
     ) -> dict[str, Any]:
         """GET /v1/files/{file_key}?depth=2[&version=...] — shallow file tree.
 
@@ -218,15 +232,18 @@ class FigmaClient:
             params["version"] = version
         data = await self._get(f"/v1/files/{file_key}", params=params)
         _validate(
-            FileMetaResponse, data,
-            endpoint="GET /v1/files/{key}?depth=2"
-            + (f"&version={version}" if version else ""),
+            FileMetaResponse,
+            data,
+            endpoint="GET /v1/files/{key}?depth=2" + (f"&version={version}" if version else ""),
             context=f"file_key={file_key}",
         )
         return data
 
     async def get_file_full(
-        self, file_key: str, *, version: str | None = None,
+        self,
+        file_key: str,
+        *,
+        version: str | None = None,
     ) -> dict[str, Any]:
         """GET /v1/files/{file_key}[?version=...] — full file tree.
 
@@ -245,7 +262,8 @@ class FigmaClient:
         data = await self._get(f"/v1/files/{file_key}", params=params)
         # Sanity validation on the top-level envelope; recursive children stay raw.
         _validate(
-            FileMetaResponse, data,
+            FileMetaResponse,
+            data,
             endpoint="GET /v1/files/{key}" + (f"?version={version}" if version else ""),
             context=f"file_key={file_key}",
         )
@@ -261,8 +279,12 @@ class FigmaClient:
             await self._pace()
             try:
                 response = await client.get(full_url)
-            except (httpx.RemoteProtocolError, httpx.ReadError,
-                    httpx.ReadTimeout, httpx.ConnectError) as e:
+            except (
+                httpx.RemoteProtocolError,
+                httpx.ReadError,
+                httpx.ReadTimeout,
+                httpx.ConnectError,
+            ) as e:
                 last_exc = e
                 if attempt < 9:
                     await asyncio.sleep(2 * (attempt + 1))
@@ -314,7 +336,8 @@ class FigmaClient:
                 break
             data = await self._get_url(url)
             page = _validate(
-                VersionsPage, data,
+                VersionsPage,
+                data,
                 endpoint="GET /v1/files/{key}/versions",
                 context=f"file_key={file_key}",
             )
@@ -328,7 +351,10 @@ class FigmaClient:
         return all_versions
 
     async def get_page_at_version(
-        self, file_key: str, page_node_id: str, version: str,
+        self,
+        file_key: str,
+        page_node_id: str,
+        version: str,
     ) -> dict[str, Any]:
         """GET /v1/files/{file_key}/nodes?ids={id}&version={v} — page tree at a version.
 
@@ -351,7 +377,8 @@ class FigmaClient:
         """
         data = await self._get(f"/v1/teams/{team_id}/projects")
         resp = _validate(
-            TeamProjectsResponse, data,
+            TeamProjectsResponse,
+            data,
             endpoint="GET /v1/teams/{team_id}/projects",
             context=f"team_id={team_id}",
         )
@@ -366,7 +393,8 @@ class FigmaClient:
         """
         data = await self._get(f"/v1/projects/{project_id}/files")
         resp = _validate(
-            ProjectFilesResponse, data,
+            ProjectFilesResponse,
+            data,
             endpoint="GET /v1/projects/{project_id}/files",
             context=f"project_id={project_id}",
         )
@@ -428,10 +456,7 @@ class FigmaClient:
         nodes: dict[str, Any] = data.get("nodes", {})
         # Each entry is {"document": node_dict, ...} — unwrap to just the document node.
         # Normalise Figma's occasional "-" separators back to ":".
-        return {
-            k.replace("-", ":"): v.get("document", {})
-            for k, v in nodes.items()
-        }
+        return {k.replace("-", ":"): v.get("document", {}) for k, v in nodes.items()}
 
     async def download_url(self, url: str) -> bytes:
         """Download an arbitrary URL (e.g. Figma S3 image export). Not a Figma API endpoint."""

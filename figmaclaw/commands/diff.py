@@ -15,9 +15,8 @@ import asyncio
 import json
 import os
 import re
-import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -109,8 +108,11 @@ class FileDiff:
 # ── Extract frames from Figma page node ────────────────────────────
 
 
-def _extract_frames(page_node: dict, file_key: str) -> tuple[
-    dict[str, FigmaFrame], list[tuple[str, str]],
+def _extract_frames(
+    page_node: dict, file_key: str
+) -> tuple[
+    dict[str, FigmaFrame],
+    list[tuple[str, str]],
 ]:
     """Parse a CANVAS node and return (frames_by_id, flow_edges)."""
     if not page_node:
@@ -134,7 +136,9 @@ def _parse_version_ts(v: VersionSummary) -> datetime | None:
 
 
 async def _find_version_before(
-    client: FigmaClient, file_key: str, cutoff: datetime,
+    client: FigmaClient,
+    file_key: str,
+    cutoff: datetime,
 ) -> tuple[VersionInfo | None, list[VersionInfo]]:
     """Find the latest version before *cutoff* and all versions after it.
 
@@ -143,6 +147,7 @@ async def _find_version_before(
     Uses pagination with early termination: stops fetching as soon as a
     version older than the cutoff is found.
     """
+
     def _is_before_cutoff(v: VersionSummary) -> bool:
         ts = _parse_version_ts(v)
         return ts is not None and ts < cutoff
@@ -206,7 +211,8 @@ async def _diff_file(
     if old_version:
         try:
             old_tree = await client.get_file_shallow(
-                file_key, version=old_version.id,
+                file_key,
+                version=old_version.id,
             )
             old_pages = _extract_all_pages(old_tree, file_key)
         except Exception:
@@ -224,11 +230,7 @@ async def _diff_file(
         cur_frames, cur_flows = _extract_frames(current_node, file_key)
         old_frames, old_flows = _extract_frames(old_node, file_key)
 
-        page_name = (
-            current_node.get("name")
-            or old_node.get("name")
-            or page_id
-        )
+        page_name = current_node.get("name") or old_node.get("name") or page_id
 
         diff = PageDiff(
             page_node_id=page_id,
@@ -253,9 +255,13 @@ async def _diff_file(
             old_name = old_frames[nid].name
             new_name = cur_frames[nid].name
             if old_name != new_name:
-                diff.renamed_frames.append(FrameRename(
-                    node_id=nid, old_name=old_name, new_name=new_name,
-                ))
+                diff.renamed_frames.append(
+                    FrameRename(
+                        node_id=nid,
+                        old_name=old_name,
+                        new_name=new_name,
+                    )
+                )
 
         old_flow_set = set(old_flows)
         cur_flow_set = set(cur_flows)
@@ -294,7 +300,7 @@ async def _run(
     5. Compare in memory — no more API calls
     """
     delta = _parse_duration(since)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cutoff = now - delta
 
     # Discover tracked files from .md frontmatter
@@ -326,7 +332,7 @@ async def _run(
         meta_results = await asyncio.gather(*meta_tasks, return_exceptions=True)
 
         candidates: list[str] = []
-        for fk, meta in zip(file_pages, meta_results):
+        for fk, meta in zip(file_pages, meta_results, strict=False):
             if isinstance(meta, BaseException):
                 candidates.append(fk)  # if meta fails, still check versions
                 continue
@@ -350,14 +356,11 @@ async def _run(
         if progress and candidates:
             click.echo(f"Fetching version history for {len(candidates)} files...", err=True)
 
-        version_tasks = [
-            _find_version_before(client, fk, cutoff)
-            for fk in candidates
-        ]
+        version_tasks = [_find_version_before(client, fk, cutoff) for fk in candidates]
         version_results = await asyncio.gather(*version_tasks, return_exceptions=True)
 
         active_files: list[tuple[str, str, list[str], VersionInfo | None, list[VersionInfo]]] = []
-        for fk, vr in zip(candidates, version_results):
+        for fk, vr in zip(candidates, version_results, strict=False):
             file_name, page_ids = file_pages[fk]
             if isinstance(vr, BaseException):
                 if progress:
@@ -393,11 +396,10 @@ async def _run(
             ]
             diffs = await asyncio.gather(*diff_tasks, return_exceptions=True)
 
-            for (fk, fn, _, _, _), d in zip(active_files, diffs):
+            for (fk, fn, _, _, _), d in zip(active_files, diffs, strict=False):
                 if isinstance(d, BaseException):
                     click.echo(
-                        f"  WARNING: failed to diff {fn} ({fk}): "
-                        f"{type(d).__name__}: {d}",
+                        f"  WARNING: failed to diff {fn} ({fk}): " f"{type(d).__name__}: {d}",
                         err=True,
                     )
                     continue
@@ -417,7 +419,9 @@ async def _run(
 
 
 def _format_text(
-    results: list[FileDiff], since_date: datetime, until_date: datetime,
+    results: list[FileDiff],
+    since_date: datetime,
+    until_date: datetime,
 ) -> str:
     since_str = since_date.strftime("%b %d, %Y")
     until_str = until_date.strftime("%b %d, %Y")
@@ -427,11 +431,13 @@ def _format_text(
         ver_count = len(fd.versions_in_range)
         users = sorted({v.user for v in fd.versions_in_range if v.user})
         user_str = ", ".join(users) if users else "unknown"
-        lines.append(f"## {fd.file_name} ({ver_count} version{'s' if ver_count != 1 else ''} by {user_str})")
+        lines.append(
+            f"## {fd.file_name} ({ver_count} version{'s' if ver_count != 1 else ''} by {user_str})"
+        )
         if fd.old_version:
             lines.append(f"  Comparing: {fd.old_version.created_at[:16]} \u2192 now")
         else:
-            lines.append(f"  No version before window \u2014 showing all current frames")
+            lines.append("  No version before window \u2014 showing all current frames")
         lines.append("")
 
         for p in fd.pages:
@@ -471,9 +477,9 @@ def _format_text(
             lines.append("")
 
         # Version timeline
-        lines.append(f"  Versions:")
+        lines.append("  Versions:")
         for v in fd.versions_in_range:
-            label = f"  \"{v.label}\"" if v.label else ""
+            label = f'  "{v.label}"' if v.label else ""
             lines.append(f"    {v.created_at[:16]}  {v.user}{label}")
         lines.append("")
 
@@ -485,7 +491,9 @@ def _format_text(
 
 
 def _format_json(
-    results: list[FileDiff], since_date: datetime, until_date: datetime,
+    results: list[FileDiff],
+    since_date: datetime,
+    until_date: datetime,
 ) -> str:
     output: dict[str, Any] = {
         "since": since_date.strftime("%Y-%m-%d"),
@@ -511,7 +519,9 @@ def _format_json(
                 "frames_before": p.frames_before,
                 "frames_after": p.frames_after,
                 "added_frames": [{"node_id": f.node_id, "name": f.name} for f in p.added_frames],
-                "removed_frames": [{"node_id": f.node_id, "name": f.name} for f in p.removed_frames],
+                "removed_frames": [
+                    {"node_id": f.node_id, "name": f.name} for f in p.removed_frames
+                ],
                 "renamed_frames": [
                     {"node_id": r.node_id, "old_name": r.old_name, "new_name": r.new_name}
                     for r in p.renamed_frames
@@ -531,21 +541,31 @@ def _format_json(
 @click.command("diff")
 @click.argument("target", default="figma/", required=False)
 @click.option(
-    "--since", default="7d", show_default=True,
+    "--since",
+    default="7d",
+    show_default=True,
     help="How far back to look (e.g. '7d', '14d', '1m').",
 )
 @click.option(
-    "--format", "fmt", type=click.Choice(["text", "json"]), default="text",
+    "--format",
+    "fmt",
+    type=click.Choice(["text", "json"]),
+    default="text",
     show_default=True,
     help="Output format.",
 )
 @click.option(
-    "--progress/--no-progress", default=True,
+    "--progress/--no-progress",
+    default=True,
     help="Show progress to stderr while fetching from the Figma API.",
 )
 @click.pass_context
 def diff_cmd(
-    ctx: click.Context, target: str, since: str, fmt: str, progress: bool,
+    ctx: click.Context,
+    target: str,
+    since: str,
+    fmt: str,
+    progress: bool,
 ) -> None:
     """Show what designers changed in Figma using the Figma Versions API.
 

@@ -9,16 +9,13 @@ INVARIANTS:
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import frontmatter as _frontmatter
-import pytest
 from click.testing import CliRunner
 
 from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection
 from figmaclaw.figma_parse import parse_frontmatter
-from figmaclaw.main import cli
 from figmaclaw.figma_render import scaffold_page
 from figmaclaw.figma_sync_state import PageEntry
 from figmaclaw.main import cli
@@ -69,12 +66,17 @@ def test_write_body_writes_new_body(tmp_path: Path) -> None:
     new_body = "# New Title\n\nThis is the new body written by the LLM.\n"
 
     runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "write-body",
-        str(md_path),
-        "--body", new_body,
-    ])
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "write-body",
+            str(md_path),
+            "--body",
+            new_body,
+        ],
+    )
     assert result.exit_code == 0, result.output
 
     post = _frontmatter.loads(md_path.read_text())
@@ -92,12 +94,17 @@ def test_bp6_write_body_preserves_frontmatter_byte_for_byte(tmp_path: Path) -> N
 
     new_body = "Completely different body content.\n\nWith multiple paragraphs."
     runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "write-body",
-        str(md_path),
-        "--body", new_body,
-    ])
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "write-body",
+            str(md_path),
+            "--body",
+            new_body,
+        ],
+    )
     assert result.exit_code == 0, result.output
 
     updated_md = md_path.read_text()
@@ -123,11 +130,16 @@ def test_write_body_via_stdin(tmp_path: Path) -> None:
     new_body = "Body from stdin.\n"
 
     runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "write-body",
-        str(md_path),
-    ], input=new_body)
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "write-body",
+            str(md_path),
+        ],
+        input=new_body,
+    )
     assert result.exit_code == 0, result.output
 
     post = _frontmatter.loads(md_path.read_text())
@@ -141,12 +153,17 @@ def test_write_body_via_file(tmp_path: Path) -> None:
     body_file.write_text("# LLM Output\n\nBody loaded from file.\n")
 
     runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "write-body",
-        str(md_path),
-        "--body", str(body_file),
-    ])
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "write-body",
+            str(md_path),
+            "--body",
+            str(body_file),
+        ],
+    )
     assert result.exit_code == 0, result.output
 
     post = _frontmatter.loads(md_path.read_text())
@@ -159,12 +176,17 @@ def test_write_body_fails_for_non_figmaclaw_file(tmp_path: Path) -> None:
     md_path.write_text("# Just markdown\n\nNo frontmatter.\n")
 
     runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "write-body",
-        str(md_path),
-        "--body", "new body",
-    ])
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "write-body",
+            str(md_path),
+            "--body",
+            "new body",
+        ],
+    )
     assert result.exit_code != 0
 
 
@@ -177,19 +199,26 @@ def test_write_body_survives_repeated_calls(tmp_path: Path) -> None:
 
     runner = CliRunner()
     for i in range(5):
-        result = runner.invoke(cli, [
-            "--repo-dir", str(tmp_path),
-            "write-body",
-            str(md_path),
-            "--body", f"Body version {i}.\n",
-        ])
+        result = runner.invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "write-body",
+                str(md_path),
+                "--body",
+                f"Body version {i}.\n",
+            ],
+        )
         assert result.exit_code == 0, result.output
 
     updated_md = md_path.read_text()
     _, _, after_open2 = updated_md.partition("---\n")
     updated_fm_body, _, _ = after_open2.partition("\n---")
 
-    assert updated_fm_body == original_fm_body, "Frontmatter degraded after repeated write-body calls"
+    assert (
+        updated_fm_body == original_fm_body
+    ), "Frontmatter degraded after repeated write-body calls"
     assert "Body version 4." in updated_md
 
 
@@ -253,12 +282,19 @@ Updated auth intro.
 | Signup | `11:2` | A signup screen |"""
 
     runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "write-body", str(md_path),
-        "--section", "10:1",
-        "--body", new_auth,
-    ])
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "write-body",
+            str(md_path),
+            "--section",
+            "10:1",
+            "--body",
+            new_auth,
+        ],
+    )
     assert result.exit_code == 0, result.output
 
     updated = md_path.read_text()
@@ -280,12 +316,19 @@ def test_write_section_preserves_frontmatter(tmp_path: Path) -> None:
 
     new_section = "## Auth (`10:1`)\n\nNew intro.\n\n| Screen | Node ID | Description |\n|--------|---------|-------------|\n| Login | `11:1` | desc |"
     runner = CliRunner()
-    runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "write-body", str(md_path),
-        "--section", "10:1",
-        "--body", new_section,
-    ])
+    runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "write-body",
+            str(md_path),
+            "--section",
+            "10:1",
+            "--body",
+            new_section,
+        ],
+    )
 
     updated_fm = parse_frontmatter(md_path.read_text())
     assert updated_fm is not None
@@ -300,12 +343,19 @@ def test_write_section_preserves_page_summary(tmp_path: Path) -> None:
 
     new_section = "## Auth (`10:1`)\n\nNew.\n\n| Screen | Node ID | Description |\n|--------|---------|-------------|\n| Login | `11:1` | desc |"
     runner = CliRunner()
-    runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "write-body", str(md_path),
-        "--section", "10:1",
-        "--body", new_section,
-    ])
+    runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "write-body",
+            str(md_path),
+            "--section",
+            "10:1",
+            "--body",
+            new_section,
+        ],
+    )
 
     updated = md_path.read_text()
     assert "Page summary text." in updated
@@ -319,12 +369,19 @@ def test_write_section_preserves_screen_flows(tmp_path: Path) -> None:
 
     new_section = "## Dashboard (`20:1`)\n\nUpdated.\n\n| Screen | Node ID | Description |\n|--------|---------|-------------|\n| Home | `21:1` | described |"
     runner = CliRunner()
-    runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "write-body", str(md_path),
-        "--section", "20:1",
-        "--body", new_section,
-    ])
+    runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "write-body",
+            str(md_path),
+            "--section",
+            "20:1",
+            "--body",
+            new_section,
+        ],
+    )
 
     updated = md_path.read_text()
     assert "## Screen flows" in updated
@@ -339,12 +396,19 @@ def test_write_section_last_section_before_screen_flows(tmp_path: Path) -> None:
 
     new_section = "## Dashboard (`20:1`)\n\nReplaced dashboard.\n\n| Screen | Node ID | Description |\n|--------|---------|-------------|\n| Home | `21:1` | new desc |"
     runner = CliRunner()
-    runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "write-body", str(md_path),
-        "--section", "20:1",
-        "--body", new_section,
-    ])
+    runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "write-body",
+            str(md_path),
+            "--section",
+            "20:1",
+            "--body",
+            new_section,
+        ],
+    )
 
     updated = md_path.read_text()
     assert "Replaced dashboard." in updated
@@ -357,12 +421,19 @@ def test_write_section_intro_only(tmp_path: Path) -> None:
     md_path.write_text(_SECTION_TEST_MD)
 
     runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "write-body", str(md_path),
-        "--section", "10:1",
-        "--intro", "Updated auth intro via --intro flag.",
-    ])
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "write-body",
+            str(md_path),
+            "--section",
+            "10:1",
+            "--intro",
+            "Updated auth intro via --intro flag.",
+        ],
+    )
     assert result.exit_code == 0, result.output
 
     updated = md_path.read_text()
@@ -383,19 +454,33 @@ def test_write_section_intro_replaces_existing(tmp_path: Path) -> None:
 
     # First write
     runner = CliRunner()
-    runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "write-body", str(md_path),
-        "--section", "10:1",
-        "--intro", "First intro.",
-    ])
+    runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "write-body",
+            str(md_path),
+            "--section",
+            "10:1",
+            "--intro",
+            "First intro.",
+        ],
+    )
     # Second write
-    runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "write-body", str(md_path),
-        "--section", "10:1",
-        "--intro", "Second intro.",
-    ])
+    runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "write-body",
+            str(md_path),
+            "--section",
+            "10:1",
+            "--intro",
+            "Second intro.",
+        ],
+    )
 
     updated = md_path.read_text()
     assert "Second intro." in updated
@@ -408,10 +493,17 @@ def test_write_section_not_found(tmp_path: Path) -> None:
     md_path.write_text(_SECTION_TEST_MD)
 
     runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "write-body", str(md_path),
-        "--section", "99:99",
-        "--body", "## Nope (`99:99`)\n\nwhatever",
-    ])
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "write-body",
+            str(md_path),
+            "--section",
+            "99:99",
+            "--body",
+            "## Nope (`99:99`)\n\nwhatever",
+        ],
+    )
     assert result.exit_code != 0

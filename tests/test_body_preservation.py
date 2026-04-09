@@ -41,18 +41,15 @@ import pytest
 from click.testing import CliRunner
 
 from figmaclaw.commands import sync as sync_module
-from figmaclaw.commands.set_flows import _apply_flows
 from figmaclaw.figma_api_models import FileMetaResponse
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_frontmatter import FigmaPageFrontmatter
-from figmaclaw.figma_hash import compute_page_hash
 from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection
 from figmaclaw.figma_parse import parse_frontmatter
 from figmaclaw.figma_render import scaffold_page
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
 from figmaclaw.main import cli
 from figmaclaw.pull_logic import pull_file, update_page_frontmatter, write_new_page
-
 
 # Shared LLM-authored body content used across tests.
 # This simulates what the body looks like AFTER an LLM has filled in all
@@ -156,17 +153,19 @@ def _fake_page_node(extra_children: list[dict] | None = None) -> dict:
     }
 
 
-def _fake_file_meta() -> "FileMetaResponse":
-    return FileMetaResponse.model_validate({
-        "name": "Web App",
-        "version": "v2",
-        "lastModified": "2026-03-31T12:00:00Z",
-        "document": {
-            "children": [
-                {"id": "7741:45837", "name": "Onboarding", "type": "CANVAS"},
-            ],
-        },
-    })
+def _fake_file_meta() -> FileMetaResponse:
+    return FileMetaResponse.model_validate(
+        {
+            "name": "Web App",
+            "version": "v2",
+            "lastModified": "2026-03-31T12:00:00Z",
+            "document": {
+                "children": [
+                    {"id": "7741:45837", "name": "Onboarding", "type": "CANVAS"},
+                ],
+            },
+        }
+    )
 
 
 def _setup_state(tmp_path: Path) -> FigmaSyncState:
@@ -186,6 +185,7 @@ def _mock_figma_client(page_node: dict | None = None):
 
 
 # BP-1: sync on existing file preserves body byte-for-byte
+
 
 @pytest.mark.asyncio
 async def test_bp1_sync_preserves_body_byte_for_byte(tmp_path: Path) -> None:
@@ -207,6 +207,7 @@ async def test_bp1_sync_preserves_body_byte_for_byte(tmp_path: Path) -> None:
 
 
 # BP-2: pull_file on existing file preserves body byte-for-byte
+
 
 @pytest.mark.asyncio
 async def test_bp2_pull_preserves_body_byte_for_byte(tmp_path: Path) -> None:
@@ -238,17 +239,23 @@ async def test_bp2_pull_preserves_body_byte_for_byte(tmp_path: Path) -> None:
 
 # BP-3: set-flows on existing file preserves body byte-for-byte
 
+
 def test_bp3_set_flows_preserves_body_byte_for_byte(tmp_path: Path) -> None:
     """BP-3: set-flows updates only frontmatter — body is byte-for-byte identical."""
     md_path, original_body = _write_enriched_md(tmp_path)
 
     runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "set-flows",
-        str(md_path),
-        "--flows", json.dumps([["11:1", "11:2"]]),
-    ])
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "set-flows",
+            str(md_path),
+            "--flows",
+            json.dumps([["11:1", "11:2"]]),
+        ],
+    )
     assert result.exit_code == 0, result.output
 
     post = _frontmatter.loads(md_path.read_text())
@@ -259,6 +266,7 @@ def test_bp3_set_flows_preserves_body_byte_for_byte(tmp_path: Path) -> None:
 
 
 # BP-4: update_page_frontmatter preserves body byte-for-byte
+
 
 def test_bp4_update_page_frontmatter_preserves_body(tmp_path: Path) -> None:
     """BP-4: update_page_frontmatter replaces only the YAML block — body is byte-for-byte identical."""
@@ -277,6 +285,7 @@ def test_bp4_update_page_frontmatter_preserves_body(tmp_path: Path) -> None:
 
 # BP-5: scaffold_page is never called on existing files by sync or pull
 
+
 @pytest.mark.asyncio
 async def test_bp5_sync_does_not_call_scaffold_on_existing_file(tmp_path: Path) -> None:
     """BP-5: sync must never call scaffold_page when the file already exists."""
@@ -284,15 +293,17 @@ async def test_bp5_sync_does_not_call_scaffold_on_existing_file(tmp_path: Path) 
     _setup_state(tmp_path)
 
     mock_client = _mock_figma_client()
-    with patch.object(sync_module, "FigmaClient") as MockClientClass, \
-         patch.object(sync_module, "write_new_page", wraps=write_new_page) as mock_write_new:
+    with (
+        patch.object(sync_module, "FigmaClient") as MockClientClass,
+        patch.object(sync_module, "write_new_page", wraps=write_new_page) as mock_write_new,
+    ):
         MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
         await sync_module._run("fake-api-key", tmp_path, md_path, auto_commit=False)
 
-    assert mock_write_new.call_count == 0, (
-        "BP-5 VIOLATED: sync called write_new_page (which calls scaffold_page) on an existing file"
-    )
+    assert (
+        mock_write_new.call_count == 0
+    ), "BP-5 VIOLATED: sync called write_new_page (which calls scaffold_page) on an existing file"
 
 
 @pytest.mark.asyncio
@@ -325,17 +336,23 @@ async def test_bp5_pull_does_not_call_scaffold_on_existing_file(tmp_path: Path) 
 
     mock_client = _mock_figma_client()
     import figmaclaw.pull_logic as pull_logic_module
-    with patch.object(pull_logic_module, "write_new_page", wraps=write_new_page) as mock_write_new, \
-         patch.object(pull_logic_module, "update_page_frontmatter", wraps=update_page_frontmatter) as mock_update:
+
+    with (
+        patch.object(pull_logic_module, "write_new_page", wraps=write_new_page) as mock_write_new,
+        patch.object(
+            pull_logic_module, "update_page_frontmatter", wraps=update_page_frontmatter
+        ) as mock_update,
+    ):
         await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
-    assert mock_write_new.call_count == 0, (
-        "BP-5 VIOLATED: pull_file called write_new_page on an existing file"
-    )
+    assert (
+        mock_write_new.call_count == 0
+    ), "BP-5 VIOLATED: pull_file called write_new_page on an existing file"
     mock_update.assert_called_once()
 
 
 # SC-1: sync on non-existent file writes scaffold
+
 
 @pytest.mark.asyncio
 async def test_sc1_sync_writes_scaffold_for_new_file(tmp_path: Path) -> None:
@@ -391,12 +408,17 @@ def test_sc3_scaffold_contains_all_llm_placeholders() -> None:
     entry = _make_entry()
     md = scaffold_page(page, entry)
 
-    assert "<!-- LLM: Write a 2-3 sentence page summary" in md, "SC-3: missing page summary placeholder"
-    assert "<!-- LLM: Write a 1-sentence section intro" in md, "SC-3: missing section intro placeholder"
+    assert (
+        "<!-- LLM: Write a 2-3 sentence page summary" in md
+    ), "SC-3: missing page summary placeholder"
+    assert (
+        "<!-- LLM: Write a 1-sentence section intro" in md
+    ), "SC-3: missing section intro placeholder"
     assert "<!-- LLM: Generate Mermaid flowchart" in md, "SC-3: missing mermaid placeholder"
 
 
 # FM-1: existing frame descriptions survive sync
+
 
 @pytest.mark.asyncio
 async def test_fm1_descriptions_survive_sync(tmp_path: Path) -> None:
@@ -418,6 +440,7 @@ async def test_fm1_descriptions_survive_sync(tmp_path: Path) -> None:
 
 # FM-2: existing flows survive sync
 
+
 @pytest.mark.asyncio
 async def test_fm2_flows_survive_sync(tmp_path: Path) -> None:
     """FM-2: existing flows in frontmatter survive a sync operation."""
@@ -437,6 +460,7 @@ async def test_fm2_flows_survive_sync(tmp_path: Path) -> None:
 
 # FM-3: new frames from Figma appear in frontmatter after sync
 
+
 @pytest.mark.asyncio
 async def test_fm3_new_frames_appear_after_sync(tmp_path: Path) -> None:
     """FM-3: frames added in Figma appear in frontmatter after sync, alongside existing ones."""
@@ -444,9 +468,11 @@ async def test_fm3_new_frames_appear_after_sync(tmp_path: Path) -> None:
     _setup_state(tmp_path)
 
     # Figma now has a new frame 11:3 that wasn't in the original .md
-    page_node = _fake_page_node(extra_children=[
-        {"id": "11:3", "name": "home feed", "type": "FRAME", "children": []},
-    ])
+    page_node = _fake_page_node(
+        extra_children=[
+            {"id": "11:3", "name": "home feed", "type": "FRAME", "children": []},
+        ]
+    )
     mock_client = _mock_figma_client(page_node)
     with patch.object(sync_module, "FigmaClient") as MockClientClass:
         MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
@@ -461,6 +487,7 @@ async def test_fm3_new_frames_appear_after_sync(tmp_path: Path) -> None:
 
 
 # FM-4: frontmatter is valid FigmaPageFrontmatter after sync
+
 
 @pytest.mark.asyncio
 async def test_fm4_frontmatter_valid_after_sync(tmp_path: Path) -> None:
@@ -483,6 +510,7 @@ async def test_fm4_frontmatter_valid_after_sync(tmp_path: Path) -> None:
 
 # CL-1: --scaffold prints without modifying file
 
+
 @pytest.mark.asyncio
 async def test_cl1_scaffold_flag_does_not_modify_file(tmp_path: Path) -> None:
     """CL-1: --scaffold prints scaffold to stdout without modifying the file on disk."""
@@ -495,16 +523,20 @@ async def test_cl1_scaffold_flag_does_not_modify_file(tmp_path: Path) -> None:
         MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
         await sync_module._run(
-            "fake-api-key", tmp_path, md_path,
-            auto_commit=False, show_scaffold=True,
+            "fake-api-key",
+            tmp_path,
+            md_path,
+            auto_commit=False,
+            show_scaffold=True,
         )
 
-    assert md_path.read_text() == original_content, (
-        "CL-1 VIOLATED: --scaffold modified the file on disk"
-    )
+    assert (
+        md_path.read_text() == original_content
+    ), "CL-1 VIOLATED: --scaffold modified the file on disk"
 
 
 # CL-2: --show-body prints without modifying file
+
 
 @pytest.mark.asyncio
 async def test_cl2_show_body_flag_does_not_modify_file(tmp_path: Path) -> None:
@@ -518,16 +550,20 @@ async def test_cl2_show_body_flag_does_not_modify_file(tmp_path: Path) -> None:
         MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
         await sync_module._run(
-            "fake-api-key", tmp_path, md_path,
-            auto_commit=False, show_body=True,
+            "fake-api-key",
+            tmp_path,
+            md_path,
+            auto_commit=False,
+            show_body=True,
         )
 
-    assert md_path.read_text() == original_content, (
-        "CL-2 VIOLATED: --show-body modified the file on disk"
-    )
+    assert (
+        md_path.read_text() == original_content
+    ), "CL-2 VIOLATED: --show-body modified the file on disk"
 
 
 # Bonus: body survives REPEATED sync operations
+
 
 @pytest.mark.asyncio
 async def test_body_survives_repeated_sync(tmp_path: Path) -> None:
@@ -552,6 +588,7 @@ async def test_body_survives_repeated_sync(tmp_path: Path) -> None:
 
 # Bonus: body survives sync + set-flows interleaved
 
+
 @pytest.mark.asyncio
 async def test_body_survives_sync_then_set_flows_cycle(tmp_path: Path) -> None:
     """Body survives a realistic workflow: sync → set-flows → sync → set-flows."""
@@ -569,11 +606,17 @@ async def test_body_survives_sync_then_set_flows_cycle(tmp_path: Path) -> None:
             await sync_module._run("fake-api-key", tmp_path, md_path, auto_commit=False)
 
         # set-flows
-        runner.invoke(cli, [
-            "--repo-dir", str(tmp_path),
-            "set-flows", str(md_path),
-            "--flows", json.dumps([["11:1", "11:2"]]),
-        ])
+        runner.invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "set-flows",
+                str(md_path),
+                "--flows",
+                json.dumps([["11:1", "11:2"]]),
+            ],
+        )
 
     post = _frontmatter.loads(md_path.read_text())
     assert post.content == original_body, (
