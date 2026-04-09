@@ -786,14 +786,18 @@ async def pull_file(
         state.manifest.files[file_key].pull_schema_version = CURRENT_PULL_SCHEMA_VERSION
         state.save()
 
-    # Structural invariant: schema-only upgrades must never cause has_more=True.
-    # has_more=True with pages_written=0 is only valid when the budget was zero from
-    # the start (max_pages=0). If pages_schema_upgraded>0 alongside has_more=True and
-    # pages_written=0, a bypass path consumed the budget — that makes the CI loop infinite.
+    # Structural invariant: schema-only upgrades must never *by themselves* cause has_more=True.
+    # If has_more=True while zero content-changed pages consumed the budget in this call
+    # (pages_written_this_call == 0) and at least one schema-only upgrade happened, then a
+    # schema-only path incorrectly triggered pagination cutoff — that can cause CI loops.
+    #
+    # Use pages_written_this_call (budget counter), not result.pages_written, because
+    # component-only pages increment budget without incrementing pages_written.
     assert not (
-        result.has_more and result.pages_written == 0 and result.pages_schema_upgraded > 0
+        result.has_more and pages_written_this_call == 0 and result.pages_schema_upgraded > 0
     ), (
-        f"BUG: has_more=True, pages_written=0, pages_schema_upgraded={result.pages_schema_upgraded} — "
+        "BUG: has_more=True with no budget consumption from content-changed pages "
+        f"(pages_written_this_call=0), pages_schema_upgraded={result.pages_schema_upgraded} — "
         "schema-only upgrades must not consume the max_pages budget (causes infinite CI loop)"
     )
 

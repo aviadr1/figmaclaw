@@ -9,12 +9,14 @@ These tests are skipped by default in CI.
 from __future__ import annotations
 
 import os
+import re
 
 import httpx
 import pytest
 
+from figmaclaw.commands.build_context import _run as build_context_run
 from figmaclaw.figma_client import FigmaClient
-from figmaclaw.figma_frontmatter import FigmaPageFrontmatter
+from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION, FigmaPageFrontmatter
 from figmaclaw.figma_models import FigmaPage, FigmaSection, from_page_node
 from figmaclaw.figma_parse import parse_frontmatter
 from figmaclaw.figma_render import scaffold_page
@@ -200,3 +202,124 @@ async def test_pull_writes_frame_sections_inventory(tmp_path, api_key: str) -> N
     assert "instances:" in md_text
     assert "instance_component_ids:" in md_text
     assert "raw_count:" in md_text
+
+
+@pytest.mark.smoke
+@pytest.mark.asyncio
+async def test_pull_is_idempotent_for_written_page_markdown(tmp_path, api_key: str) -> None:  # type: ignore[no-untyped-def]
+    """Smoke: two unchanged pulls produce identical markdown for an already written page."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file(TEST_FILE_KEY, "Web App")
+    state.manifest.files[TEST_FILE_KEY].version = "v0"
+
+    async with FigmaClient(api_key=api_key) as client:
+        first = await pull_file(client, TEST_FILE_KEY, state, tmp_path, force=False, max_pages=1)
+        assert first.pages_written + first.pages_schema_upgraded > 0
+
+        pages = state.manifest.files[TEST_FILE_KEY].pages
+        assert pages, "first pull wrote/upgraded pages but manifest has no entries"
+        entry = next(iter(pages.values()))
+        assert entry.md_path is not None
+        page_md = tmp_path / entry.md_path
+        assert page_md.exists()
+        md_before = page_md.read_text()
+        # First run may be partial (max_pages=1), so explicitly pin schema version to
+        # current for idempotency verification on this same page file.
+        state.manifest.files[TEST_FILE_KEY].pull_schema_version = CURRENT_PULL_SCHEMA_VERSION
+        state.save()
+
+        second = await pull_file(client, TEST_FILE_KEY, state, tmp_path, force=False, max_pages=1)
+        assert second.pages_written == 0
+        assert second.pages_schema_upgraded == 0
+        md_after = page_md.read_text()
+
+    assert md_before == md_after
+
+
+@pytest.mark.smoke
+@pytest.mark.asyncio
+async def test_schema_upgrade_backfills_instance_component_ids_without_body_rewrite(
+    tmp_path,
+    api_key: str,  # type: ignore[no-untyped-def]
+) -> None:
+    """Smoke: schema-stale pull restores missing inventory keys while preserving markdown body."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file(TEST_FILE_KEY, "Web App")
+    state.manifest.files[TEST_FILE_KEY].version = "v0"
+
+    async with FigmaClient(api_key=api_key) as client:
+        first = await pull_file(client, TEST_FILE_KEY, state, tmp_path, force=False, max_pages=1)
+        assert first.pages_written + first.pages_schema_upgraded > 0
+        pages = state.manifest.files[TEST_FILE_KEY].pages
+        assert pages
+        entry = next(iter(pages.values()))
+        assert entry.md_path is not None
+        page_md = tmp_path / entry.md_path
+        text_before = page_md.read_text()
+        body_before = text_before.split("---\n", 2)[-1]
+
+        # Simulate old frontmatter payload by dropping the new stable-ID key lines.
+        mutated = re.sub(r"^\s*instance_component_ids:.*\n", "", text_before, flags=re.MULTILINE)
+        page_md.write_text(mutated)
+
+        # Mark manifest as pre-v6 so pull runs schema-upgrade path.
+        state.manifest.files[TEST_FILE_KEY].pull_schema_version = 5
+        state.save()
+
+        upgraded = await pull_file(client, TEST_FILE_KEY, state, tmp_path, force=False, max_pages=1)
+        assert upgraded.pages_written == 0
+        assert upgraded.pages_schema_upgraded >= 1
+
+    text_after = page_md.read_text()
+    body_after = text_after.split("---\n", 2)[-1]
+    assert body_after == body_before
+    assert "instance_component_ids:" in text_after
+
+
+@pytest.mark.smoke
+@pytest.mark.asyncio
+async def test_build_context_generates_valid_call_specs_from_real_pull_data(
+    tmp_path,
+    api_key: str,  # type: ignore[no-untyped-def]
+) -> None:
+    """Smoke: build-context generation works against real pulled frame_sections data."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file(TEST_FILE_KEY, "Web App")
+    state.manifest.files[TEST_FILE_KEY].version = "v0"
+
+    async with FigmaClient(api_key=api_key) as client:
+        result = await pull_file(client, TEST_FILE_KEY, state, tmp_path, force=False, max_pages=1)
+    assert result.pages_written + result.pages_schema_upgraded > 0
+
+    pages = state.manifest.files[TEST_FILE_KEY].pages
+    assert pages
+    entry = next(iter(pages.values()))
+    assert entry.md_path is not None
+    source_md = tmp_path / entry.md_path
+    fm = parse_frontmatter(source_md.read_text())
+    assert fm is not None
+    assert fm.frame_sections
+    source_frame_id = next(iter(fm.frame_sections.keys()))
+
+    calls = await build_context_run(
+        api_key=api_key,
+        source_md=source_md,
+        source_frame_id=source_frame_id,
+        target_file_key="DRAFT_FILE_SMOKE",
+        target_page_id="0:0",
+        comp_node_id="1:1",
+        comp_x=10,
+        comp_y=20,
+        comp_w=100,
+        label="smoke",
+    )
+
+    assert isinstance(calls, list)
+    assert len(calls) >= 3  # container + >=1 section + caption
+    assert "createContextContainer" in calls[0]["code"]
+    assert "addContextCaption" in calls[-1]["code"]
+    assert all(c["file_key"] == "DRAFT_FILE_SMOKE" for c in calls)
+    assert all(len(c["code"]) < 50_000 for c in calls)
