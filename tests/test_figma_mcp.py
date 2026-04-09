@@ -7,12 +7,11 @@ INVARIANTS:
 - auto() prefers env var over credentials file
 - use_figma() sends exactly three POST requests to mcp.figma.com/mcp:
     1. initialize (no session header)
-    2. notifications/initialized (with session header, no id)
-    3. tools/call use_figma (with session header)
+    2. notifications/initialized (with optional session header, no id)
+    3. tools/call use_figma (with optional session header)
 - use_figma() uses Authorization: Bearer, not X-Figma-Token
 - use_figma() raises FigmaMcpError on HTTP >= 400
 - use_figma() raises FigmaMcpError on JSON-RPC error responses
-- use_figma() raises FigmaMcpError when initialize response lacks Mcp-Session-Id
 """
 
 from __future__ import annotations
@@ -118,16 +117,36 @@ class TestFromEnv:
 
 
 class TestFromClaudeCredentials:
-    def test_reads_token_from_credentials_file(self, tmp_path: Path) -> None:
-        """INVARIANT: from_claude_credentials() extracts accessToken correctly."""
+    def _write_creds(self, tmp_path: Path, data: dict[str, Any]) -> None:
         claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir()
-        (claude_dir / ".credentials.json").write_text(json.dumps({
-            "claudeAiOauthToken": {"accessToken": "oauth-token-123"}
-        }))
+        claude_dir.mkdir(exist_ok=True)
+        (claude_dir / ".credentials.json").write_text(json.dumps(data))
+
+    def test_reads_token_from_mcp_oauth(self, tmp_path: Path) -> None:
+        """INVARIANT: from_claude_credentials() reads token from mcpOAuth (primary path)."""
+        self._write_creds(tmp_path, {
+            "mcpOAuth": {
+                "plugin:figma:figma|abc123": {
+                    "accessToken": "mcp-figma-token",
+                    "refreshToken": "r",
+                    "expiresAt": 9999999999,
+                }
+            }
+        })
         with patch.object(Path, "home", return_value=tmp_path):
             client = FigmaMcpClient.from_claude_credentials()
-        assert client._token == "oauth-token-123"
+        assert client._token == "mcp-figma-token"
+
+    def test_falls_back_to_claude_ai_oauth_token(self, tmp_path: Path) -> None:
+        """INVARIANT: from_claude_credentials() falls back to claudeAiOauthToken when
+        mcpOAuth has no Figma key."""
+        self._write_creds(tmp_path, {
+            "mcpOAuth": {"plugin:slack:slack|xyz": {"accessToken": "slack-token"}},
+            "claudeAiOauthToken": {"accessToken": "claude-oauth-token"},
+        })
+        with patch.object(Path, "home", return_value=tmp_path):
+            client = FigmaMcpClient.from_claude_credentials()
+        assert client._token == "claude-oauth-token"
 
     def test_raises_when_file_missing(self, tmp_path: Path) -> None:
         """INVARIANT: from_claude_credentials() raises FigmaMcpError when file absent."""
@@ -144,13 +163,11 @@ class TestFromClaudeCredentials:
             with pytest.raises(FigmaMcpError, match="Failed to parse"):
                 FigmaMcpClient.from_claude_credentials()
 
-    def test_raises_when_access_token_missing(self, tmp_path: Path) -> None:
-        """INVARIANT: from_claude_credentials() raises FigmaMcpError when token absent."""
-        claude_dir = tmp_path / ".claude"
-        claude_dir.mkdir()
-        (claude_dir / ".credentials.json").write_text(json.dumps({"other": "data"}))
+    def test_raises_when_no_figma_token_anywhere(self, tmp_path: Path) -> None:
+        """INVARIANT: from_claude_credentials() raises FigmaMcpError when no Figma token."""
+        self._write_creds(tmp_path, {"other": "data"})
         with patch.object(Path, "home", return_value=tmp_path):
-            with pytest.raises(FigmaMcpError, match="Could not find OAuth"):
+            with pytest.raises(FigmaMcpError, match="Could not find"):
                 FigmaMcpClient.from_claude_credentials()
 
 
@@ -166,7 +183,9 @@ class TestAuto:
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir()
         (claude_dir / ".credentials.json").write_text(json.dumps({
-            "claudeAiOauthToken": {"accessToken": "cred-token"}
+            "mcpOAuth": {
+                "plugin:figma:figma|abc": {"accessToken": "cred-token"}
+            }
         }))
         env = {k: v for k, v in os.environ.items() if k != "FIGMA_MCP_TOKEN"}
         with patch.dict(os.environ, env, clear=True):
@@ -196,7 +215,8 @@ class TestUseFigma:
 
     @pytest.mark.asyncio
     async def test_uses_authorization_bearer_header(self) -> None:
-        """INVARIANT: use_figma() authenticates with Authorization: Bearer, not X-Figma-Token."""
+        """INVARIANT: use_figma() authenticates with Authorization: Bearer, not X-Figma-Token.
+        Also sends Accept: application/json, text/event-stream (MCP Streamable HTTP spec)."""
         captured: list[httpx.Request] = []
 
         with _mock_three_step(capture=captured):
@@ -206,6 +226,8 @@ class TestUseFigma:
         init_req = captured[0]
         assert init_req.headers.get("authorization") == f"Bearer {_TOKEN}"
         assert "x-figma-token" not in init_req.headers
+        assert "application/json" in (init_req.headers.get("accept") or "")
+        assert "text/event-stream" in (init_req.headers.get("accept") or "")
 
     @pytest.mark.asyncio
     async def test_passes_session_id_in_subsequent_requests(self) -> None:
@@ -218,6 +240,21 @@ class TestUseFigma:
 
         assert captured[1].headers.get("mcp-session-id") == SESSION_ID
         assert captured[2].headers.get("mcp-session-id") == SESSION_ID
+
+    @pytest.mark.asyncio
+    async def test_omits_session_id_when_initialize_returns_none(self) -> None:
+        """INVARIANT: client supports stateless MCP servers with no session header."""
+        captured: list[httpx.Request] = []
+
+        with _mock_three_step(
+            init_resp=httpx.Response(200, json=_init_response()),  # no session header
+            capture=captured,
+        ):
+            client = FigmaMcpClient(_TOKEN)
+            await client.use_figma(file_key=FILE_KEY, code="1+1", description="test")
+
+        assert captured[1].headers.get("mcp-session-id") is None
+        assert captured[2].headers.get("mcp-session-id") is None
 
     @pytest.mark.asyncio
     async def test_returns_result_from_tools_call(self) -> None:
@@ -280,16 +317,6 @@ class TestUseFigma:
                 await client.use_figma(file_key=FILE_KEY, code="1+1", description="test")
 
     @pytest.mark.asyncio
-    async def test_raises_when_session_id_missing_from_initialize(self) -> None:
-        """INVARIANT: use_figma() raises FigmaMcpError when Mcp-Session-Id is absent."""
-        with _mock_three_step(
-            init_resp=httpx.Response(200, json=_init_response()),  # no session header
-        ):
-            client = FigmaMcpClient(_TOKEN)
-            with pytest.raises(FigmaMcpError, match="Mcp-Session-Id"):
-                await client.use_figma(file_key=FILE_KEY, code="1+1", description="test")
-
-    @pytest.mark.asyncio
     async def test_raises_on_http_error_during_tools_call(self) -> None:
         """INVARIANT: use_figma() raises FigmaMcpError on HTTP 500 during tools/call."""
         with _mock_three_step(
@@ -313,3 +340,42 @@ class TestUseFigma:
             client = FigmaMcpClient(_TOKEN)
             with pytest.raises(FigmaMcpError, match="Method not found"):
                 await client.use_figma(file_key=FILE_KEY, code="1+1", description="test")
+
+    @pytest.mark.asyncio
+    async def test_parses_sse_response_from_initialize(self) -> None:
+        """INVARIANT: use_figma() handles text/event-stream responses from initialize."""
+        sse_body = f"event: message\ndata: {json.dumps(_init_response())}\n\n"
+        with _mock_three_step(
+            init_resp=httpx.Response(
+                200,
+                content=sse_body.encode(),
+                headers={
+                    "Content-Type": "text/event-stream",
+                    "Mcp-Session-Id": SESSION_ID,
+                },
+            ),
+        ):
+            client = FigmaMcpClient(_TOKEN)
+            result = await client.use_figma(
+                file_key=FILE_KEY, code="1+1", description="test"
+            )
+
+        assert result == _tools_call_response()["result"]
+
+    @pytest.mark.asyncio
+    async def test_parses_sse_response_from_tools_call(self) -> None:
+        """INVARIANT: use_figma() handles text/event-stream responses from tools/call."""
+        sse_body = f"event: message\ndata: {json.dumps(_tools_call_response())}\n\n"
+        with _mock_three_step(
+            call_resp=httpx.Response(
+                200,
+                content=sse_body.encode(),
+                headers={"Content-Type": "text/event-stream"},
+            ),
+        ):
+            client = FigmaMcpClient(_TOKEN)
+            result = await client.use_figma(
+                file_key=FILE_KEY, code="1+1", description="test"
+            )
+
+        assert result == _tools_call_response()["result"]

@@ -5,6 +5,10 @@ Sends the three-step MCP handshake directly to https://mcp.figma.com/mcp:
   2. notifications/initialized
   3. tools/call (use_figma)
 
+Some MCP deployments return an ``Mcp-Session-Id`` header from initialize and
+expect it on subsequent calls; others are currently stateless. This client
+supports both modes.
+
 Token discovery order (via FigmaMcpClient.auto()):
   1. FIGMA_MCP_TOKEN environment variable
   2. OAuth token from ~/.claude/.credentials.json
@@ -76,7 +80,13 @@ class FigmaMcpClient:
 
     @classmethod
     def from_claude_credentials(cls) -> FigmaMcpClient:
-        """Read the OAuth token from ``~/.claude/.credentials.json``.
+        """Read the Figma OAuth token from ``~/.claude/.credentials.json``.
+
+        Lookup order:
+        1. ``mcpOAuth`` — any key whose name contains ``"figma"`` (case-insensitive).
+           This is where Claude Code stores per-server MCP OAuth tokens.
+           Key format: ``"plugin:figma:figma|<hash>"``.
+        2. ``claudeAiOauthToken`` — legacy / fallback path.
 
         Raises
         ------
@@ -96,15 +106,25 @@ class FigmaMcpClient:
                 f"Failed to parse {cred_path}: {exc}"
             ) from exc
 
-        # Structure: {"claudeAiOauthToken": {"accessToken": "...", ...}, ...}
-        token_obj = data.get("claudeAiOauthToken") or {}
+        # Primary: mcpOAuth[<any key containing "figma">]["accessToken"]
+        mcp_oauth: dict[str, Any] = data.get("mcpOAuth") or {}
+        for key, entry in mcp_oauth.items():
+            if "figma" in key.lower() and isinstance(entry, dict):
+                token = (entry.get("accessToken") or "").strip()
+                if token:
+                    return cls(token)
+
+        # Fallback: claudeAiOauthToken["accessToken"]
+        token_obj: dict[str, Any] = data.get("claudeAiOauthToken") or {}
         token = (token_obj.get("accessToken") or "").strip()
-        if not token:
-            raise FigmaMcpError(
-                f"Could not find OAuth access token in {cred_path}.\n"
-                "Expected key path: data['claudeAiOauthToken']['accessToken']"
-            )
-        return cls(token)
+        if token:
+            return cls(token)
+
+        raise FigmaMcpError(
+            f"Could not find a Figma OAuth access token in {cred_path}.\n"
+            "Expected: mcpOAuth['plugin:figma:figma|...']['accessToken'] "
+            "or claudeAiOauthToken['accessToken']"
+        )
 
     @classmethod
     def auto(cls) -> FigmaMcpClient:
@@ -120,8 +140,12 @@ class FigmaMcpClient:
             return cls(token)
         return cls.from_claude_credentials()
 
-    def _auth_header(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self._token}"}
+    def _base_headers(self) -> dict[str, str]:
+        # MCP Streamable HTTP requires the client to advertise both transports.
+        return {
+            "Authorization": f"Bearer {self._token}",
+            "Accept": "application/json, text/event-stream",
+        }
 
     async def use_figma(
         self,
@@ -161,8 +185,8 @@ class FigmaMcpClient:
                 client, session_id, file_key, code, description
             )
 
-    async def _initialize(self, client: httpx.AsyncClient) -> str:
-        """Send the MCP initialize request and return the session ID."""
+    async def _initialize(self, client: httpx.AsyncClient) -> str | None:
+        """Send the MCP initialize request and return the optional session ID."""
         payload: dict[str, Any] = {
             "jsonrpc": "2.0",
             "id": 1,
@@ -176,38 +200,38 @@ class FigmaMcpClient:
                 },
             },
         }
-        resp = await client.post(_MCP_URL, json=payload, headers=self._auth_header())
+        resp = await client.post(_MCP_URL, json=payload, headers=self._base_headers())
         _check_http(resp, "initialize")
-        body: dict[str, Any] = resp.json()
+        body: dict[str, Any] = _parse_body(resp, "initialize")
         _check_jsonrpc_error(body, "initialize")
 
+        # Some deployments provide MCP session IDs via response headers while
+        # others currently operate statelessly with no session header at all.
         session_id = resp.headers.get("Mcp-Session-Id", "").strip()
-        if not session_id:
-            raise FigmaMcpError(
-                "Figma MCP did not return a Mcp-Session-Id header "
-                "in the initialize response."
-            )
-        return session_id
+        return session_id or None
 
     async def _notify_initialized(
-        self, client: httpx.AsyncClient, session_id: str
+        self, client: httpx.AsyncClient, session_id: str | None
     ) -> None:
         """Send the notifications/initialized notification (no id — fire-and-forget)."""
         payload: dict[str, Any] = {
             "jsonrpc": "2.0",
             "method": "notifications/initialized",
         }
+        headers = self._base_headers()
+        if session_id:
+            headers["Mcp-Session-Id"] = session_id
         resp = await client.post(
             _MCP_URL,
             json=payload,
-            headers={**self._auth_header(), "Mcp-Session-Id": session_id},
+            headers=headers,
         )
         _check_http(resp, "notifications/initialized")
 
     async def _call_use_figma(
         self,
         client: httpx.AsyncClient,
-        session_id: str,
+        session_id: str | None,
         file_key: str,
         code: str,
         description: str,
@@ -226,13 +250,16 @@ class FigmaMcpClient:
                 },
             },
         }
+        headers = self._base_headers()
+        if session_id:
+            headers["Mcp-Session-Id"] = session_id
         resp = await client.post(
             _MCP_URL,
             json=payload,
-            headers={**self._auth_header(), "Mcp-Session-Id": session_id},
+            headers=headers,
         )
         _check_http(resp, "tools/call")
-        body: dict[str, Any] = resp.json()
+        body: dict[str, Any] = _parse_body(resp, "tools/call")
         _check_jsonrpc_error(body, "tools/call")
         result: dict[str, Any] = body.get("result", {})
         return result
@@ -244,6 +271,29 @@ def _check_http(resp: httpx.Response, step: str) -> None:
         raise FigmaMcpError(
             f"MCP {step!r} failed: HTTP {resp.status_code}\n{resp.text[:500]}"
         )
+
+
+def _parse_body(resp: httpx.Response, step: str) -> dict[str, Any]:
+    """Parse the response body, handling both JSON and SSE (text/event-stream) formats.
+
+    The Figma MCP server may respond with either Content-Type depending on the
+    Accept header negotiation. SSE lines look like::
+
+        event: message
+        data: {"jsonrpc":"2.0","id":1,"result":{...}}
+
+    """
+    content_type = resp.headers.get("content-type", "")
+    if "text/event-stream" in content_type:
+        for line in resp.text.splitlines():
+            if line.startswith("data:"):
+                json_str = line[5:].strip()
+                if json_str:
+                    return json.loads(json_str)  # type: ignore[no-any-return]
+        raise FigmaMcpError(
+            f"MCP {step!r} returned SSE with no data line:\n{resp.text[:300]}"
+        )
+    return resp.json()  # type: ignore[no-any-return]
 
 
 def _check_jsonrpc_error(body: dict[str, Any], step: str) -> None:
