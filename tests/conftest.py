@@ -134,9 +134,14 @@ def fake_get_nodes_response() -> dict:
             "id": "11:1",
             "type": "FRAME",
             "children": [
-                {"type": "INSTANCE", "name": "AvatarV2"},
-                {"type": "RECTANGLE", "name": "bg"},
-                {"type": "TEXT", "name": "label"},
+                {
+                    "id": "11:2",
+                    "type": "INSTANCE",
+                    "name": "AvatarV2",
+                    "componentId": "42:9001",
+                },
+                {"id": "11:3", "type": "RECTANGLE", "name": "bg"},
+                {"id": "11:4", "type": "TEXT", "name": "label"},
             ],
         }
     }

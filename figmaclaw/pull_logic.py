@@ -245,20 +245,24 @@ def _compute_raw_frames(
     if not isinstance(frame_docs, dict):
         return raw_frames, frame_sections
 
-    def _section_inventory(section_node: dict) -> tuple[list[str], int]:
-        """Return (instance_names, raw_count) for direct children of one section node."""
+    def _section_inventory(section_node: dict) -> tuple[list[str], list[str], int]:
+        """Return (instance_names, instance_component_ids, raw_count) for one section node."""
         children_raw = section_node.get("children", [])
         if not isinstance(children_raw, list):
-            return ([], 0)
+            return ([], [], 0)
         direct_children = [c for c in children_raw if isinstance(c, dict)]
         instances: list[str] = []
+        instance_component_ids: list[str] = []
         raw_count = 0
         for child in direct_children:
             if child.get("type") == "INSTANCE":
                 instances.append(child.get("name", ""))
+                component_id = str(child.get("componentId", "")).strip()
+                if component_id:
+                    instance_component_ids.append(component_id)
             else:
                 raw_count += 1
-        return (instances, raw_count)
+        return (instances, instance_component_ids, raw_count)
 
     for node_id, node in frame_docs.items():
         if not isinstance(node, dict):
@@ -277,7 +281,7 @@ def _compute_raw_frames(
 
         for child in children:
             child_bb = child.get("absoluteBoundingBox", {})
-            instances, section_raw_count = _section_inventory(child)
+            instances, component_ids, section_raw_count = _section_inventory(child)
             sections.append(
                 SectionNode(
                     node_id=child.get("id", ""),
@@ -287,6 +291,7 @@ def _compute_raw_frames(
                     w=round(child_bb.get("width", 0)),
                     h=round(child_bb.get("height", 0)),
                     instances=instances,
+                    instance_component_ids=component_ids,
                     raw_count=section_raw_count,
                 )
             )

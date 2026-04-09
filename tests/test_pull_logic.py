@@ -49,7 +49,7 @@ from tests.conftest import (
 # Schema version registry — must contain every version that has been superseded.
 # When you bump CURRENT_PULL_SCHEMA_VERSION from N to N+1, add N here and add
 # a corresponding convergence test (like test_schema_upgrade_does_not_cause_infinite_loop_with_max_pages).
-TESTED_UPGRADE_FROM_VERSIONS: frozenset[int] = frozenset({1, 2, 3, 4})
+TESTED_UPGRADE_FROM_VERSIONS: frozenset[int] = frozenset({1, 2, 3, 4, 5})
 
 
 def test_schema_upgrade_coverage_is_current():
@@ -927,6 +927,7 @@ def test_compute_raw_frames_counts_raw_children_and_ds_names():
                     "id": "11:2",
                     "type": "INSTANCE",
                     "name": "AvatarV2",
+                    "componentId": "42:1001",
                     "absoluteBoundingBox": {"x": 0, "y": 0, "width": 40, "height": 40},
                     "children": [],
                 },
@@ -934,6 +935,7 @@ def test_compute_raw_frames_counts_raw_children_and_ds_names():
                     "id": "11:3",
                     "type": "INSTANCE",
                     "name": "ButtonV2",
+                    "componentId": "42:1002",
                     "absoluteBoundingBox": {"x": 40, "y": 0, "width": 80, "height": 40},
                     "children": [],
                 },
@@ -967,6 +969,7 @@ def test_compute_raw_frames_counts_raw_children_and_ds_names():
     # per-section direct-child inventory exists
     raw_child = next(s for s in frame_sections["11:1"] if s.node_id == "11:4")
     assert raw_child.instances == ["CardV2"]
+    assert raw_child.instance_component_ids == []
     assert raw_child.raw_count == 1
 
 
@@ -1096,8 +1099,19 @@ def test_compute_raw_frames_section_inventory_counts_direct_children():
                     "absoluteBoundingBox": {"x": 100, "y": 200, "width": 393, "height": 60},
                     "children": [
                         {"id": "11:2:1", "type": "INSTANCE", "name": "IconStat"},
-                        {"id": "11:2:2", "type": "INSTANCE", "name": "IconStat"},
-                        {"id": "11:2:3", "type": "TEXT", "name": "Title"},
+                        {
+                            "id": "11:2:2",
+                            "type": "INSTANCE",
+                            "name": "IconStat",
+                            "componentId": "55:3001",
+                        },
+                        {
+                            "id": "11:2:3",
+                            "type": "INSTANCE",
+                            "name": "IconStat",
+                            "componentId": "55:3001",
+                        },
+                        {"id": "11:2:4", "type": "TEXT", "name": "Title"},
                     ],
                 }
             ],
@@ -1105,7 +1119,8 @@ def test_compute_raw_frames_section_inventory_counts_direct_children():
     }
     _, frame_sections = _compute_raw_frames(frame_docs)
     section = frame_sections["11:1"][0]
-    assert section.instances == ["IconStat", "IconStat"]
+    assert section.instances == ["IconStat", "IconStat", "IconStat"]
+    assert section.instance_component_ids == ["55:3001", "55:3001"]
     assert section.raw_count == 1
 
 
@@ -1208,6 +1223,7 @@ async def test_pull_file_writes_raw_frames_to_new_page_frontmatter(pull_env: Pul
     assert "11:1" in fm.frame_sections
     first = fm.frame_sections["11:1"][0]
     assert first.instances == []
+    assert first.instance_component_ids == []
     assert first.raw_count == 0
 
 
@@ -1393,6 +1409,8 @@ async def test_pull_file_processes_schema_stale_pages_even_when_page_hash_unchan
     fm_before = parse_frontmatter(out.read_text())
     assert fm_before is not None
     assert "11:1" in fm_before.frame_sections
+    first_before = fm_before.frame_sections["11:1"][0]
+    assert hasattr(first_before, "instance_component_ids")
 
     # Simulate schema staleness: reset pull_schema_version to 0 (pre-versioning)
     state.manifest.files["abc123"].pull_schema_version = 0
@@ -1419,6 +1437,9 @@ async def test_pull_file_processes_schema_stale_pages_even_when_page_hash_unchan
     fm_after = parse_frontmatter(out.read_text())
     assert fm_after is not None
     assert "11:1" in fm_after.frame_sections
+    first_after = fm_after.frame_sections["11:1"][0]
+    # v6 schema upgrade must backfill stable identifiers, not only legacy names/raw_count.
+    assert hasattr(first_after, "instance_component_ids")
     # Parallel schema-only pass must still fetch frame docs for unchanged pages.
     assert mock_client.get_nodes.await_count > get_nodes_calls_before
 

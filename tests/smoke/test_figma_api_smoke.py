@@ -186,11 +186,17 @@ async def test_pull_writes_frame_sections_inventory(tmp_path, api_key: str) -> N
 
     page_md = tmp_path / entry.md_path
     assert page_md.exists()
-    fm = parse_frontmatter(page_md.read_text())
+    md_text = page_md.read_text()
+    fm = parse_frontmatter(md_text)
     assert fm is not None
     assert len(fm.frame_sections) > 0
 
     any_section = next(iter(fm.frame_sections.values()))[0]
     assert isinstance(any_section.instances, list)
+    assert isinstance(any_section.instance_component_ids, list)
     assert isinstance(any_section.raw_count, int)
     assert any_section.raw_count >= 0
+    # Assert YAML key presence, not only parser-defaulted fields.
+    assert "instances:" in md_text
+    assert "instance_component_ids:" in md_text
+    assert "raw_count:" in md_text
