@@ -60,6 +60,7 @@ figmaclaw init
 This copies workflow templates to `.github/workflows/`:
 - `figmaclaw-sync.yaml` — hourly cron sync + LLM enrichment
 - `figmaclaw-webhook.yaml` — real-time webhook sync
+- `figmaclaw-manage-webhooks.yaml` — idempotent webhook registration/repair workflow
 
 ### 2. Set GitHub secrets
 
@@ -90,7 +91,8 @@ wrangler secret put GITHUB_REPO   # e.g. "myorg/my-design-repo"
 wrangler deploy
 ```
 
-Then register the webhook with Figma via `figmaclaw init --webhook-url https://your-worker.workers.dev`.
+Then run the webhook-management workflow (`figmaclaw-manage-webhooks.yaml`) with
+your worker endpoint to register/update webhooks for tracked files.
 
 Without webhooks, the hourly cron sync still keeps the repo up to date.
 

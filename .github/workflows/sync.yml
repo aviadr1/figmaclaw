@@ -1,14 +1,6 @@
 # Reusable workflow — called by host repos via:
 #   uses: aviadr1/figmaclaw/.github/workflows/sync.yml@main
 #
-# Concurrency: serializes sync runs per calling repo.
-# GitHub evaluates the concurrency group in the context of the calling repo,
-# so "figmaclaw-sync" is isolated per repo — no cross-repo locking.
-
-concurrency:
-  group: figmaclaw-sync
-  cancel-in-progress: false  # queue, never discard a sync run
-
 on:
   workflow_call:
     inputs:
@@ -30,6 +22,9 @@ on:
       # ANTHROPIC_API_KEY is intentionally absent — figmaclaw pull has zero LLM dependency.
       # LLM enrichment is done by the caller's enrich job via claude-run.yaml.
 
+permissions:
+  contents: write
+
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -38,11 +33,19 @@ jobs:
         with:
           fetch-depth: 1
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
       - name: Install figmaclaw
-        run: pip install uv && uv tool install git+https://github.com/aviadr1/figmaclaw
+        run: uv tool install git+https://github.com/aviadr1/figmaclaw
 
       - name: Pull latest changes
-        run: git pull --no-rebase
+        run: git pull --no-rebase --ff-only origin main
 
       - name: Configure git
         run: |
@@ -63,7 +66,7 @@ jobs:
             NEWLY="${NEWLY:-unknown}"
             git commit -m "sync: figmaclaw — tracking ${NEWLY} new file(s)"
             git push
-            git pull --no-rebase
+            git pull --no-rebase --ff-only origin main
           fi
 
       - name: Pull Figma files (checkpointed loop)
@@ -87,7 +90,7 @@ jobs:
               figmaclaw pull --max-pages 5 | tee /tmp/figmaclaw-out.txt || true
             fi
 
-            git pull --no-rebase
+            git pull --no-rebase --ff-only origin main
             git add figma/ .figma-sync/
             if ! git diff --cached --quiet; then
               COMMIT_MSG="$(grep '^COMMIT_MSG:' /tmp/figmaclaw-out.txt | head -1 | sed 's/^COMMIT_MSG://' | tr -d '\n\r')"
