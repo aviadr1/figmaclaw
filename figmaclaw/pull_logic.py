@@ -499,8 +499,7 @@ async def pull_file(
                     chunk_docs = await client.get_nodes(file_key, chunk, depth=2)
                     if not isinstance(chunk_docs, dict):
                         log.warning(
-                            "get_nodes returned non-dict for %r chunk %d-%d (got %s)",
-                            file_key,
+                            "get_nodes returned non-dict for chunk %d-%d (got %s)",
                             i,
                             i + len(chunk),
                             type(chunk_docs).__name__,
@@ -512,9 +511,8 @@ async def pull_file(
                 )
             except Exception as exc:
                 log.warning(
-                    "Failed to batch-fetch frame children for %r: %s — raw_frames will be omitted",
-                    file_key,
-                    exc,
+                    "Failed to batch-fetch frame children (%s) — raw_frames will be omitted",
+                    type(exc).__name__,
                 )
 
     for page_idx, page_stub in enumerate(page_stubs, 1):
