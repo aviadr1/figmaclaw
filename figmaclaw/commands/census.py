@@ -39,7 +39,7 @@ import asyncio
 import hashlib
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -51,8 +51,8 @@ from figmaclaw.figma_paths import census_path, slugify
 from figmaclaw.figma_sync_state import FigmaSyncState
 from figmaclaw.git_utils import git_commit
 
-
 # ── Hash ─────────────────────────────────────────────────────────────────────
+
 
 def _compute_hash(component_sets: list[dict[str, Any]]) -> str:
     """Stable 16-char hash of the published component set registry.
@@ -71,6 +71,7 @@ def _compute_hash(component_sets: list[dict[str, Any]]) -> str:
 
 
 # ── Rendering ─────────────────────────────────────────────────────────────────
+
 
 def _render(
     file_key: str,
@@ -110,6 +111,7 @@ def _render(
 
 # ── Hash check (fast, no YAML parse needed) ───────────────────────────────────
 
+
 def _existing_hash(path: Path) -> str | None:
     """Extract content_hash from existing _census.md frontmatter, or None."""
     if not path.exists():
@@ -126,13 +128,18 @@ def _existing_hash(path: Path) -> str | None:
 
 # ── Command ───────────────────────────────────────────────────────────────────
 
+
 @click.command("census")
-@click.option("--file-key", "file_key", default=None,
-              help="Census only this file key (default: all tracked files).")
-@click.option("--auto-commit", "auto_commit", is_flag=True,
-              help="git commit each written _census.md.")
-@click.option("--force", is_flag=True,
-              help="Write even if content hash is unchanged.")
+@click.option(
+    "--file-key",
+    "file_key",
+    default=None,
+    help="Census only this file key (default: all tracked files).",
+)
+@click.option(
+    "--auto-commit", "auto_commit", is_flag=True, help="git commit each written _census.md."
+)
+@click.option("--force", is_flag=True, help="Write even if content hash is unchanged.")
 @click.pass_context
 def census_cmd(
     ctx: click.Context,
@@ -202,7 +209,7 @@ async def _run(
                 click.echo(f"{file_name}: census unchanged (hash {content_hash})")
                 continue
 
-            generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            generated_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
             content = _render(key, file_name, component_sets, content_hash, generated_at)
 
             out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -227,7 +234,7 @@ async def _run(
             if auto_commit:
                 committed = git_commit(repo_dir, [rel], f"sync: figmaclaw census — {file_name}")
                 if committed:
-                    click.echo(f"  ✓ committed")
+                    click.echo("  ✓ committed")
 
     if written:
         click.echo(f"COMMIT_MSG:sync: figmaclaw census — {len(written)} file(s) updated")

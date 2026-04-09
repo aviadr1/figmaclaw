@@ -12,11 +12,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 from click.testing import CliRunner
 
 from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection
-from figmaclaw.figma_parse import parse_frontmatter, parse_flows
+from figmaclaw.figma_parse import parse_flows, parse_frontmatter
 from figmaclaw.figma_render import scaffold_page
 from figmaclaw.figma_sync_state import PageEntry
 from figmaclaw.main import cli
@@ -59,12 +58,17 @@ def test_set_flows_writes_flows_to_frontmatter(tmp_path: Path) -> None:
     md_path.write_text(md)
 
     runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "set-flows",
-        str(md_path),
-        "--flows", json.dumps([["11:1", "11:2"]]),
-    ])
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "set-flows",
+            str(md_path),
+            "--flows",
+            json.dumps([["11:1", "11:2"]]),
+        ],
+    )
     assert result.exit_code == 0, result.output
 
     recovered = parse_flows(md_path.read_text())
@@ -78,12 +82,17 @@ def test_set_flows_preserves_frames_list(tmp_path: Path) -> None:
     md_path.write_text(md)
 
     runner = CliRunner()
-    runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "set-flows",
-        str(md_path),
-        "--flows", json.dumps([["11:1", "11:2"]]),
-    ])
+    runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "set-flows",
+            str(md_path),
+            "--flows",
+            json.dumps([["11:1", "11:2"]]),
+        ],
+    )
 
     fm = parse_frontmatter(md_path.read_text())
     assert fm is not None
@@ -95,6 +104,7 @@ def test_set_flows_preserves_frames_list(tmp_path: Path) -> None:
 def test_set_flows_does_not_modify_body(tmp_path: Path) -> None:
     """INVARIANT: set-flows preserves the body byte-for-byte."""
     import frontmatter as _frontmatter
+
     md = scaffold_page(_make_page(), _make_entry())
     md_path = tmp_path / "page.md"
     md_path.write_text(md)
@@ -102,12 +112,17 @@ def test_set_flows_does_not_modify_body(tmp_path: Path) -> None:
     original_body = _frontmatter.loads(md).content
 
     runner = CliRunner()
-    runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "set-flows",
-        str(md_path),
-        "--flows", json.dumps([["11:1", "11:2"]]),
-    ])
+    runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "set-flows",
+            str(md_path),
+            "--flows",
+            json.dumps([["11:1", "11:2"]]),
+        ],
+    )
 
     updated_body = _frontmatter.loads(md_path.read_text()).content
     assert updated_body == original_body
@@ -119,10 +134,15 @@ def test_set_flows_exit_2_on_bad_frontmatter(tmp_path: Path) -> None:
     md_path.write_text("# No frontmatter\n\nJust markdown.\n")
 
     runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "set-flows",
-        str(md_path),
-        "--flows", json.dumps([["1:1", "1:2"]]),
-    ])
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "set-flows",
+            str(md_path),
+            "--flows",
+            json.dumps([["1:1", "1:2"]]),
+        ],
+    )
     assert result.exit_code == 2

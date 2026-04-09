@@ -176,21 +176,17 @@ def write_body_cmd(
         try:
             updated = _write_section_intro(md_text, section_node_id, intro_text)
         except ValueError as e:
-            raise click.UsageError(str(e))
+            raise click.UsageError(str(e)) from e
         md_path.write_text(updated)
         rel = str(md_path.relative_to(repo_dir) if md_path.is_relative_to(repo_dir) else md_path)
         click.echo(f"write-body: updated intro for section {section_node_id} in {rel}")
-        if auto_commit:
-            if git_commit(repo_dir, [rel], f"sync: add intro for section in {rel}"):
-                click.echo(f"  committed: {rel}")
+        if auto_commit and git_commit(repo_dir, [rel], f"sync: add intro for section in {rel}"):
+            click.echo(f"  committed: {rel}")
         return
 
     if body_input is not None:
         p = Path(body_input)
-        if p.exists():
-            new_content = p.read_text()
-        else:
-            new_content = body_input
+        new_content = p.read_text() if p.exists() else body_input
     else:
         if sys.stdin.isatty():
             raise click.UsageError("Provide --body, --intro, or pipe body content to stdin.")
@@ -200,13 +196,15 @@ def write_body_cmd(
 
     fm = parse_frontmatter(md_text)
     if fm is None:
-        raise click.UsageError(f"{md_path}: no figmaclaw frontmatter found — is this a figmaclaw .md file?")
+        raise click.UsageError(
+            f"{md_path}: no figmaclaw frontmatter found — is this a figmaclaw .md file?"
+        )
 
     if section_node_id:
         try:
             updated = _write_section(md_text, section_node_id, new_content)
         except ValueError as e:
-            raise click.UsageError(str(e))
+            raise click.UsageError(str(e)) from e
     else:
         updated = _write_body(md_text, new_content)
 

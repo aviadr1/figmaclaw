@@ -3,6 +3,7 @@
 Stored at .figma-sync/ds_catalog.json. Updated after each page pull.
 Used by suggest-tokens to match raw values to DS variable IDs.
 """
+
 from __future__ import annotations
 
 import datetime
@@ -12,7 +13,6 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from figmaclaw.figma_utils import write_json_if_changed
-
 from figmaclaw.token_scan import ValidBinding
 
 _TOLERANCE = 0.01
@@ -92,7 +92,7 @@ def merge_bindings(catalog: TokenCatalog, bindings: list[ValidBinding]) -> int:
         # Accumulate observed properties
         if b.property not in entry.observed_on:
             entry.observed_on.append(b.property)
-    catalog.updated_at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    catalog.updated_at = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     return new_count
 
 
@@ -135,17 +135,17 @@ def suggest_for_sidecar(sidecar: dict, catalog: TokenCatalog) -> dict:
                     candidates = hex_to_vids.get(hex_val.upper(), [])
             else:
                 raw_val = issue.get("current_value")
-                if raw_val is not None and isinstance(raw_val, (int, float)):
+                if raw_val is not None and isinstance(raw_val, int | float):
                     key = (bucket, _numeric_key(float(raw_val)))
                     candidates = [
-                        vid for vid in numeric_to_vids.get(key, [])
-                        if prop in (catalog.variables[vid].observed_on if vid in catalog.variables else [])
+                        vid
+                        for vid in numeric_to_vids.get(key, [])
+                        if prop
+                        in (catalog.variables[vid].observed_on if vid in catalog.variables else [])
                     ]
                     # Fallback: try approximate match if exact key misses
                     if not candidates:
-                        candidates = _find_numeric_approx(
-                            float(raw_val), bucket, prop, catalog
-                        )
+                        candidates = _find_numeric_approx(float(raw_val), bucket, prop, catalog)
 
             # Deduplicate while preserving order
             seen: set[str] = set()
@@ -171,7 +171,7 @@ def suggest_for_sidecar(sidecar: dict, catalog: TokenCatalog) -> dict:
                 issue["candidates"] = []
                 no_match += 1
 
-    now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     sidecar["suggested_at"] = now
 
     return sidecar

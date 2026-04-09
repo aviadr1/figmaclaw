@@ -25,11 +25,12 @@ Usage::
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 import json
 import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
 
 import httpx
 
@@ -158,9 +159,7 @@ class FigmaMcpClient:
         """
         token = os.environ.get(var, "").strip()
         if not token:
-            raise FigmaMcpError(
-                f"Environment variable {var!r} is not set or empty."
-            )
+            raise FigmaMcpError(f"Environment variable {var!r} is not set or empty.")
         return cls(token)
 
     @classmethod
@@ -187,9 +186,7 @@ class FigmaMcpClient:
         try:
             data: dict[str, Any] = json.loads(cred_path.read_text())
         except Exception as exc:
-            raise FigmaMcpError(
-                f"Failed to parse {cred_path}: {exc}"
-            ) from exc
+            raise FigmaMcpError(f"Failed to parse {cred_path}: {exc}") from exc
 
         # Primary: mcpOAuth[<any key containing "figma">]["accessToken"]
         mcp_oauth: dict[str, Any] = data.get("mcpOAuth") or {}
@@ -311,9 +308,7 @@ class FigmaMcpClient:
         session_id = resp.headers.get("Mcp-Session-Id", "").strip()
         return session_id or None
 
-    async def _notify_initialized(
-        self, client: httpx.AsyncClient, session_id: str | None
-    ) -> None:
+    async def _notify_initialized(self, client: httpx.AsyncClient, session_id: str | None) -> None:
         """Send the notifications/initialized notification (no id — fire-and-forget)."""
         payload: dict[str, Any] = {
             "jsonrpc": "2.0",
@@ -382,17 +377,14 @@ class FigmaMcpClient:
             return
         if resp.status_code >= 400 and not best_effort:
             raise FigmaMcpError(
-                f"MCP session termination failed: HTTP {resp.status_code}\n"
-                f"{resp.text[:500]}"
+                f"MCP session termination failed: HTTP {resp.status_code}\n{resp.text[:500]}"
             )
 
 
 def _check_http(resp: httpx.Response, step: str) -> None:
     """Raise FigmaMcpError on non-2xx HTTP responses."""
     if resp.status_code >= 400:
-        raise FigmaMcpError(
-            f"MCP {step!r} failed: HTTP {resp.status_code}\n{resp.text[:500]}"
-        )
+        raise FigmaMcpError(f"MCP {step!r} failed: HTTP {resp.status_code}\n{resp.text[:500]}")
 
 
 def _parse_body(resp: httpx.Response, step: str) -> dict[str, Any]:
@@ -412,9 +404,7 @@ def _parse_body(resp: httpx.Response, step: str) -> dict[str, Any]:
                 json_str = line[5:].strip()
                 if json_str:
                     return json.loads(json_str)  # type: ignore[no-any-return]
-        raise FigmaMcpError(
-            f"MCP {step!r} returned SSE with no data line:\n{resp.text[:300]}"
-        )
+        raise FigmaMcpError(f"MCP {step!r} returned SSE with no data line:\n{resp.text[:300]}")
     return resp.json()  # type: ignore[no-any-return]
 
 

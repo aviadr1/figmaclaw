@@ -12,7 +12,6 @@ INVARIANTS:
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -23,11 +22,13 @@ from figmaclaw.pull_logic import PullResult
 
 
 def _make_payload(file_id: str = "abc123", passcode: str = "secret") -> str:
-    return json.dumps({
-        "event_type": "FILE_UPDATE",
-        "file_id": file_id,
-        "passcode": passcode,
-    })
+    return json.dumps(
+        {
+            "event_type": "FILE_UPDATE",
+            "file_id": file_id,
+            "passcode": passcode,
+        }
+    )
 
 
 @pytest.mark.asyncio
@@ -38,6 +39,7 @@ async def test_apply_webhook_skips_untracked_file(tmp_path: Path, capsys):
     # Don't add "abc123" to tracked files
 
     from figmaclaw.commands.apply_webhook import _run
+
     await _run(
         api_key="fake_key",
         repo_dir=tmp_path,
@@ -58,23 +60,24 @@ async def test_apply_webhook_calls_pull_for_tracked_file(tmp_path: Path, capsys)
     state.save()
 
     from figmaclaw.commands.apply_webhook import _run
-    from figmaclaw.figma_client import FigmaClient
 
     mock_result = PullResult(file_key="abc123", pages_written=2, md_paths=["a.md", "b.md"])
 
-    with patch("figmaclaw.commands.apply_webhook.pull_file", return_value=mock_result) as mock_pull:
-        with patch("figmaclaw.commands.apply_webhook.FigmaClient") as MockClient:
-            mock_cm = AsyncMock()
-            mock_cm.__aenter__ = AsyncMock(return_value=MagicMock())
-            mock_cm.__aexit__ = AsyncMock(return_value=False)
-            MockClient.return_value = mock_cm
+    with (
+        patch("figmaclaw.commands.apply_webhook.pull_file", return_value=mock_result),
+        patch("figmaclaw.commands.apply_webhook.FigmaClient") as MockClient,
+    ):
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+        MockClient.return_value = mock_cm
 
-            await _run(
-                api_key="fake_key",
-                repo_dir=tmp_path,
-                payload=_make_payload("abc123"),
-                webhook_secret=None,
-            )
+        await _run(
+            api_key="fake_key",
+            repo_dir=tmp_path,
+            payload=_make_payload("abc123"),
+            webhook_secret=None,
+        )
 
     out = capsys.readouterr().out
     assert "COMMIT_MSG:" in out
@@ -84,7 +87,7 @@ async def test_apply_webhook_calls_pull_for_tracked_file(tmp_path: Path, capsys)
 @pytest.mark.asyncio
 async def test_apply_webhook_rejects_wrong_passcode(tmp_path: Path):
     """INVARIANT: apply_webhook raises when passcode doesn't match FIGMA_WEBHOOK_SECRET."""
-    from figmaclaw.commands.apply_webhook import _run, WebhookAuthError
+    from figmaclaw.commands.apply_webhook import WebhookAuthError, _run
 
     with pytest.raises(WebhookAuthError):
         await _run(
@@ -123,21 +126,24 @@ async def test_apply_webhook_no_commit_msg_when_nothing_written(tmp_path: Path, 
     state.save()
 
     from figmaclaw.commands.apply_webhook import _run
+
     mock_result = PullResult(file_key="abc123", pages_written=0)
 
-    with patch("figmaclaw.commands.apply_webhook.pull_file", return_value=mock_result):
-        with patch("figmaclaw.commands.apply_webhook.FigmaClient") as MockClient:
-            mock_cm = AsyncMock()
-            mock_cm.__aenter__ = AsyncMock(return_value=MagicMock())
-            mock_cm.__aexit__ = AsyncMock(return_value=False)
-            MockClient.return_value = mock_cm
+    with (
+        patch("figmaclaw.commands.apply_webhook.pull_file", return_value=mock_result),
+        patch("figmaclaw.commands.apply_webhook.FigmaClient") as MockClient,
+    ):
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=MagicMock())
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+        MockClient.return_value = mock_cm
 
-            await _run(
-                api_key="fake_key",
-                repo_dir=tmp_path,
-                payload=_make_payload("abc123"),
-                webhook_secret=None,
-            )
+        await _run(
+            api_key="fake_key",
+            repo_dir=tmp_path,
+            payload=_make_payload("abc123"),
+            webhook_secret=None,
+        )
 
     out = capsys.readouterr().out
     assert "COMMIT_MSG:" not in out

@@ -152,15 +152,9 @@ def from_page_node(page_node: dict, *, file_key: str, file_name: str) -> FigmaPa
         if is_structural(child) and child.get("type") == "SECTION":
             child_children = child.get("children", [])
             # Frames: visible structural FRAME children.
-            frame_nodes = [
-                c for c in child_children
-                if c.get("type") == "FRAME" and is_visible(c)
-            ]
+            frame_nodes = [c for c in child_children if c.get("type") == "FRAME" and is_visible(c)]
             # Components: visible COMPONENT / COMPONENT_SET children.
-            component_nodes = [
-                c for c in child_children
-                if is_component(c) and is_visible(c)
-            ]
+            component_nodes = [c for c in child_children if is_component(c) and is_visible(c)]
             # A SECTION is a component library iff it holds components and
             # no frames. This classification is content-based, not
             # metadata-based.
@@ -168,12 +162,14 @@ def from_page_node(page_node: dict, *, file_key: str, file_name: str) -> FigmaPa
             # Render frames when present; fall back to components for libs.
             render_nodes = frame_nodes if frame_nodes else component_nodes
             all_frames_for_flows.extend(frame_nodes)
-            sections.append(FigmaSection(
-                node_id=child["id"],
-                name=normalize_name(raw_name(child)),
-                frames=[_node_to_frame(f, file_key) for f in render_nodes],
-                is_component_library=is_component_lib,
-            ))
+            sections.append(
+                FigmaSection(
+                    node_id=child["id"],
+                    name=normalize_name(raw_name(child)),
+                    frames=[_node_to_frame(f, file_key) for f in render_nodes],
+                    is_component_library=is_component_lib,
+                )
+            )
 
         elif child.get("type") == "FRAME":
             # Visibility for FRAMEs already guarded by the outer
@@ -185,11 +181,13 @@ def from_page_node(page_node: dict, *, file_key: str, file_name: str) -> FigmaPa
         # is skipped — not rendered to markdown.
 
     if ungrouped_frames:
-        sections.append(FigmaSection(
-            node_id=UNGROUPED_NODE_ID,
-            name=UNGROUPED_SECTION,
-            frames=ungrouped_frames,
-        ))
+        sections.append(
+            FigmaSection(
+                node_id=UNGROUPED_NODE_ID,
+                name=UNGROUPED_SECTION,
+                frames=ungrouped_frames,
+            )
+        )
 
     flows = _extract_flows(all_frames_for_flows)
 

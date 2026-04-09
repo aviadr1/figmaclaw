@@ -12,8 +12,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from figmaclaw.pull_logic import _write_token_sidecar
 from figmaclaw.token_scan import FrameTokenScan, PageTokenScan, TokenIssue
 

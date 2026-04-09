@@ -23,6 +23,7 @@ Detection rules (per-property):
 INSTANCE children are not recursed — overrides on the instance itself are checked,
 but its internal children belong to the component definition, not the screen.
 """
+
 from __future__ import annotations
 
 from typing import Any, Literal
@@ -162,7 +163,7 @@ def _scan_node(
                 binding = ValidBinding(variable_id=var_id, property=prop)
                 if isinstance(current_value, dict) and "r" in current_value:
                     binding.hex = _rgb_to_hex(current_value)
-                elif isinstance(current_value, (int, float)):
+                elif isinstance(current_value, int | float):
                     binding.numeric_value = float(current_value)
                 valid_bindings.append(binding)
             return
@@ -195,9 +196,14 @@ def _scan_node(
         cbv = fills_bv[i] if isinstance(fills_bv, list) and i < len(fills_bv) else None
         var_id = _get_bv_id(cbv)
         cls = classify_variable_id(var_id)
-        record("fill", cls, fill.get("color"), idx=i,
-               stale_var_id=var_id if cls == "stale" else None,
-               var_id=var_id if cls == "valid" else None)
+        record(
+            "fill",
+            cls,
+            fill.get("color"),
+            idx=i,
+            stale_var_id=var_id if cls == "stale" else None,
+            var_id=var_id if cls == "valid" else None,
+        )
 
     # strokes
     strokes: list[dict] = node.get("strokes") or []
@@ -208,26 +214,39 @@ def _scan_node(
         cbv = strokes_bv[i] if isinstance(strokes_bv, list) and i < len(strokes_bv) else None
         var_id = _get_bv_id(cbv)
         cls = classify_variable_id(var_id)
-        record("stroke", cls, stroke.get("color"), idx=i,
-               stale_var_id=var_id if cls == "stale" else None,
-               var_id=var_id if cls == "valid" else None)
+        record(
+            "stroke",
+            cls,
+            stroke.get("color"),
+            idx=i,
+            stale_var_id=var_id if cls == "stale" else None,
+            var_id=var_id if cls == "valid" else None,
+        )
 
     # strokeWeight (only when node has at least one stroke)
     if strokes and node.get("strokeWeight") is not None:
         var_id = _get_bv_id(bv.get("strokeWeight"))
         cls = classify_variable_id(var_id)
-        record("strokeWeight", cls, node.get("strokeWeight"),
-               stale_var_id=var_id if cls == "stale" else None,
-               var_id=var_id if cls == "valid" else None)
+        record(
+            "strokeWeight",
+            cls,
+            node.get("strokeWeight"),
+            stale_var_id=var_id if cls == "stale" else None,
+            var_id=var_id if cls == "valid" else None,
+        )
 
     # cornerRadius (non-zero scalars only; "mixed" means individual corners are set)
     cr = node.get("cornerRadius")
     if cr is not None and cr != "mixed" and cr != 0:
         var_id = _get_bv_id(bv.get("cornerRadius"))
         cls = classify_variable_id(var_id)
-        record("cornerRadius", cls, cr,
-               stale_var_id=var_id if cls == "stale" else None,
-               var_id=var_id if cls == "valid" else None)
+        record(
+            "cornerRadius",
+            cls,
+            cr,
+            stale_var_id=var_id if cls == "stale" else None,
+            var_id=var_id if cls == "valid" else None,
+        )
 
     # gap and padding (auto-layout nodes)
     if node.get("layoutMode") and node.get("layoutMode") != "NONE":
@@ -236,15 +255,17 @@ def _scan_node(
             if val is not None and val != 0:
                 var_id = _get_bv_id(bv.get(prop))
                 cls = classify_variable_id(var_id)
-                record(prop, cls, val,
-                       stale_var_id=var_id if cls == "stale" else None,
-                       var_id=var_id if cls == "valid" else None)
+                record(
+                    prop,
+                    cls,
+                    val,
+                    stale_var_id=var_id if cls == "stale" else None,
+                    var_id=var_id if cls == "valid" else None,
+                )
 
     # font properties (TEXT nodes only)
     if is_text:
-        has_text_style = bool(
-            node.get("textStyleId") or (node.get("styles") or {}).get("text")
-        )
+        has_text_style = bool(node.get("textStyleId") or (node.get("styles") or {}).get("text"))
         if has_text_style:
             # All three font props are covered by the text style → valid
             counters["valid"] = counters.get("valid", 0) + len(_FONT_PROPS)
@@ -254,9 +275,13 @@ def _scan_node(
                 if val is not None:
                     var_id = _get_bv_id(bv.get(prop))
                     cls = classify_variable_id(var_id)
-                    record(prop, cls, val,
-                           stale_var_id=var_id if cls == "stale" else None,
-                           var_id=var_id if cls == "valid" else None)
+                    record(
+                        prop,
+                        cls,
+                        val,
+                        stale_var_id=var_id if cls == "stale" else None,
+                        var_id=var_id if cls == "valid" else None,
+                    )
 
     # recurse — skip INSTANCE children (component internals, not this screen's concern)
     if node_type == "INSTANCE":

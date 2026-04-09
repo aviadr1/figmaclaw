@@ -98,7 +98,10 @@ async def _run(
         for i in range(0, len(node_ids), _FIGMA_IMAGE_BATCH):
             batch = node_ids[i : i + _FIGMA_IMAGE_BATCH]
             urls = await client.get_image_urls(
-                file_key, batch, scale=scale, format=img_format,
+                file_key,
+                batch,
+                scale=scale,
+                format=img_format,
             )
             all_urls.update(urls)
 

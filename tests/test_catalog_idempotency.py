@@ -13,13 +13,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from figmaclaw.token_catalog import TokenCatalog, merge_bindings, save_catalog
 from figmaclaw.token_scan import ValidBinding
 
 
-def _make_binding(variable_id: str = "var:1", prop: str = "fill", hex: str = "#FF0000") -> ValidBinding:
+def _make_binding(
+    variable_id: str = "var:1", prop: str = "fill", hex: str = "#FF0000"
+) -> ValidBinding:
     return ValidBinding(variable_id=variable_id, property=prop, hex=hex)
 
 

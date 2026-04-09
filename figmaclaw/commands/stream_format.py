@@ -96,10 +96,13 @@ def stream_format_cmd() -> None:
 
         elif t == "user":
             for block in msg.get("message", {}).get("content", []):
-                if isinstance(block, dict) and block.get("type") == "tool_result":
-                    if block.get("is_error"):
-                        err = str(block.get("content", ""))[:200]
-                        out(f"  ! tool_error: {err}")
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == "tool_result"
+                    and block.get("is_error")
+                ):
+                    err = str(block.get("content", ""))[:200]
+                    out(f"  ! tool_error: {err}")
 
         elif t == "result":
             total_cost_usd += msg.get("total_cost_usd", 0)

@@ -63,7 +63,7 @@ def mark_enriched_cmd(ctx: click.Context, md_path: Path, auto_commit: bool) -> N
         ctx.exit(2)
         return
 
-    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    now = datetime.datetime.now(datetime.UTC).isoformat()
 
     # Build new frontmatter with enrichment state
     parts = split_frontmatter(md_text)
@@ -93,13 +93,15 @@ def mark_enriched_cmd(ctx: click.Context, md_path: Path, auto_commit: bool) -> N
     if fm.component_set_keys:
         fm_data["component_set_keys"] = _FlowDict(fm.component_set_keys)
     if fm.raw_frames:
-        fm_data["raw_frames"] = _FlowDict({
-            k: _FlowDict({"raw": v.raw, "ds": _FlowList(v.ds)})
-            for k, v in fm.raw_frames.items()
-        })
+        fm_data["raw_frames"] = _FlowDict(
+            {k: _FlowDict({"raw": v.raw, "ds": _FlowList(v.ds)}) for k, v in fm.raw_frames.items()}
+        )
 
     new_fm_body = yaml.dump(
-        fm_data, Dumper=_FrontmatterDumper, default_flow_style=False, allow_unicode=True,
+        fm_data,
+        Dumper=_FrontmatterDumper,
+        default_flow_style=False,
+        allow_unicode=True,
         width=2**20,
     ).rstrip()
 
@@ -108,6 +110,5 @@ def mark_enriched_cmd(ctx: click.Context, md_path: Path, auto_commit: bool) -> N
     rel = str(md_path.relative_to(repo_dir) if md_path.is_relative_to(repo_dir) else md_path)
     click.echo(f"mark-enriched: {rel} (hash={page_entry.page_hash})")
 
-    if auto_commit:
-        if git_commit(repo_dir, [rel], f"sync: mark {rel} as enriched"):
-            click.echo(f"  committed: {rel}")
+    if auto_commit and git_commit(repo_dir, [rel], f"sync: mark {rel} as enriched"):
+        click.echo(f"  committed: {rel}")

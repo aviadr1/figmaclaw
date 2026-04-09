@@ -10,13 +10,13 @@ INVARIANTS:
 
 from __future__ import annotations
 
-import pytest
-import respx
-import httpx
 from unittest.mock import AsyncMock, patch
 
-from figmaclaw.figma_client import FigmaClient
+import httpx
+import pytest
+import respx
 
+from figmaclaw.figma_client import FigmaClient
 
 FILE_KEY = "testFileKey123"
 PAGE_NODE_ID = "7741:45837"
@@ -53,7 +53,12 @@ def _page_response() -> dict:
                             "name": "schedule event",
                             "type": "SECTION",
                             "children": [
-                                {"id": "10635:89503", "name": "schedule / information box", "type": "FRAME", "children": []},
+                                {
+                                    "id": "10635:89503",
+                                    "name": "schedule / information box",
+                                    "type": "FRAME",
+                                    "children": [],
+                                },
                             ],
                         }
                     ],
@@ -146,14 +151,19 @@ async def test_retries_on_429():
     call_count = 0
 
     with respx.mock:
+
         def rate_limited_then_ok(request: httpx.Request) -> httpx.Response:
             nonlocal call_count
             call_count += 1
             if call_count < 3:
-                return httpx.Response(429, headers={"retry-after": "0"}, json={"err": "rate limited"})
+                return httpx.Response(
+                    429, headers={"retry-after": "0"}, json={"err": "rate limited"}
+                )
             return httpx.Response(200, json=_meta_response())
 
-        respx.get(f"https://api.figma.com/v1/files/{FILE_KEY}").mock(side_effect=rate_limited_then_ok)
+        respx.get(f"https://api.figma.com/v1/files/{FILE_KEY}").mock(
+            side_effect=rate_limited_then_ok
+        )
 
         with patch("asyncio.sleep", new_callable=AsyncMock):
             async with FigmaClient(api_key="figd_test") as client:
@@ -169,6 +179,7 @@ async def test_retries_on_5xx():
     call_count = 0
 
     with respx.mock:
+
         def server_error_then_ok(request: httpx.Request) -> httpx.Response:
             nonlocal call_count
             call_count += 1
@@ -176,7 +187,9 @@ async def test_retries_on_5xx():
                 return httpx.Response(500, json={"err": "server error"})
             return httpx.Response(200, json=_meta_response())
 
-        respx.get(f"https://api.figma.com/v1/files/{FILE_KEY}").mock(side_effect=server_error_then_ok)
+        respx.get(f"https://api.figma.com/v1/files/{FILE_KEY}").mock(
+            side_effect=server_error_then_ok
+        )
 
         with patch("asyncio.sleep", new_callable=AsyncMock):
             async with FigmaClient(api_key="figd_test") as client:
@@ -193,10 +206,10 @@ async def test_retries_on_connection_drop():
     Large file tree downloads sometimes fail with 'peer closed connection without
     sending complete message body'. The client should retry instead of failing.
     """
-    import httpcore
     call_count = 0
 
     with respx.mock:
+
         def conn_drop_then_ok(request: httpx.Request) -> httpx.Response:
             nonlocal call_count
             call_count += 1
@@ -222,6 +235,7 @@ async def test_retries_on_read_timeout():
     call_count = 0
 
     with respx.mock:
+
         def timeout_then_ok(request: httpx.Request) -> httpx.Response:
             nonlocal call_count
             call_count += 1

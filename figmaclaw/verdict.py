@@ -204,8 +204,7 @@ def format_step_summary(
         lines.append("")
         for path in phantom_files:
             lines.append(
-                f"- `{path}` — selector picked this file but the "
-                f"dispatcher found no pending work",
+                f"- `{path}` — selector picked this file but the dispatcher found no pending work",
             )
         lines.append("")
     if budget_stop_reason:

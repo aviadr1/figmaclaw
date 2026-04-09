@@ -235,8 +235,8 @@ def test_scaffold_page_frontmatter_is_compact_flow_style():
     md = scaffold_page(page, _make_entry())
     fm_block = md.split("---\n")[1]  # content between first two ---
     lines = fm_block.strip().splitlines()
-    frames_lines = [l for l in lines if l.startswith("frames:")]
-    flows_lines = [l for l in lines if l.startswith("flows:")]
+    frames_lines = [line for line in lines if line.startswith("frames:")]
+    flows_lines = [line for line in lines if line.startswith("flows:")]
     assert len(frames_lines) == 1, "frames must be on a single line (no multi-line block style)"
     assert len(flows_lines) == 1, "flows must be on a single line (no multi-line block style)"
     # Both must use inline flow-style notation (curly/square brackets)
@@ -263,7 +263,7 @@ def test_scaffold_page_frontmatter_flow_style_no_wrapping():
     section = FigmaSection(node_id="10:1", name="Going live", frames=[frame])
     md = scaffold_page(_make_page(sections=[section]), _make_entry())
     fm_block = md.split("---\n")[1]
-    frames_lines = [l for l in fm_block.strip().splitlines() if l.startswith("frames:")]
+    frames_lines = [line for line in fm_block.strip().splitlines() if line.startswith("frames:")]
     assert len(frames_lines) == 1, "frames must stay on one line regardless of frame count"
     data = yaml.safe_load(fm_block)
     assert "11:1" in data["frames"]
@@ -510,7 +510,7 @@ def test_render_component_section_keys_are_single_line_flow_style():
     md = render_component_section(section, page, component_set_keys=keys)
     fm_block = md.split("---\n")[1]
     lines = fm_block.strip().splitlines()
-    key_lines = [l for l in lines if l.startswith("component_set_keys:")]
+    key_lines = [line for line in lines if line.startswith("component_set_keys:")]
     assert len(key_lines) == 1, "component_set_keys must be on a single line"
     assert "{" in key_lines[0], "component_set_keys must use inline flow-style {}"
     data = yaml.safe_load(fm_block)
@@ -562,7 +562,7 @@ def test_raw_frames_is_single_line_flow_style():
     md = scaffold_page(page, entry, raw_frames=rf)
     fm_block = md.split("---\n")[1]  # content between opening and closing ---
     lines = fm_block.strip().splitlines()
-    rf_lines = [l for l in lines if l.startswith("raw_frames:")]
+    rf_lines = [line for line in lines if line.startswith("raw_frames:")]
     assert len(rf_lines) == 1, "raw_frames must be on a single line"
     assert "{" in rf_lines[0], "raw_frames must use inline flow-style {}"
     data = yaml.safe_load(fm_block)

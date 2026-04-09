@@ -20,10 +20,12 @@ FIGMACLAW_SRC = Path(__file__).parent.parent / "figmaclaw"
 # Files that are allowed to call .write_text(json.dumps(...)) directly:
 #   figma_utils.py  — the canonical implementation of write_json_if_changed
 #   suggest_tokens.py — user-triggered command; always writes by design
-_RAW_JSON_WRITE_ALLOWLIST: frozenset[str] = frozenset({
-    "figma_utils.py",
-    "suggest_tokens.py",
-})
+_RAW_JSON_WRITE_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        "figma_utils.py",
+        "suggest_tokens.py",
+    }
+)
 
 _RAW_JSON_WRITE_RE = re.compile(r"\.write_text\s*\(.*?json\.dumps", re.DOTALL)
 

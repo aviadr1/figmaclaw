@@ -34,11 +34,11 @@ import os
 from pathlib import Path
 
 import click
+
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_hash import compute_frame_hashes, compute_page_hash
 from figmaclaw.figma_models import from_page_node
 from figmaclaw.figma_parse import parse_flows, parse_frontmatter, split_frontmatter
-from figmaclaw.figma_paths import slugify
 from figmaclaw.figma_render import scaffold_page
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
 from figmaclaw.git_utils import git_commit
@@ -48,10 +48,17 @@ from figmaclaw.pull_logic import _merge_existing, update_page_frontmatter, write
 @click.command("sync")
 @click.argument("md_path", type=click.Path(exists=True, path_type=Path))
 @click.option("--auto-commit", "auto_commit", is_flag=True, help="git commit the result.")
-@click.option("--scaffold", "show_scaffold", is_flag=True, help="Print scaffold template to stdout (does not write).")
+@click.option(
+    "--scaffold",
+    "show_scaffold",
+    is_flag=True,
+    help="Print scaffold template to stdout (does not write).",
+)
 @click.option("--show-body", "show_body", is_flag=True, help="Print the existing body to stdout.")
 @click.pass_context
-def sync_cmd(ctx: click.Context, md_path: Path, auto_commit: bool, show_scaffold: bool, show_body: bool) -> None:
+def sync_cmd(
+    ctx: click.Context, md_path: Path, auto_commit: bool, show_scaffold: bool, show_body: bool
+) -> None:
     """Re-sync a figmaclaw .md file from the Figma REST API, preserving the body.
 
     MD_PATH is the path to a figmaclaw-rendered page .md file, e.g.
@@ -88,7 +95,9 @@ async def _run(
     md_text = md_path.read_text()
     meta = parse_frontmatter(md_text)
     if meta is None:
-        raise click.UsageError(f"{md_path}: no figmaclaw frontmatter found — is this a figmaclaw .md file?")
+        raise click.UsageError(
+            f"{md_path}: no figmaclaw frontmatter found — is this a figmaclaw .md file?"
+        )
 
     file_key = meta.file_key
     page_node_id = meta.page_node_id
@@ -104,7 +113,9 @@ async def _run(
         try:
             file_meta = await client.get_file_meta(file_key)
         except Exception as exc:
-            raise click.ClickException(f"Failed to fetch file meta for {file_key!r}: {exc}") from exc
+            raise click.ClickException(
+                f"Failed to fetch file meta for {file_key!r}: {exc}"
+            ) from exc
 
         file_name = file_meta.name
         api_version = file_meta.version
@@ -120,7 +131,9 @@ async def _run(
     page_slug = md_path.stem
 
     page = from_page_node(page_node, file_key=file_key, file_name=file_name)
-    page = page.model_copy(update={"page_slug": page_slug, "version": api_version, "last_modified": api_last_modified})
+    page = page.model_copy(
+        update={"page_slug": page_slug, "version": api_version, "last_modified": api_last_modified}
+    )
 
     existing_flows = parse_flows(md_text)
     page = _merge_existing(page, existing_flows)
@@ -131,7 +144,7 @@ async def _run(
         return
 
     screen_page = page.model_copy(update={"sections": screen_sections})
-    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    now = datetime.datetime.now(datetime.UTC).isoformat()
 
     # Compute per-frame content hashes
     frame_hashes = compute_frame_hashes(page_node)
@@ -184,10 +197,13 @@ async def _run(
 
     state.set_page_entry(file_key, page_node_id, entry)
     if state.manifest.files.get(file_key):
-        state.set_file_meta(file_key, version=api_version, last_modified=api_last_modified, last_checked_at=now)
+        state.set_file_meta(
+            file_key, version=api_version, last_modified=api_last_modified, last_checked_at=now
+        )
     state.save()
     click.echo(f"  manifest updated (hash={new_hash})")
 
-    if auto_commit:
-        if git_commit(repo_dir, [md_rel, ".figma-sync/"], f"sync: re-sync {file_name} / {page_name}"):
-            click.echo(f"  committed: {file_name} / {page_name}")
+    if auto_commit and git_commit(
+        repo_dir, [md_rel, ".figma-sync/"], f"sync: re-sync {file_name} / {page_name}"
+    ):
+        click.echo(f"  committed: {file_name} / {page_name}")

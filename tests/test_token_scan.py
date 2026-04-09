@@ -16,13 +16,12 @@ INVARIANTS:
 - TokenIssue hex is set only for color properties
 - stale issues include stale_variable_id
 """
+
 from __future__ import annotations
 
 from figmaclaw.token_scan import (
     DS_LIB_HASH,
     OLD_LIB_PREFIX,
-    FrameTokenScan,
-    TokenIssue,
     classify_variable_id,
     scan_frame,
     scan_page,
@@ -36,7 +35,9 @@ RED_COLOR = {"r": 1.0, "g": 0.0, "b": 0.0, "a": 1.0}
 DARK_COLOR = {"r": 0.08, "g": 0.08, "b": 0.12, "a": 1.0}
 
 
-def _solid_fill(color: dict | None = None, *, var_id: str | None = None) -> tuple[dict, dict | None]:
+def _solid_fill(
+    color: dict | None = None, *, var_id: str | None = None
+) -> tuple[dict, dict | None]:
     """Return (fill_dict, fills_bv_entry) for a SOLID fill."""
     fill = {"type": "SOLID", "color": color or RED_COLOR}
     bv_entry = {"id": var_id} if var_id else None
@@ -137,7 +138,9 @@ def _text(
     return node
 
 
-def _instance(node_id: str = "9:1", name: str = "Button", children: list[dict] | None = None) -> dict:
+def _instance(
+    node_id: str = "9:1", name: str = "Button", children: list[dict] | None = None
+) -> dict:
     return {"id": node_id, "name": name, "type": "INSTANCE", "children": children or []}
 
 
@@ -146,6 +149,7 @@ def _page(children: list[dict]) -> dict:
 
 
 # --- classify_variable_id ---
+
 
 def test_classify_ds_lib_hash_is_valid():
     assert classify_variable_id(DS_VAR_ID) == "valid"
@@ -169,6 +173,7 @@ def test_classify_unknown_lib_is_valid():
 
 
 # --- scan_frame: fills ---
+
 
 def test_scan_frame_raw_fill_is_counted():
     """INVARIANT: a fill with no variable binding is counted as raw."""
@@ -209,9 +214,7 @@ def test_scan_frame_stale_fill_is_counted():
 def test_scan_frame_fill_style_id_is_valid():
     """INVARIANT: a fill covered by fillStyleId is treated as valid (no issue)."""
     fill, _ = _solid_fill(RED_COLOR)
-    frame = _frame(children=[
-        _rect(fills=[fill], fill_style_id="S:abc123")
-    ])
+    frame = _frame(children=[_rect(fills=[fill], fill_style_id="S:abc123")])
     result = scan_frame(frame)
     assert result.raw == 0
     assert result.valid == 1
@@ -237,6 +240,7 @@ def test_scan_frame_non_solid_fill_skipped():
 
 
 # --- scan_frame: frame's own properties ---
+
 
 def test_scan_frame_own_fill_is_checked():
     """INVARIANT: the frame node's own fills are included in the scan."""
@@ -274,6 +278,7 @@ def test_scan_frame_zero_corner_radius_skipped():
 
 # --- scan_frame: strokes ---
 
+
 def test_scan_frame_raw_stroke_is_counted():
     """INVARIANT: a stroke with no variable binding is counted as raw."""
     stroke = {"type": "SOLID", "color": RED_COLOR}
@@ -303,6 +308,7 @@ def test_scan_frame_stroke_weight_not_counted_without_strokes():
 
 # --- scan_frame: text properties ---
 
+
 def test_scan_frame_raw_font_size_is_counted():
     """INVARIANT: fontSize without binding (and no textStyleId) is counted as raw."""
     text = _text(font_size=16.0)
@@ -315,8 +321,9 @@ def test_scan_frame_raw_font_size_is_counted():
 
 def test_scan_frame_text_style_id_covers_all_font_props():
     """INVARIANT: textStyleId means all three font props are valid — no issues."""
-    text = _text(font_size=16.0, font_family="Figtree", font_weight=400.0,
-                 text_style_id="S:text-body")
+    text = _text(
+        font_size=16.0, font_family="Figtree", font_weight=400.0, text_style_id="S:text-body"
+    )
     frame = _frame(children=[text])
     result = scan_frame(frame)
     assert result.raw == 0
@@ -334,6 +341,7 @@ def test_scan_frame_valid_font_size_not_in_issues():
 
 
 # --- scan_frame: INSTANCE handling ---
+
 
 def test_scan_frame_instance_own_fill_checked():
     """INVARIANT: fills directly on an INSTANCE node (overrides) are classified."""
@@ -359,6 +367,7 @@ def test_scan_frame_instance_children_not_recursed():
 
 # --- scan_frame: hex derivation ---
 
+
 def test_scan_frame_hex_derived_for_color_issues():
     """INVARIANT: hex field is set on issues with color current_value."""
     fill, _ = _solid_fill({"r": 0.0, "g": 1.0, "b": 0.0, "a": 1.0})
@@ -375,6 +384,7 @@ def test_scan_frame_hex_not_set_for_scalar_issues():
 
 
 # --- scan_page ---
+
 
 def test_scan_page_sparse_only_frames_with_issues():
     """INVARIANT: scan_page result.frames only contains frames with raw or stale issues."""
@@ -437,10 +447,11 @@ def test_scan_page_component_node_type_is_scanned():
 
 # --- edge cases: fills_bv / cornerRadius / styles.text ---
 
+
 def test_scan_frame_fills_bv_shorter_than_fills():
     """INVARIANT: if fills_bv has fewer entries than fills, the unpaired fills are raw."""
     fill_a, bv_a = _solid_fill(RED_COLOR, var_id=DS_VAR_ID)  # index 0 — valid
-    fill_b, _ = _solid_fill(DARK_COLOR)                       # index 1 — raw (no bv entry)
+    fill_b, _ = _solid_fill(DARK_COLOR)  # index 1 — raw (no bv entry)
     # fills has 2 entries, fills_bv has only 1
     node = _rect(node_id="2:1", fills=[fill_a, fill_b], fills_bv=[bv_a])
     frame = _frame(children=[node])

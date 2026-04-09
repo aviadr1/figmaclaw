@@ -301,9 +301,7 @@ _ANY_H2_RE = re.compile(r"^## ")
 # (``\|``) or any non-pipe character. This lets frame names round-trip
 # through the table when they contain pipes — rare in practice but
 # supported for bijection correctness.
-_FRAME_ROW_RE = re.compile(
-    r"^\|\s*((?:\\\||[^|])*?)\s*\|\s*`([^`]+)`\s*\|"
-)
+_FRAME_ROW_RE = re.compile(r"^\|\s*((?:\\\||[^|])*?)\s*\|\s*`([^`]+)`\s*\|")
 
 
 def parse_section_heading(line: str) -> SectionHeading | None:
@@ -422,9 +420,7 @@ def assert_section_round_trip(name: str | None, node_id: str) -> None:
         )
 
 
-def assert_frame_row_round_trip(
-    name: str | None, node_id: str, description: str = ""
-) -> None:
+def assert_frame_row_round_trip(name: str | None, node_id: str, description: str = "") -> None:
     """Assert the render/parse bijection for frame rows.
 
     Only ``(name, node_id)`` round-trip through the table format; the
@@ -435,8 +431,7 @@ def assert_frame_row_round_trip(
     expected_name = normalize_name(name)
     if parsed is None:
         raise AssertionError(
-            f"frame row round-trip failed: render_frame_row("
-            f"{name!r}, {node_id!r}) → {rendered!r}"
+            f"frame row round-trip failed: render_frame_row({name!r}, {node_id!r}) → {rendered!r}"
         )
     if parsed.name != expected_name or parsed.node_id != node_id:
         raise AssertionError(

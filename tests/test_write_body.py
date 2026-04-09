@@ -216,9 +216,9 @@ def test_write_body_survives_repeated_calls(tmp_path: Path) -> None:
     _, _, after_open2 = updated_md.partition("---\n")
     updated_fm_body, _, _ = after_open2.partition("\n---")
 
-    assert (
-        updated_fm_body == original_fm_body
-    ), "Frontmatter degraded after repeated write-body calls"
+    assert updated_fm_body == original_fm_body, (
+        "Frontmatter degraded after repeated write-body calls"
+    )
     assert "Body version 4." in updated_md
 
 

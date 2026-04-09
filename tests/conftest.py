@@ -40,16 +40,18 @@ def fake_file_meta(
     version: str = "v2",
     last_modified: str = "2026-03-31T12:00:00Z",
 ) -> FileMetaResponse:
-    return FileMetaResponse.model_validate({
-        "version": version,
-        "lastModified": last_modified,
-        "name": "Web App",
-        "document": {
-            "children": [
-                {"id": "7741:45837", "name": "Onboarding", "type": "CANVAS"},
-            ],
-        },
-    })
+    return FileMetaResponse.model_validate(
+        {
+            "version": version,
+            "lastModified": last_modified,
+            "name": "Web App",
+            "document": {
+                "children": [
+                    {"id": "7741:45837", "name": "Onboarding", "type": "CANVAS"},
+                ],
+            },
+        }
+    )
 
 
 def fake_page_node(page_id: str = "7741:45837") -> dict:
@@ -83,8 +85,18 @@ def fake_component_page_node(page_id: str = "7741:45837") -> dict:
                 "name": "buttons",
                 "type": "SECTION",
                 "children": [
-                    {"id": "30:1", "name": "Button / Primary", "type": "COMPONENT_SET", "children": []},
-                    {"id": "30:2", "name": "Button / Secondary", "type": "COMPONENT_SET", "children": []},
+                    {
+                        "id": "30:1",
+                        "name": "Button / Primary",
+                        "type": "COMPONENT_SET",
+                        "children": [],
+                    },
+                    {
+                        "id": "30:2",
+                        "name": "Button / Secondary",
+                        "type": "COMPONENT_SET",
+                        "children": [],
+                    },
                 ],
             }
         ],
@@ -132,17 +144,19 @@ def fake_get_nodes_response() -> dict:
 
 def fake_file_meta_multi(n_pages: int) -> FileMetaResponse:
     """FileMetaResponse with n_pages CANVAS children."""
-    return FileMetaResponse.model_validate({
-        "version": "v2",
-        "lastModified": "2026-03-31T12:00:00Z",
-        "name": "Web App",
-        "document": {
-            "children": [
-                {"id": f"100:{i}", "name": f"Page {i}", "type": "CANVAS"}
-                for i in range(1, n_pages + 1)
-            ],
-        },
-    })
+    return FileMetaResponse.model_validate(
+        {
+            "version": "v2",
+            "lastModified": "2026-03-31T12:00:00Z",
+            "name": "Web App",
+            "document": {
+                "children": [
+                    {"id": f"100:{i}", "name": f"Page {i}", "type": "CANVAS"}
+                    for i in range(1, n_pages + 1)
+                ],
+            },
+        }
+    )
 
 
 def fake_page_node_for_id(page_id: str, page_name: str) -> dict:
@@ -164,17 +178,19 @@ def fake_page_node_for_id(page_id: str, page_name: str) -> dict:
 
 
 def fake_file_meta_with_pages(*page_names: str) -> FileMetaResponse:
-    return FileMetaResponse.model_validate({
-        "version": "v2",
-        "lastModified": "2026-03-31T12:00:00Z",
-        "name": "Web App",
-        "document": {
-            "children": [
-                {"id": f"100:{i}", "name": name, "type": "CANVAS"}
-                for i, name in enumerate(page_names, 1)
-            ],
-        },
-    })
+    return FileMetaResponse.model_validate(
+        {
+            "version": "v2",
+            "lastModified": "2026-03-31T12:00:00Z",
+            "name": "Web App",
+            "document": {
+                "children": [
+                    {"id": f"100:{i}", "name": name, "type": "CANVAS"}
+                    for i, name in enumerate(page_names, 1)
+                ],
+            },
+        }
+    )
 
 
 def make_pull_state(

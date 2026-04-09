@@ -62,6 +62,7 @@ PLACEHOLDER = PLACEHOLDER_DESCRIPTION
 
 # --- Flow-style YAML helpers ---
 
+
 class _FlowDict(dict):
     """dict subclass rendered as a single-line YAML flow mapping."""
 
@@ -76,15 +77,11 @@ class _FrontmatterDumper(yaml.Dumper):
 
 _FrontmatterDumper.add_representer(
     _FlowDict,
-    lambda dumper, data: dumper.represent_mapping(
-        "tag:yaml.org,2002:map", data, flow_style=True
-    ),
+    lambda dumper, data: dumper.represent_mapping("tag:yaml.org,2002:map", data, flow_style=True),
 )
 _FrontmatterDumper.add_representer(
     _FlowList,
-    lambda dumper, data: dumper.represent_sequence(
-        "tag:yaml.org,2002:seq", data, flow_style=True
-    ),
+    lambda dumper, data: dumper.represent_sequence("tag:yaml.org,2002:seq", data, flow_style=True),
 )
 
 
@@ -119,16 +116,17 @@ def _build_frontmatter(
     if component_set_keys:
         fm["component_set_keys"] = _FlowDict(component_set_keys)
     if raw_frames:
-        fm["raw_frames"] = _FlowDict({
-            k: _FlowDict({"raw": v.raw, "ds": _FlowList(v.ds)})
-            for k, v in raw_frames.items()
-        })
+        fm["raw_frames"] = _FlowDict(
+            {k: _FlowDict({"raw": v.raw, "ds": _FlowList(v.ds)}) for k, v in raw_frames.items()}
+        )
     if raw_tokens:
-        fm["raw_tokens"] = _FlowDict({
-            fid: _FlowDict({"raw": v.raw, "stale": v.stale, "valid": v.valid})
-            for fid, v in raw_tokens.items()
-            if v.raw > 0 or v.stale > 0
-        })
+        fm["raw_tokens"] = _FlowDict(
+            {
+                fid: _FlowDict({"raw": v.raw, "stale": v.stale, "valid": v.valid})
+                for fid, v in raw_tokens.items()
+                if v.raw > 0 or v.stale > 0
+            }
+        )
 
     body = yaml.dump(
         fm,
@@ -160,9 +158,7 @@ def build_page_frontmatter(
     """
     screen_sections = [s for s in page.sections if not s.is_component_library]
     frame_ids: list[str] = [
-        frame.node_id
-        for section in screen_sections
-        for frame in section.frames
+        frame.node_id for section in screen_sections for frame in section.frames
     ]
     return _build_frontmatter(
         file_key=page.file_key,
@@ -219,7 +215,9 @@ def scaffold_page(
     if page.page_summary:
         parts.append(page.page_summary)
     else:
-        parts.append("<!-- LLM: Write a 2-3 sentence page summary describing what this page covers -->")
+        parts.append(
+            "<!-- LLM: Write a 2-3 sentence page summary describing what this page covers -->"
+        )
     parts.append("")
 
     # Per-section: optional intro + table.
@@ -235,7 +233,9 @@ def scaffold_page(
         if section.intro:
             parts.append(section.intro)
         else:
-            parts.append("<!-- LLM: Write a 1-sentence section intro if the section has a distinct theme -->")
+            parts.append(
+                "<!-- LLM: Write a 1-sentence section intro if the section has a distinct theme -->"
+            )
         parts.append("")
         parts.append(table_header)
         parts.append(table_separator)
@@ -264,7 +264,9 @@ def scaffold_page(
         parts.append("```")
         parts.append("")
     else:
-        parts.append("<!-- LLM: Generate Mermaid flowchart from the flows in frontmatter, or omit if no flows -->")
+        parts.append(
+            "<!-- LLM: Generate Mermaid flowchart from the flows in frontmatter, or omit if no flows -->"
+        )
         parts.append("")
 
     return "\n".join(parts)
@@ -290,14 +292,16 @@ def render_component_section(
 
     frame_ids: list[str] = [f.node_id for f in section.frames]
 
-    parts.append(_build_frontmatter(
-        file_key=page.file_key,
-        page_node_id=page.page_node_id,
-        section_node_id=section.node_id,
-        frame_ids=frame_ids,
-        flows=[],
-        component_set_keys=component_set_keys,
-    ))
+    parts.append(
+        _build_frontmatter(
+            file_key=page.file_key,
+            page_node_id=page.page_node_id,
+            section_node_id=section.node_id,
+            frame_ids=frame_ids,
+            flows=[],
+            component_set_keys=component_set_keys,
+        )
+    )
     parts.append("")
 
     # H1: file / page / section — normalized so empty names don't leak
@@ -311,8 +315,7 @@ def render_component_section(
 
     # Deep link to the section node
     section_url = (
-        f"https://www.figma.com/design/{page.file_key}"
-        f"?node-id={section.node_id.replace(':', '-')}"
+        f"https://www.figma.com/design/{page.file_key}?node-id={section.node_id.replace(':', '-')}"
     )
     parts.append(f"[Open in Figma]({section_url})")
     parts.append("")
