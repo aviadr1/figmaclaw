@@ -1,7 +1,9 @@
+# Installed by: figmaclaw init (or figmaclaw workflows upgrade)
+# Upgrade after tool update: figmaclaw workflows upgrade
+# Logic lives in: aviadr1/figmaclaw/.github/workflows/ (sync.yml, claude-run.yml)
 # SOURCE OF TRUTH: aviadr1/figmaclaw
 # All logic lives in aviadr1/figmaclaw/.github/workflows/ (sync.yml, claude-run.yml)
 # Make changes there, not here. This file just calls those reusable workflows.
-# To upgrade: figmaclaw workflows upgrade
 
 name: figmaclaw — nightly sync
 
@@ -20,10 +22,10 @@ on:
         default: '3m'
 
 # Must be in caller: concurrency groups are repo-scoped.
-# Shared with webhook so both queue behind each other.
+# Sync is isolated from webhook debounce to avoid cross-workflow cancellation.
 # cancel-in-progress: false — never drop a scheduled sync run.
 concurrency:
-  group: figma-git-sync
+  group: figma-git-sync-pull
   cancel-in-progress: false
 
 jobs:

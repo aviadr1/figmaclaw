@@ -9,11 +9,11 @@ on:
     types: [figma-webhook]
 
 # Must be in caller: concurrency groups are repo-scoped.
-# Shared with sync so both queue behind each other.
+# Webhook debounce must not cancel sync runs.
 # cancel-in-progress: true debounces rapid-fire Figma edit events —
 # if a designer saves repeatedly, only the last webhook runs.
 concurrency:
-  group: figma-git-sync
+  group: figma-git-webhook
   cancel-in-progress: true
 
 jobs:

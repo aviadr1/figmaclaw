@@ -7,7 +7,8 @@ from pathlib import Path
 
 import click
 
-_TEMPLATES = ["figmaclaw-webhook.yaml", "figmaclaw-sync.yaml"]
+from figmaclaw.workflow_templates import bundled_template_text, workflow_template_files
+
 _PROXY_DIR = "webhook-proxy"
 
 
@@ -38,16 +39,14 @@ def init_cmd(
     copied: list[str] = []
     skipped: list[str] = []
 
-    for template_name in _TEMPLATES:
-        src = templates_dir / template_name
+    for template_name in workflow_template_files():
         dest = dest_dir / template_name
-
         if dest.exists() and not overwrite:
             skipped.append(template_name)
             click.echo(f"  skipped (exists): {dest.relative_to(repo_dir)}")
             continue
 
-        shutil.copy2(src, dest)
+        dest.write_text(bundled_template_text(template_name))
         copied.append(template_name)
         click.echo(f"  wrote: {dest.relative_to(repo_dir)}")
 

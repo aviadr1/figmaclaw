@@ -1,7 +1,7 @@
 """Tests for commands/init.py.
 
 INVARIANTS:
-- init_cmd copies both workflow templates into .github/workflows/
+- init_cmd copies all managed workflow templates into .github/workflows/
 - init_cmd skips existing files by default (no --overwrite)
 - init_cmd overwrites existing files when --overwrite is passed
 - Copied files are valid YAML
@@ -16,16 +16,22 @@ from click.testing import CliRunner
 
 from figmaclaw.main import cli
 
+_MANAGED_WORKFLOWS = (
+    "figmaclaw-webhook.yaml",
+    "figmaclaw-sync.yaml",
+    "figmaclaw-manage-webhooks.yaml",
+)
+
 
 def test_init_copies_workflow_files(tmp_path: Path):
-    """INVARIANT: init copies both workflow templates into .github/workflows/."""
+    """INVARIANT: init copies all managed workflow templates into .github/workflows/."""
     runner = CliRunner()
     result = runner.invoke(cli, ["--repo-dir", str(tmp_path), "init"])
     assert result.exit_code == 0, result.output
 
     workflows_dir = tmp_path / ".github" / "workflows"
-    assert (workflows_dir / "figmaclaw-webhook.yaml").exists()
-    assert (workflows_dir / "figmaclaw-sync.yaml").exists()
+    for name in _MANAGED_WORKFLOWS:
+        assert (workflows_dir / name).exists()
 
 
 def test_init_copied_files_are_valid_yaml(tmp_path: Path):
@@ -34,7 +40,7 @@ def test_init_copied_files_are_valid_yaml(tmp_path: Path):
     runner.invoke(cli, ["--repo-dir", str(tmp_path), "init"])
 
     workflows_dir = tmp_path / ".github" / "workflows"
-    for fname in ["figmaclaw-webhook.yaml", "figmaclaw-sync.yaml"]:
+    for fname in _MANAGED_WORKFLOWS:
         content = (workflows_dir / fname).read_text()
         parsed = yaml.safe_load(content)
         assert isinstance(parsed, dict), f"{fname} must be a YAML mapping"
