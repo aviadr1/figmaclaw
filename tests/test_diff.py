@@ -7,7 +7,7 @@ compares Figma file versions and detects structural design changes.
 from __future__ import annotations
 
 import json
-from datetime import UTC
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -21,6 +21,11 @@ from figmaclaw.commands.diff import (
 )
 from figmaclaw.figma_api_models import FileMetaResponse, VersionSummary, VersionUser
 from figmaclaw.figma_client import FigmaClient
+
+# Pinned "now" for all _run-based tests.  All version timestamps in these
+# tests are relative to this anchor so the tests never break as real time
+# passes.  cutoff = _PINNED_NOW - 7d = 2026-04-02T00:00:00Z
+_PINNED_NOW = datetime(2026, 4, 9, 0, 0, 0, tzinfo=UTC)
 
 
 def _vs(*, id: str, created_at: str, label: str = "", handle: str = "") -> VersionSummary:
@@ -253,7 +258,7 @@ async def test_run_detects_added_frames(tmp_path: Path) -> None:
         MockCls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         MockCls.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        results, _, _ = await _run("fake-key", tmp_path / "figma", "7d")
+        results, _, _ = await _run("fake-key", tmp_path / "figma", "7d", _now=_PINNED_NOW)
 
     assert len(results) == 1
     fd = results[0]
@@ -304,7 +309,7 @@ async def test_run_detects_removed_frames(tmp_path: Path) -> None:
         MockCls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         MockCls.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        results, _, _ = await _run("fake-key", tmp_path / "figma", "7d")
+        results, _, _ = await _run("fake-key", tmp_path / "figma", "7d", _now=_PINNED_NOW)
 
     p = results[0].pages[0]
     assert len(p.removed_frames) == 1
@@ -347,7 +352,7 @@ async def test_run_detects_renames(tmp_path: Path) -> None:
         MockCls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         MockCls.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        results, _, _ = await _run("fake-key", tmp_path / "figma", "7d")
+        results, _, _ = await _run("fake-key", tmp_path / "figma", "7d", _now=_PINNED_NOW)
 
     p = results[0].pages[0]
     assert len(p.renamed_frames) == 1
@@ -375,7 +380,7 @@ async def test_run_no_changes_skips_file(tmp_path: Path) -> None:
         MockCls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         MockCls.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        results, _, _ = await _run("fake-key", tmp_path / "figma", "7d")
+        results, _, _ = await _run("fake-key", tmp_path / "figma", "7d", _now=_PINNED_NOW)
 
     assert results == []
 
@@ -412,7 +417,7 @@ async def test_run_multiple_pages_in_file(tmp_path: Path) -> None:
         MockCls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         MockCls.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        results, _, _ = await _run("fake-key", tmp_path / "figma", "7d")
+        results, _, _ = await _run("fake-key", tmp_path / "figma", "7d", _now=_PINNED_NOW)
 
     assert len(results) == 1
     assert len(results[0].pages) == 2
@@ -445,7 +450,7 @@ async def test_run_version_users_tracked(tmp_path: Path) -> None:
         MockCls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
         MockCls.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        results, _, _ = await _run("fake-key", tmp_path / "figma", "7d")
+        results, _, _ = await _run("fake-key", tmp_path / "figma", "7d", _now=_PINNED_NOW)
 
     fd = results[0]
     assert len(fd.versions_in_range) == 2
