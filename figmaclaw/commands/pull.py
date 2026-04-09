@@ -249,8 +249,8 @@ async def _run(
                 has_more_global = True
 
             if result.no_access:
-                # Permanently inaccessible — move out of tracked_files into skipped_files.
-                reason = "no access — get_file_meta returns 400 (restricted file)"
+                # Permanently inaccessible (restricted/deleted) — move out of tracked_files.
+                reason = "no access — get_file_meta returns 400/404"
                 state.manifest.skipped_files[key] = reason
                 if key in state.manifest.tracked_files:
                     state.manifest.tracked_files.remove(key)

@@ -28,10 +28,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from figmaclaw.commands.pull import _listing_prefilter
-from figmaclaw.figma_api_models import FileSummary, ProjectSummary
+from figmaclaw.figma_api_models import FileMetaResponse, FileSummary, ProjectSummary
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
 from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection  # noqa: F401 — used in tests
+from figmaclaw.figma_paths import page_path, slugify
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
 from figmaclaw.pull_logic import PullResult, pull_file, write_new_page
 from tests.conftest import (
@@ -187,7 +188,7 @@ async def test_pull_file_skips_page_when_hash_unchanged(tmp_path: Path):
     state.manifest.files["abc123"].pages["7741:45837"] = PageEntry(
         page_name="Onboarding",
         page_slug="onboarding",
-        md_path="figma/abc123/pages/onboarding.md",
+        md_path="figma/web-app/pages/onboarding-7741-45837.md",
         page_hash=stored_hash,
         last_refreshed_at="2026-03-30T00:00:00Z",
     )
@@ -629,7 +630,7 @@ async def test_pull_file_skipped_pages_do_not_trigger_on_page_written(tmp_path: 
     state.manifest.files["abc123"].pages["7741:45837"] = PageEntry(
         page_name="Onboarding",
         page_slug="onboarding",
-        md_path="figma/abc123/pages/onboarding.md",
+        md_path="figma/web-app/pages/onboarding-7741-45837.md",
         page_hash=stored_hash,
         last_refreshed_at="2026-03-30T00:00:00Z",
     )
@@ -1538,6 +1539,44 @@ async def test_pull_file_sets_no_access_on_http_400(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_pull_file_sets_no_access_on_http_404(tmp_path: Path):
+    """INVARIANT: pull_file returns no_access=True when get_file_meta raises HTTP 404."""
+    import httpx
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+
+    mock_client = MagicMock(spec=FigmaClient)
+    response_mock = MagicMock()
+    response_mock.status_code = 404
+    mock_client.get_file_meta = AsyncMock(
+        side_effect=httpx.HTTPStatusError("404", request=MagicMock(), response=response_mock)
+    )
+
+    result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    assert result.no_access is True
+
+
+def _custom_file_meta(
+    *,
+    version: str,
+    file_name: str,
+    page_id: str,
+    page_name: str,
+) -> FileMetaResponse:
+    return FileMetaResponse.model_validate(
+        {
+            "version": version,
+            "lastModified": "2026-03-31T12:00:00Z",
+            "name": file_name,
+            "document": {"children": [{"id": page_id, "name": page_name, "type": "CANVAS"}]},
+        }
+    )
+
+
+@pytest.mark.asyncio
 async def test_pull_file_is_idempotent_second_call_changes_nothing(tmp_path: Path):
     """INVARIANT: a second pull on identical Figma content must not modify any file on disk.
 
@@ -1581,6 +1620,150 @@ async def test_pull_file_is_idempotent_second_call_changes_nothing(tmp_path: Pat
         "Files changed on second pull despite identical Figma content: "
         + str({k for k in all_files_after if all_files_after[k] != all_files_before.get(k)})
     )
+
+
+@pytest.mark.asyncio
+async def test_pull_file_page_rename_moves_path_and_prunes_old(tmp_path: Path):
+    """INVARIANT: renaming a page keeps exactly one page file path (old path is pruned)."""
+    page_id = "100:1"
+    old_page_name = "Showcase LSN"
+    new_page_name = "Showcase V2"
+    file_name = "Web App"
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", file_name)
+    state.manifest.files["abc123"].version = "v1"
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+    mock_client.get_nodes = AsyncMock(return_value={})
+
+    mock_client.get_file_meta = AsyncMock(
+        return_value=_custom_file_meta(
+            version="v2", file_name=file_name, page_id=page_id, page_name=old_page_name
+        )
+    )
+    mock_client.get_page = AsyncMock(return_value=fake_page_node_for_id(page_id, old_page_name))
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    old_rel = page_path(slugify(file_name), f"{slugify(old_page_name)}-{page_id.replace(':', '-')}")
+    old_abs = tmp_path / old_rel
+    assert old_abs.exists()
+    old_abs.write_text(old_abs.read_text() + "\nMANUAL_BODY_SENTINEL\n")
+
+    mock_client.get_file_meta = AsyncMock(
+        return_value=_custom_file_meta(
+            version="v3", file_name=file_name, page_id=page_id, page_name=new_page_name
+        )
+    )
+    mock_client.get_page = AsyncMock(return_value=fake_page_node_for_id(page_id, new_page_name))
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    new_rel = page_path(slugify(file_name), f"{slugify(new_page_name)}-{page_id.replace(':', '-')}")
+    new_abs = tmp_path / new_rel
+    assert new_abs.exists()
+    assert not old_abs.exists()
+    assert "MANUAL_BODY_SENTINEL" in new_abs.read_text()
+
+    files_before = {
+        str(p.relative_to(tmp_path)): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()
+    }
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+    files_after = {
+        str(p.relative_to(tmp_path)): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()
+    }
+    assert files_before == files_after
+
+
+@pytest.mark.asyncio
+async def test_pull_file_file_rename_moves_path_and_prunes_old(tmp_path: Path):
+    """INVARIANT: renaming a file (same key) moves generated page paths to the new file slug."""
+    page_id = "100:1"
+    page_name = "Reactions"
+    old_file_name = "Mobile Streaming Interface"
+    new_file_name = "Web Streaming Interface"
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", old_file_name)
+    state.manifest.files["abc123"].version = "v1"
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+    mock_client.get_nodes = AsyncMock(return_value={})
+
+    mock_client.get_file_meta = AsyncMock(
+        return_value=_custom_file_meta(
+            version="v2", file_name=old_file_name, page_id=page_id, page_name=page_name
+        )
+    )
+    mock_client.get_page = AsyncMock(return_value=fake_page_node_for_id(page_id, page_name))
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    old_rel = page_path(slugify(old_file_name), f"{slugify(page_name)}-{page_id.replace(':', '-')}")
+    old_abs = tmp_path / old_rel
+    assert old_abs.exists()
+
+    mock_client.get_file_meta = AsyncMock(
+        return_value=_custom_file_meta(
+            version="v3", file_name=new_file_name, page_id=page_id, page_name=page_name
+        )
+    )
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    new_rel = page_path(slugify(new_file_name), f"{slugify(page_name)}-{page_id.replace(':', '-')}")
+    new_abs = tmp_path / new_rel
+    assert new_abs.exists()
+    assert not old_abs.exists()
+
+
+@pytest.mark.asyncio
+async def test_pull_file_removed_page_prunes_manifest_and_files(tmp_path: Path):
+    """INVARIANT: pages removed from file metadata are pruned from manifest and disk."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+    state.manifest.files["abc123"].pages["100:1"] = PageEntry(
+        page_name="Legacy",
+        page_slug="legacy-100-1",
+        md_path="figma/web-app/pages/legacy-100-1.md",
+        page_hash="oldhash",
+        last_refreshed_at="2026-03-01T00:00:00Z",
+        component_md_paths=["figma/web-app/components/legacy-components-100-2.md"],
+    )
+    state.save()
+
+    page_md = tmp_path / "figma/web-app/pages/legacy-100-1.md"
+    page_md.parent.mkdir(parents=True, exist_ok=True)
+    page_md.write_text("legacy")
+    page_sidecar = page_md.with_suffix(".tokens.json")
+    page_sidecar.write_text("{}")
+    comp_md = tmp_path / "figma/web-app/components/legacy-components-100-2.md"
+    comp_md.parent.mkdir(parents=True, exist_ok=True)
+    comp_md.write_text("legacy-comp")
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+    mock_client.get_nodes = AsyncMock(return_value={})
+    mock_client.get_file_meta = AsyncMock(
+        return_value=FileMetaResponse.model_validate(
+            {
+                "version": "v2",
+                "lastModified": "2026-03-31T12:00:00Z",
+                "name": "Web App",
+                "document": {"children": []},
+            }
+        )
+    )
+
+    result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+    assert result.pages_written == 0
+    assert not page_md.exists()
+    assert not page_sidecar.exists()
+    assert not comp_md.exists()
+    assert "100:1" not in state.manifest.files["abc123"].pages
 
 
 @pytest.mark.asyncio
