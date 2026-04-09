@@ -127,18 +127,29 @@ jobs:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      - name: Detect changed Python files
+        id: changed
+        uses: tj-actions/changed-files@48d8f15b2aaa3d255ca5af3eba4870f807ce6b3c # v45
+        with:
+          files: |
+            **/*.py
+
       - name: Set up Python
+        if: steps.changed.outputs.any_changed == 'true'
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
 
       - name: Install uv
+        if: steps.changed.outputs.any_changed == 'true'
         run: python -m pip install --upgrade uv
 
       - name: Sync dependencies
+        if: steps.changed.outputs.any_changed == 'true'
         run: uv sync --dev
 
       - name: Run tests with coverage gate
+        if: steps.changed.outputs.any_changed == 'true'
         run: >
           uv run python -m pytest -q
           --junitxml=test-results/pytest-junit.xml
@@ -148,7 +159,7 @@ jobs:
           --cov-fail-under=70
 
       - name: Upload test artifacts
-        if: always()
+        if: always() && steps.changed.outputs.any_changed == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: test-results
@@ -169,3 +180,7 @@ jobs:
           files: test-results/coverage.xml
           flags: unittests
           fail_ci_if_error: false
+
+      - name: No Python changes
+        if: steps.changed.outputs.any_changed != 'true'
+        run: echo "No Python files changed; skipping tests."
