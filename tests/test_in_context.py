@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import base64
-import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
 from figmaclaw.figma_frontmatter import SectionNode
 from figmaclaw.in_context import (
+    _RASTER_FALLBACK_STEPS,
     SVG_SIZE_LIMIT,
     SectionData,
     fetch_section_data,
@@ -56,12 +56,12 @@ class TestFetchSectionData:
 
         mock_client = AsyncMock()
         mock_client.get_image_urls.side_effect = [
-            {"11:1": "https://cdn/img.svg"},   # SVG call
-            {"11:1": "https://cdn/img.png"},   # PNG fallback call
+            {"11:1": "https://cdn/img.svg"},  # SVG call
+            {"11:1": "https://cdn/img.png"},  # first PNG scale call
         ]
         mock_client.download_url.side_effect = [
             large_svg.encode(),  # SVG download
-            png_bytes,           # PNG download
+            png_bytes,  # PNG download (first scale fits)
         ]
 
         section = _make_section()
@@ -71,33 +71,84 @@ class TestFetchSectionData:
         assert result.data == base64.b64encode(png_bytes).decode("ascii")
 
     @pytest.mark.asyncio
-    async def test_falls_back_to_png_when_svg_url_missing(self) -> None:
-        """INVARIANT: PNG fallback is used when Figma returns no SVG URL."""
-        png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 50
+    async def test_uses_first_fitting_raster_step(self) -> None:
+        """INVARIANT: Uses the first raster step (format+scale) whose base64 fits."""
+        large_svg = "x" * (SVG_SIZE_LIMIT + 1)
+        # first raster step produces data too large, second fits
+        large_img = b"\x89PNG" + b"\xff" * SVG_SIZE_LIMIT  # base64 will exceed limit
+        small_img = b"\xff\xd8\xff" + b"\x00" * 50  # fake JPG bytes
+
+        step0_fmt, step0_scale = _RASTER_FALLBACK_STEPS[0]
+        step1_fmt, step1_scale = _RASTER_FALLBACK_STEPS[1]
 
         mock_client = AsyncMock()
         mock_client.get_image_urls.side_effect = [
-            {"11:1": None},                  # SVG → no URL
-            {"11:1": "https://cdn/img.png"}, # PNG fallback
+            {"11:1": "https://cdn/img.svg"},
+            {"11:1": f"https://cdn/img-step0.{step0_fmt}"},
+            {"11:1": f"https://cdn/img-step1.{step1_fmt}"},
         ]
-        mock_client.download_url.return_value = png_bytes
+        mock_client.download_url.side_effect = [
+            large_svg.encode(),
+            large_img,
+            small_img,
+        ]
 
         section = _make_section()
         result = await fetch_section_data(mock_client, "file123", section)
 
-        assert result.kind == "png"
+        assert result.kind == step1_fmt
+        assert result.data == base64.b64encode(small_img).decode("ascii")
+        assert mock_client.get_image_urls.call_count == 3
+        second_raster_call = mock_client.get_image_urls.call_args_list[2]
+        assert second_raster_call.kwargs.get("scale") == step1_scale
+        assert second_raster_call.kwargs.get("format") == step1_fmt
 
     @pytest.mark.asyncio
-    async def test_raises_when_png_url_also_missing(self) -> None:
-        """INVARIANT: ValueError is raised when neither SVG nor PNG URL is available."""
+    async def test_falls_back_to_raster_when_svg_url_missing(self) -> None:
+        """INVARIANT: Raster fallback is used when Figma returns no SVG URL."""
+        img_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 50
+        first_fmt = _RASTER_FALLBACK_STEPS[0][0]
+
         mock_client = AsyncMock()
         mock_client.get_image_urls.side_effect = [
-            {"11:1": None},   # SVG → no URL
-            {"11:1": None},   # PNG → no URL
+            {"11:1": None},  # SVG → no URL
+            {"11:1": "https://cdn/img.png"},  # first raster step
         ]
+        mock_client.download_url.return_value = img_bytes
 
         section = _make_section()
-        with pytest.raises(ValueError, match="No export URL"):
+        result = await fetch_section_data(mock_client, "file123", section)
+
+        assert result.kind == first_fmt
+
+    @pytest.mark.asyncio
+    async def test_raises_when_all_raster_steps_too_large(self) -> None:
+        """INVARIANT: ValueError is raised when no raster step fits within SVG_SIZE_LIMIT."""
+        large_svg = "x" * (SVG_SIZE_LIMIT + 1)
+        oversized_img = b"\x89PNG" + b"\xff" * SVG_SIZE_LIMIT  # base64 > SVG_SIZE_LIMIT
+
+        mock_client = AsyncMock()
+        mock_client.get_image_urls.side_effect = [
+            {"11:1": "https://cdn/img.svg"},
+        ] + [{"11:1": f"https://cdn/img-{fmt}-{scale}"} for fmt, scale in _RASTER_FALLBACK_STEPS]
+        mock_client.download_url.side_effect = [
+            large_svg.encode(),
+        ] + [oversized_img] * len(_RASTER_FALLBACK_STEPS)
+
+        section = _make_section()
+        with pytest.raises(ValueError, match="No raster format"):
+            await fetch_section_data(mock_client, "file123", section)
+
+    @pytest.mark.asyncio
+    async def test_raises_when_all_raster_urls_missing(self) -> None:
+        """INVARIANT: ValueError is raised when Figma returns no URL for any raster step."""
+        mock_client = AsyncMock()
+        mock_client.get_image_urls.side_effect = [
+            {"11:1": None},  # SVG → no URL
+        ] + [{"11:1": None}] * len(_RASTER_FALLBACK_STEPS)
+
+        section = _make_section()
+        with pytest.raises(ValueError, match="No raster format"):
             await fetch_section_data(mock_client, "file123", section)
 
 
@@ -183,9 +234,15 @@ class TestMakeContextCalls:
         section = _make_section("11:1", "Header", x=16, y=132, w=361, h=252)
         sd = SectionData(section=section, kind="png", data="abc")
         calls = make_context_calls(
-            target_file_key="F", target_page_id="P",
-            container_name="ctx", frame_w=393, frame_h=500,
-            comp_x=80, comp_y=100, comp_w=200, label="",
+            target_file_key="F",
+            target_page_id="P",
+            container_name="ctx",
+            frame_w=393,
+            frame_h=500,
+            comp_x=80,
+            comp_y=100,
+            comp_w=200,
+            label="",
             section_data_list=[sd],
         )
         section_call = calls[1]
@@ -199,9 +256,15 @@ class TestMakeContextCalls:
         svg_with_backtick = "<svg><!-- ` --></svg>"
         sd = SectionData(section=_make_section(), kind="svg", data=svg_with_backtick)
         calls = make_context_calls(
-            target_file_key="F", target_page_id="P",
-            container_name="ctx", frame_w=393, frame_h=500,
-            comp_x=80, comp_y=100, comp_w=200, label="",
+            target_file_key="F",
+            target_page_id="P",
+            container_name="ctx",
+            frame_w=393,
+            frame_h=500,
+            comp_x=80,
+            comp_y=100,
+            comp_w=200,
+            label="",
             section_data_list=[sd],
         )
         section_call = calls[1]

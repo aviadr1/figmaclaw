@@ -22,8 +22,9 @@
 //     1. Export as SVG via REST API → compress with svgo
 //     2. If compressed SVG ≤ 38,000 chars → embed SVG → createNodeFromSvg
 //        Result: real editable Figma vector nodes (pixel perfect, live)
-//     3. Else → export as PNG @scale=0.25 → base64 encode
-//        Result: flat raster image (pixel perfect visually, not editable)
+//     3. Else → try raster (PNG then JPG) at scales [0.5, 0.35, 0.25] in order
+//        Use first format+scale whose base64 fits under 38,000 chars
+//        Result: flat raster image (not editable; JPG preferred for photos)
 //   Overhead per call: ~10,200 chars (helpers + boilerplate), budget = 50,000 - 10,200.
 //
 //   Sections with complex fills / embedded avatar images are PNG candidates.
@@ -110,7 +111,7 @@ function createContextContainer(page, w, h, x, y, name, bgColor) {
 //   containerName — name passed to createContextContainer
 //   section       — object describing the section:
 //     {
-//       type:   'svg' | 'png',
+//       type:   'svg' | 'png' | 'jpg',
 //       data:   string,   // SVG markup OR base64-encoded PNG bytes
 //       x:      number,   // x position relative to container frame (0 or 16)
 //       y:      number,   // y position relative to container frame

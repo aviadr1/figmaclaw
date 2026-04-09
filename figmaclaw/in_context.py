@@ -11,7 +11,8 @@ The only data entry point is the use_figma code string (≤50,000 chars).
 
 Strategy: split the source frame into sections, one use_figma call per section.
   - SVG preferred (live editable nodes): use if compressed SVG ≤ SVG_SIZE_LIMIT
-  - PNG fallback (flat image fill): base64-encoded PNG @scale=0.25, always fits
+  - PNG fallback (flat image fill): base64-encoded PNG, adaptive scale (tries 0.5,
+    0.35, 0.25 in order; uses first that fits under SVG_SIZE_LIMIT)
 
 Section positions are read from figma page frontmatter (frame_sections field,
 written by the pull pass). No extra REST API call needed at build time.
@@ -35,10 +36,25 @@ from figmaclaw.figma_frontmatter import SectionNode
 # Budget: 50_000 - 10_200 = 39_800. Use 38_000 for safety headroom.
 SVG_SIZE_LIMIT = 38_000
 
-# PNG export scale. 0.25 renders a 393×854 section at ~98×213px (~16KB PNG / ~21KB base64).
-# Chosen to stay safely under SVG_SIZE_LIMIT for photo-heavy sections.
-# (0.35 scale was too large: a 393×854px section produced a 32KB PNG / 43KB base64.)
-PNG_SCALE = 0.25
+# Raster fallback ladder — (format, scale) pairs tried in order.
+# First entry whose base64 fits under SVG_SIZE_LIMIT is used.
+#
+# Ordering rationale:
+#   PNG @0.5  — lossless, best quality, fits for non-photo sections
+#   JPG @0.5  — lossy but high-res; for photo sections JPG @0.5 << PNG @0.35 in size
+#               and far better looking than PNG @0.25
+#   PNG @0.35 — lossless fallback before dropping to lower scales
+#   JPG @0.35 — photo fallback at medium scale
+#   PNG @0.25 — last-resort lossless (noticeably blurry at full-size display)
+#   JPG @0.25 — last resort lossy
+_RASTER_FALLBACK_STEPS: list[tuple[str, float]] = [
+    ("png", 0.5),
+    ("jpg", 0.5),
+    ("png", 0.35),
+    ("jpg", 0.35),
+    ("png", 0.25),
+    ("jpg", 0.25),
+]
 
 # Plugin helpers JS — pasted at the top of every use_figma code string.
 _HELPERS_PATH = Path(__file__).parent / "plugin" / "in-context.js"
@@ -48,9 +64,10 @@ _HELPERS_JS: str = _HELPERS_PATH.read_text()
 @dataclass
 class SectionData:
     """Pre-fetched data for one section of the source frame."""
+
     section: SectionNode
-    kind: str    # 'svg' or 'png'
-    data: str    # SVG markup or base64-encoded PNG bytes (no data: URI prefix)
+    kind: str  # 'svg' or 'png'
+    data: str  # SVG markup or base64-encoded PNG bytes (no data: URI prefix)
 
 
 async def fetch_section_data(
@@ -58,10 +75,11 @@ async def fetch_section_data(
     file_key: str,
     section: SectionNode,
 ) -> SectionData:
-    """Fetch SVG or PNG for one section.
+    """Fetch SVG or PNG/JPG for one section.
 
-    Tries SVG first. Falls back to PNG @scale=0.25 if SVG exceeds SVG_SIZE_LIMIT.
-    PNG always fits within the use_figma 50K code string limit at this scale.
+    Tries SVG first. Falls back to raster via _RASTER_FALLBACK_STEPS (PNG then JPG
+    at decreasing scales). Uses the first format+scale whose base64 fits within
+    SVG_SIZE_LIMIT. Raises ValueError if nothing fits.
     """
     svg_urls = await client.get_image_urls(file_key, [section.node_id], format="svg")
     svg_url = svg_urls.get(section.node_id)
@@ -71,18 +89,21 @@ async def fetch_section_data(
         if len(svg_str) <= SVG_SIZE_LIMIT:
             return SectionData(section=section, kind="svg", data=svg_str)
 
-    # SVG too large — fall back to PNG
-    png_urls = await client.get_image_urls(
-        file_key, [section.node_id], format="png", scale=PNG_SCALE
+    # SVG too large — try raster formats at decreasing scales
+    for fmt, scale in _RASTER_FALLBACK_STEPS:
+        urls = await client.get_image_urls(file_key, [section.node_id], format=fmt, scale=scale)
+        url = urls.get(section.node_id)
+        if not url:
+            continue
+        img_bytes = await client.download_url(url)
+        b64 = base64.b64encode(img_bytes).decode("ascii")
+        if len(b64) <= SVG_SIZE_LIMIT:
+            return SectionData(section=section, kind=fmt, data=b64)
+
+    raise ValueError(
+        "No raster format/scale fits within limit for section "
+        f"{section.node_id!r} ({section.name!r})"
     )
-    png_url = png_urls.get(section.node_id)
-    if not png_url:
-        raise ValueError(
-            f"No export URL returned for section {section.node_id!r} ({section.name!r})"
-        )
-    png_bytes = await client.download_url(png_url)
-    b64 = base64.b64encode(png_bytes).decode("ascii")
-    return SectionData(section=section, kind="png", data=b64)
 
 
 def make_context_calls(
@@ -114,26 +135,36 @@ def make_context_calls(
     calls: list[dict[str, str]] = []
 
     # Call 0: create container frame
-    calls.append({
-        "file_key": target_file_key,
-        "description": f"Create context container frame '{container_name}' on page {target_page_id}",
-        "code": _container_code(target_page_id, frame_w, frame_h, x, y, container_name),
-    })
+    calls.append(
+        {
+            "file_key": target_file_key,
+            "description": (
+                f"Create context container frame '{container_name}' on page {target_page_id}"
+            ),
+            "code": _container_code(target_page_id, frame_w, frame_h, x, y, container_name),
+        }
+    )
 
     # Calls 1-N: place each section
     for sd in section_data_list:
-        calls.append({
-            "file_key": target_file_key,
-            "description": f"Place {sd.section.name!r} section ({sd.kind}) in '{container_name}'",
-            "code": _section_code(target_page_id, container_name, sd),
-        })
+        calls.append(
+            {
+                "file_key": target_file_key,
+                "description": (
+                    f"Place {sd.section.name!r} section ({sd.kind}) in '{container_name}'"
+                ),
+                "code": _section_code(target_page_id, container_name, sd),
+            }
+        )
 
     # Final: add caption
-    calls.append({
-        "file_key": target_file_key,
-        "description": f"Add caption to '{container_name}'",
-        "code": _caption_code(target_page_id, container_name, label),
-    })
+    calls.append(
+        {
+            "file_key": target_file_key,
+            "description": f"Add caption to '{container_name}'",
+            "code": _caption_code(target_page_id, container_name, label),
+        }
+    )
 
     return calls
 
