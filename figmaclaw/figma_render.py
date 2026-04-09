@@ -141,6 +141,8 @@ def _build_frontmatter(
                                 "y": s.y,
                                 "w": s.w,
                                 "h": s.h,
+                                "instances": _FlowList(s.instances),
+                                "raw_count": s.raw_count,
                             }
                         )
                         for s in sections
@@ -179,8 +181,9 @@ def build_page_frontmatter(
     by the pull pass. Only frames with raw > 0 are included. None means not yet
     computed (field is omitted from frontmatter); {} means computed but all clean.
 
-    frame_sections: dense dict of all screen frames → direct children with positions.
-    Used by build-context to construct composite context frames without extra API calls.
+    frame_sections: dense dict of all screen frames → direct children with positions
+    and per-section direct-child inventory (instances/raw_count). Used by build-context
+    and coverage queries without extra API calls.
     """
     screen_sections = [s for s in page.sections if not s.is_component_library]
     frame_ids: list[str] = [

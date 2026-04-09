@@ -49,7 +49,7 @@ from tests.conftest import (
 # Schema version registry — must contain every version that has been superseded.
 # When you bump CURRENT_PULL_SCHEMA_VERSION from N to N+1, add N here and add
 # a corresponding convergence test (like test_schema_upgrade_does_not_cause_infinite_loop_with_max_pages).
-TESTED_UPGRADE_FROM_VERSIONS: frozenset[int] = frozenset({1, 2, 3})
+TESTED_UPGRADE_FROM_VERSIONS: frozenset[int] = frozenset({1, 2, 3, 4})
 
 
 def test_schema_upgrade_coverage_is_current():
@@ -928,24 +928,31 @@ def test_compute_raw_frames_counts_raw_children_and_ds_names():
                     "type": "INSTANCE",
                     "name": "AvatarV2",
                     "absoluteBoundingBox": {"x": 0, "y": 0, "width": 40, "height": 40},
+                    "children": [],
                 },
                 {
                     "id": "11:3",
                     "type": "INSTANCE",
                     "name": "ButtonV2",
                     "absoluteBoundingBox": {"x": 40, "y": 0, "width": 80, "height": 40},
+                    "children": [],
                 },
                 {
                     "id": "11:4",
                     "type": "FRAME",
                     "name": "raw-child",
                     "absoluteBoundingBox": {"x": 0, "y": 40, "width": 400, "height": 120},
+                    "children": [
+                        {"id": "11:4:1", "type": "INSTANCE", "name": "CardV2"},
+                        {"id": "11:4:2", "type": "RECTANGLE", "name": "bg"},
+                    ],
                 },
                 {
                     "id": "11:5",
                     "type": "TEXT",
                     "name": "label",
                     "absoluteBoundingBox": {"x": 0, "y": 160, "width": 200, "height": 20},
+                    "children": [],
                 },
             ],
         }
@@ -957,6 +964,10 @@ def test_compute_raw_frames_counts_raw_children_and_ds_names():
     # frame_sections is populated for all frames
     assert "11:1" in frame_sections
     assert len(frame_sections["11:1"]) == 4
+    # per-section direct-child inventory exists
+    raw_child = next(s for s in frame_sections["11:1"] if s.node_id == "11:4")
+    assert raw_child.instances == ["CardV2"]
+    assert raw_child.raw_count == 1
 
 
 def test_compute_raw_frames_omits_fully_componentized_frames_from_raw_frames():
@@ -1070,6 +1081,34 @@ def test_compute_raw_frames_section_positions_are_relative_to_frame():
     assert content.x == 16 and content.y == 60  # relative to frame origin
 
 
+def test_compute_raw_frames_section_inventory_counts_direct_children():
+    """INVARIANT: frame_sections entries include direct-child instance list and raw_count."""
+    from figmaclaw.pull_logic import _compute_raw_frames
+
+    frame_docs = {
+        "11:1": {
+            "absoluteBoundingBox": {"x": 100, "y": 200, "width": 393, "height": 300},
+            "children": [
+                {
+                    "id": "11:2",
+                    "type": "FRAME",
+                    "name": "Header",
+                    "absoluteBoundingBox": {"x": 100, "y": 200, "width": 393, "height": 60},
+                    "children": [
+                        {"id": "11:2:1", "type": "INSTANCE", "name": "IconStat"},
+                        {"id": "11:2:2", "type": "INSTANCE", "name": "IconStat"},
+                        {"id": "11:2:3", "type": "TEXT", "name": "Title"},
+                    ],
+                }
+            ],
+        }
+    }
+    _, frame_sections = _compute_raw_frames(frame_docs)
+    section = frame_sections["11:1"][0]
+    assert section.instances == ["IconStat", "IconStat"]
+    assert section.raw_count == 1
+
+
 # --- _build_component_set_keys ---
 
 
@@ -1165,6 +1204,36 @@ async def test_pull_file_writes_raw_frames_to_new_page_frontmatter(pull_env: Pul
     assert "11:1" in fm.raw_frames
     assert fm.raw_frames["11:1"].raw == 2  # RECTANGLE + TEXT
     assert fm.raw_frames["11:1"].ds == ["AvatarV2"]
+    # frame_sections now carries per-section inventory needed by #38
+    assert "11:1" in fm.frame_sections
+    first = fm.frame_sections["11:1"][0]
+    assert first.instances == []
+    assert first.raw_count == 0
+
+
+@pytest.mark.asyncio
+async def test_pull_file_is_idempotent_for_frame_sections_inventory(pull_env: PullEnv):
+    """INVARIANT: repeated unchanged pulls preserve frame_sections inventory byte-for-byte."""
+    from figmaclaw.figma_parse import parse_frontmatter
+
+    state, mock_client, tmp_path = pull_env.state, pull_env.client, pull_env.tmp_path
+    mock_client.get_page = AsyncMock(return_value=fake_page_node_with_children())
+    mock_client.get_nodes = AsyncMock(return_value=fake_get_nodes_response())
+
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+    out = tmp_path / "figma" / "web-app" / "pages" / "onboarding-7741-45837.md"
+    first_text = out.read_text()
+    fm1 = parse_frontmatter(first_text)
+    assert fm1 is not None
+    assert "11:1" in fm1.frame_sections
+
+    # Force a second run (same content) to assert frontmatter stability.
+    await pull_file(mock_client, "abc123", state, tmp_path, force=True)
+    second_text = out.read_text()
+    fm2 = parse_frontmatter(second_text)
+    assert fm2 is not None
+    assert fm2.frame_sections == fm1.frame_sections
+    assert first_text == second_text
 
 
 @pytest.mark.asyncio

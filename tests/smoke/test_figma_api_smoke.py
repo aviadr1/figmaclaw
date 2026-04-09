@@ -18,7 +18,8 @@ from figmaclaw.figma_frontmatter import FigmaPageFrontmatter
 from figmaclaw.figma_models import FigmaPage, FigmaSection, from_page_node
 from figmaclaw.figma_parse import parse_frontmatter
 from figmaclaw.figma_render import scaffold_page
-from figmaclaw.figma_sync_state import PageEntry
+from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
+from figmaclaw.pull_logic import pull_file
 
 # The Web App file used in linear-git
 TEST_FILE_KEY = "hOV4QMBnDIG5s5OYkSrX9E"
@@ -162,3 +163,34 @@ async def test_list_webhooks_returns_list(api_key: str, webhook_team_id: str) ->
             raise
 
     assert isinstance(webhooks, list)
+
+
+@pytest.mark.smoke
+@pytest.mark.asyncio
+async def test_pull_writes_frame_sections_inventory(tmp_path, api_key: str) -> None:  # type: ignore[no-untyped-def]
+    """Smoke: pull_file writes frame_sections with section-level inventory fields."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file(TEST_FILE_KEY, "Web App")
+    # Force pull to exercise write path even if version is already current.
+    state.manifest.files[TEST_FILE_KEY].version = "v0"
+
+    async with FigmaClient(api_key=api_key) as client:
+        result = await pull_file(client, TEST_FILE_KEY, state, tmp_path, force=False, max_pages=1)
+
+    assert result.pages_written + result.pages_schema_upgraded > 0
+    pages = state.manifest.files[TEST_FILE_KEY].pages
+    assert pages, "pull_file wrote/upgraded pages but manifest has no page entries"
+    entry = next(iter(pages.values()))
+    assert entry.md_path is not None
+
+    page_md = tmp_path / entry.md_path
+    assert page_md.exists()
+    fm = parse_frontmatter(page_md.read_text())
+    assert fm is not None
+    assert len(fm.frame_sections) > 0
+
+    any_section = next(iter(fm.frame_sections.values()))[0]
+    assert isinstance(any_section.instances, list)
+    assert isinstance(any_section.raw_count, int)
+    assert any_section.raw_count >= 0

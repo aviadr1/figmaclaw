@@ -60,6 +60,8 @@ Pull schema changelog:
   v2: added raw_frames (screen pages), component_set_keys (component sections)
   v3: added raw_tokens frontmatter summary + sidecar .tokens.json files
   v4: added frame_sections (screen pages) — per-frame child position map for context frame building
+  v5: extended frame_sections entries with per-section direct-child inventory:
+      instances[] and raw_count (issue #38 coverage queries)
 
 Enrichment schema changelog:
   v1: initial enrichment format — frame table + page summary + Mermaid flows
@@ -74,7 +76,7 @@ from pydantic import BaseModel, Field, model_validator
 # Pull-pass schema version. Bump when pull_file writes new frontmatter fields.
 # Files in the manifest with pull_schema_version < this get frontmatter-refreshed
 # on the next pull run even if Figma content is unchanged. Body is never touched.
-CURRENT_PULL_SCHEMA_VERSION: int = 4
+CURRENT_PULL_SCHEMA_VERSION: int = 5
 
 # Enrichment schema version. Bump when the LLM prompt or output format changes.
 # Pages with enriched_schema_version < MIN_REQUIRED MUST be re-enriched (broken output).
@@ -105,6 +107,12 @@ class SectionNode(BaseModel):
     y: int
     w: int
     h: int
+    # v5-ish extension of the frame_sections payload (schema version tracked at file level):
+    # direct-child inventory of this section node.
+    # instances keeps duplicates to preserve multiplicity (N x ButtonV2).
+    instances: list[str] = Field(default_factory=list)
+    # non-INSTANCE direct children count under this section node.
+    raw_count: int = 0
 
 
 class RawTokenCounts(BaseModel):

@@ -233,8 +233,9 @@ def _compute_raw_frames(
     Returns a 2-tuple:
       raw_frames:     sparse dict — only frames with at least one raw child.
                       Absence means fully componentized (signals "clean" to audit skills).
-      frame_sections: dense dict — ALL frames, each with their direct children's positions.
-                      Used by build-context to construct composite context frames (#35/#38).
+      frame_sections: dense dict — ALL frames, each with their direct children's positions
+                      plus direct-child composition inventory (instances/raw_count).
+                      Used by build-context + component coverage queries (#35/#38).
 
     raw:  count of non-INSTANCE direct children (FRAME, GROUP, RECTANGLE, TEXT, etc.)
     ds:   names of INSTANCE children with duplicates — [ButtonV2, ButtonV2] means 2 instances.
@@ -243,6 +244,21 @@ def _compute_raw_frames(
     frame_sections: dict[str, list[SectionNode]] = {}
     if not isinstance(frame_docs, dict):
         return raw_frames, frame_sections
+
+    def _section_inventory(section_node: dict) -> tuple[list[str], int]:
+        """Return (instance_names, raw_count) for direct children of one section node."""
+        children_raw = section_node.get("children", [])
+        if not isinstance(children_raw, list):
+            return ([], 0)
+        direct_children = [c for c in children_raw if isinstance(c, dict)]
+        instances: list[str] = []
+        raw_count = 0
+        for child in direct_children:
+            if child.get("type") == "INSTANCE":
+                instances.append(child.get("name", ""))
+            else:
+                raw_count += 1
+        return (instances, raw_count)
 
     for node_id, node in frame_docs.items():
         if not isinstance(node, dict):
@@ -261,6 +277,7 @@ def _compute_raw_frames(
 
         for child in children:
             child_bb = child.get("absoluteBoundingBox", {})
+            instances, section_raw_count = _section_inventory(child)
             sections.append(
                 SectionNode(
                     node_id=child.get("id", ""),
@@ -269,6 +286,8 @@ def _compute_raw_frames(
                     y=round(child_bb.get("y", 0) - frame_y),
                     w=round(child_bb.get("width", 0)),
                     h=round(child_bb.get("height", 0)),
+                    instances=instances,
+                    raw_count=section_raw_count,
                 )
             )
             if child.get("type") == "INSTANCE":
@@ -472,7 +491,7 @@ async def pull_file(
                 chunk_size = 200
                 for i in range(0, len(all_screen_frame_ids), chunk_size):
                     chunk = all_screen_frame_ids[i : i + chunk_size]
-                    chunk_docs = await client.get_nodes(file_key, chunk, depth=1)
+                    chunk_docs = await client.get_nodes(file_key, chunk, depth=2)
                     if not isinstance(chunk_docs, dict):
                         log.warning(
                             "get_nodes returned non-dict for %r chunk %d-%d (got %s)",
@@ -623,7 +642,7 @@ async def pull_file(
                 else:
                     # Sequential mode: must fetch per-page (we don't have all page nodes upfront).
                     try:
-                        frame_docs = await client.get_nodes(file_key, screen_frame_ids, depth=1)
+                        frame_docs = await client.get_nodes(file_key, screen_frame_ids, depth=2)
                         raw_frames, frame_sections = _compute_raw_frames(frame_docs)
                     except Exception as exc:
                         log.warning(
