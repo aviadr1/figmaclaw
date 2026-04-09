@@ -7,7 +7,7 @@ compares Figma file versions and detects structural design changes.
 from __future__ import annotations
 
 import json
-from datetime import UTC
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -428,12 +428,23 @@ async def test_run_version_users_tracked(tmp_path: Path) -> None:
     canvas = _make_canvas("100:1", [_make_frame("11:1", "A"), _make_frame("11:3", "New")])
     old_canvas = _make_canvas("100:1", [_make_frame("11:1", "A")])
 
+    now = datetime.now(UTC)
+    in_range_new = (
+        (now - timedelta(days=2)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    )
+    in_range_old = (
+        (now - timedelta(days=6)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    )
+    old_version = (
+        (now - timedelta(days=15)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    )
+
     mock_client = MagicMock(spec=FigmaClient)
     mock_client.get_versions = AsyncMock(
         return_value=[
-            _vs(id="v3", created_at="2026-04-03T12:00:00Z", handle="bart"),
-            _vs(id="v2", created_at="2026-04-02T12:00:00Z", label="checkpoint", handle="jakub"),
-            _vs(id="v1", created_at="2026-03-25T12:00:00Z", handle="bart"),
+            _vs(id="v3", created_at=in_range_new, handle="bart"),
+            _vs(id="v2", created_at=in_range_old, label="checkpoint", handle="jakub"),
+            _vs(id="v1", created_at=old_version, handle="bart"),
         ]
     )
     mock_client.get_file_meta = AsyncMock(return_value=_recent_meta())
