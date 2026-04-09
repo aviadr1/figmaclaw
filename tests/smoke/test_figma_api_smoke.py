@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 
+import httpx
 import pytest
 
 from figmaclaw.figma_client import FigmaClient
@@ -26,7 +27,7 @@ TEST_PAGE_NODE_ID = "7741:45837"
 # Confirmed from live API: 8 SECTION children on this page
 EXPECTED_SECTION_COUNT = 8
 
-PERSONAL_TEAM_ID = "1314645078360119627"
+_DEFAULT_WEBHOOK_TEAM_ID = "1314645078360119627"
 
 
 @pytest.fixture
@@ -35,6 +36,16 @@ def api_key() -> str:
     if not key:
         pytest.skip("FIGMA_API_KEY not set")
     return key
+
+
+@pytest.fixture
+def webhook_team_id() -> str:
+    """Optional team ID used for webhook-listing smoke test.
+
+    Use FIGMA_WEBHOOK_TEAM_ID in CI to point at a team where the token has webhook-read
+    permission. Falls back to a known personal team ID for local smoke runs.
+    """
+    return os.environ.get("FIGMA_WEBHOOK_TEAM_ID", _DEFAULT_WEBHOOK_TEAM_ID)
 
 
 @pytest.mark.smoke
@@ -137,9 +148,17 @@ async def test_render_and_parse_round_trip_against_real_page(api_key: str) -> No
 
 @pytest.mark.smoke
 @pytest.mark.asyncio
-async def test_list_webhooks_returns_list(api_key: str) -> None:
+async def test_list_webhooks_returns_list(api_key: str, webhook_team_id: str) -> None:
     """Smoke: list_webhooks returns a list (may be empty) for personal team."""
     async with FigmaClient(api_key=api_key) as client:
-        webhooks = await client.list_webhooks(team_id=PERSONAL_TEAM_ID)
+        try:
+            webhooks = await client.list_webhooks(team_id=webhook_team_id)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in {401, 403}:
+                pytest.skip(
+                    "Token lacks webhook-list permission for team "
+                    f"{webhook_team_id}; set FIGMA_WEBHOOK_TEAM_ID to an authorized team."
+                )
+            raise
 
     assert isinstance(webhooks, list)
