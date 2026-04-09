@@ -11,6 +11,8 @@ from figmaclaw.figma_frontmatter import SectionNode
 from figmaclaw.in_context import (
     _RASTER_FALLBACK_STEPS,
     SVG_SIZE_LIMIT,
+    ContextBuildError,
+    ContextErrorCategory,
     SectionData,
     fetch_section_data,
     make_context_calls,
@@ -122,8 +124,8 @@ class TestFetchSectionData:
         assert result.kind == first_fmt
 
     @pytest.mark.asyncio
-    async def test_raises_when_all_raster_steps_too_large(self) -> None:
-        """INVARIANT: ValueError is raised when no raster step fits within SVG_SIZE_LIMIT."""
+    async def test_raises_with_category_when_all_raster_steps_too_large(self) -> None:
+        """INVARIANT: oversized raster fallbacks raise EXPORT_PAYLOAD_TOO_LARGE."""
         large_svg = "x" * (SVG_SIZE_LIMIT + 1)
         oversized_img = b"\x89PNG" + b"\xff" * SVG_SIZE_LIMIT  # base64 > SVG_SIZE_LIMIT
 
@@ -136,20 +138,34 @@ class TestFetchSectionData:
         ] + [oversized_img] * len(_RASTER_FALLBACK_STEPS)
 
         section = _make_section()
-        with pytest.raises(ValueError, match="No raster format"):
+        with pytest.raises(ContextBuildError, match="No raster format") as exc:
             await fetch_section_data(mock_client, "file123", section)
+        assert exc.value.category == ContextErrorCategory.EXPORT_PAYLOAD_TOO_LARGE
 
     @pytest.mark.asyncio
-    async def test_raises_when_all_raster_urls_missing(self) -> None:
-        """INVARIANT: ValueError is raised when Figma returns no URL for any raster step."""
+    async def test_raises_with_category_when_svg_is_non_utf8(self) -> None:
+        """INVARIANT: invalid SVG UTF-8 raises SVG_DECODE_FAILED."""
+        mock_client = AsyncMock()
+        mock_client.get_image_urls.return_value = {"11:1": "https://cdn/img.svg"}
+        mock_client.download_url.return_value = b"\xff\xfe\x00\x00"
+
+        section = _make_section()
+        with pytest.raises(ContextBuildError, match="not valid UTF-8") as exc:
+            await fetch_section_data(mock_client, "file123", section)
+        assert exc.value.category == ContextErrorCategory.SVG_DECODE_FAILED
+
+    @pytest.mark.asyncio
+    async def test_raises_with_category_when_all_raster_urls_missing(self) -> None:
+        """INVARIANT: missing raster export URLs raise NO_EXPORT_URL."""
         mock_client = AsyncMock()
         mock_client.get_image_urls.side_effect = [
             {"11:1": None},  # SVG → no URL
         ] + [{"11:1": None}] * len(_RASTER_FALLBACK_STEPS)
 
         section = _make_section()
-        with pytest.raises(ValueError, match="No raster format"):
+        with pytest.raises(ContextBuildError, match="No export URL") as exc:
             await fetch_section_data(mock_client, "file123", section)
+        assert exc.value.category == ContextErrorCategory.NO_EXPORT_URL
 
 
 class TestMakeContextCalls:

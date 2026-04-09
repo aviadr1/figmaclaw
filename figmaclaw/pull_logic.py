@@ -449,8 +449,11 @@ async def pull_file(
                 continue
             new_hash = compute_page_hash(pn)
             stored_hash = state.get_page_hash(file_key, stub_id)
-            if not force and stored_hash == new_hash:
-                continue  # hash unchanged — skip frames regardless of schema staleness
+            if not force and stored_hash == new_hash and not schema_stale:
+                # When schema is stale we still need frame children for unchanged pages
+                # so newly introduced frontmatter fields (e.g. frame_sections) can be
+                # backfilled in one schema-upgrade pass.
+                continue
             for section in pn.get("children", []):
                 if section.get("type") == "SECTION":
                     for child in section.get("children", []):

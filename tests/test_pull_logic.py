@@ -1293,6 +1293,8 @@ async def test_pull_file_processes_schema_stale_pages_even_when_page_hash_unchan
     Schema-only upgrades (hash unchanged) go to pages_schema_upgraded, NOT pages_written.
     They don't consume the max_pages budget so the upgrade always completes in a single pass.
     """
+    from figmaclaw.figma_parse import parse_frontmatter
+
     state = FigmaSyncState(tmp_path)
     state.load()
     state.add_tracked_file("abc123", "Web App")
@@ -1310,6 +1312,9 @@ async def test_pull_file_processes_schema_stale_pages_even_when_page_hash_unchan
 
     out = tmp_path / "figma" / "web-app" / "pages" / "onboarding-7741-45837.md"
     body_before = out.read_text().split("---\n", 2)[-1]  # capture body
+    fm_before = parse_frontmatter(out.read_text())
+    assert fm_before is not None
+    assert "11:1" in fm_before.frame_sections
 
     # Simulate schema staleness: reset pull_schema_version to 0 (pre-versioning)
     state.manifest.files["abc123"].pull_schema_version = 0
@@ -1321,6 +1326,7 @@ async def test_pull_file_processes_schema_stale_pages_even_when_page_hash_unchan
 
     mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2", "2026-03-31T12:00:00Z"))
 
+    get_nodes_calls_before = mock_client.get_nodes.await_count
     result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
     # Schema-only upgrade: page hash unchanged, goes to pages_schema_upgraded (not pages_written)
@@ -1332,6 +1338,11 @@ async def test_pull_file_processes_schema_stale_pages_even_when_page_hash_unchan
     # Body must be preserved — only frontmatter changed
     body_after = out.read_text().split("---\n", 2)[-1]
     assert body_before == body_after
+    fm_after = parse_frontmatter(out.read_text())
+    assert fm_after is not None
+    assert "11:1" in fm_after.frame_sections
+    # Parallel schema-only pass must still fetch frame docs for unchanged pages.
+    assert mock_client.get_nodes.await_count > get_nodes_calls_before
 
 
 @pytest.mark.asyncio

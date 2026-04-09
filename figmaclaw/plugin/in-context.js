@@ -112,7 +112,7 @@ function createContextContainer(page, w, h, x, y, name, bgColor) {
 //   section       — object describing the section:
 //     {
 //       type:   'svg' | 'png' | 'jpg',
-//       data:   string,   // SVG markup OR base64-encoded PNG bytes
+//       data:   string,   // SVG markup OR base64-encoded raster bytes
 //       x:      number,   // x position relative to container frame (0 or 16)
 //       y:      number,   // y position relative to container frame
 //       w:      number,   // original section width in Figma units

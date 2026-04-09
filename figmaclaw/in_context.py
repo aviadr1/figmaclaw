@@ -25,6 +25,7 @@ from __future__ import annotations
 import base64
 import json
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 from figmaclaw.figma_client import FigmaClient
@@ -66,8 +67,24 @@ class SectionData:
     """Pre-fetched data for one section of the source frame."""
 
     section: SectionNode
-    kind: str  # 'svg' or 'png'
-    data: str  # SVG markup or base64-encoded PNG bytes (no data: URI prefix)
+    kind: str  # 'svg' or 'png' | 'jpg'
+    data: str  # SVG markup or base64-encoded raster bytes (no data: URI prefix)
+
+
+class ContextErrorCategory(StrEnum):
+    """Stable error categories for build-context export failures."""
+
+    SVG_DECODE_FAILED = "SVG_DECODE_FAILED"
+    NO_EXPORT_URL = "NO_EXPORT_URL"
+    EXPORT_PAYLOAD_TOO_LARGE = "EXPORT_PAYLOAD_TOO_LARGE"
+
+
+class ContextBuildError(RuntimeError):
+    """Typed error surfaced by build-context for actionable user-facing handling."""
+
+    def __init__(self, category: ContextErrorCategory, message: str) -> None:
+        super().__init__(message)
+        self.category = category
 
 
 async def fetch_section_data(
@@ -85,24 +102,39 @@ async def fetch_section_data(
     svg_url = svg_urls.get(section.node_id)
     if svg_url:
         svg_bytes = await client.download_url(svg_url)
-        svg_str = svg_bytes.decode("utf-8")
+        try:
+            svg_str = svg_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ContextBuildError(
+                ContextErrorCategory.SVG_DECODE_FAILED,
+                f"SVG export for section {section.node_id!r} is not valid UTF-8.",
+            ) from exc
         if len(svg_str) <= SVG_SIZE_LIMIT:
             return SectionData(section=section, kind="svg", data=svg_str)
 
     # SVG too large — try raster formats at decreasing scales
+    saw_raster_url = False
     for fmt, scale in _RASTER_FALLBACK_STEPS:
         urls = await client.get_image_urls(file_key, [section.node_id], format=fmt, scale=scale)
         url = urls.get(section.node_id)
         if not url:
             continue
+        saw_raster_url = True
         img_bytes = await client.download_url(url)
         b64 = base64.b64encode(img_bytes).decode("ascii")
         if len(b64) <= SVG_SIZE_LIMIT:
             return SectionData(section=section, kind=fmt, data=b64)
 
-    raise ValueError(
+    if not saw_raster_url:
+        raise ContextBuildError(
+            ContextErrorCategory.NO_EXPORT_URL,
+            f"No export URL returned for section {section.node_id!r} ({section.name!r}).",
+        )
+
+    raise ContextBuildError(
+        ContextErrorCategory.EXPORT_PAYLOAD_TOO_LARGE,
         "No raster format/scale fits within limit for section "
-        f"{section.node_id!r} ({section.name!r})"
+        f"{section.node_id!r} ({section.name!r}).",
     )
 
 
