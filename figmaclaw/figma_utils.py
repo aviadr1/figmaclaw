@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 
 def parse_team_id_from_url(url_or_id: str) -> str:
@@ -39,3 +41,39 @@ def parse_since(since: str) -> datetime | None:
     n, unit = int(m.group(1)), m.group(2)
     days = {"d": 1, "w": 7, "m": 30, "y": 365}[unit] * n
     return datetime.now(timezone.utc) - timedelta(days=days)
+
+
+def write_json_if_changed(
+    path: Path,
+    data: dict,
+    *,
+    ignore_keys: frozenset[str] = frozenset(),
+) -> bool:
+    """Write *data* as JSON to *path*, skipping the write if only ignored keys differ.
+
+    Use this for any file that contains a timestamp field (generated_at, updated_at,
+    etc.) that should NOT be treated as a meaningful change.  Comparing content without
+    the timestamp prevents spurious git commits when the pull loop runs on an unchanged
+    Figma file.
+
+    Returns True if the file was written, False if the write was skipped.
+
+    Usage::
+
+        written = write_json_if_changed(
+            path, sidecar, ignore_keys=frozenset({"generated_at"})
+        )
+    """
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+            for k in ignore_keys:
+                existing.pop(k, None)
+            new_stripped = {k: v for k, v in data.items() if k not in ignore_keys}
+            if existing == new_stripped:
+                return False
+        except Exception:
+            pass
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    return True

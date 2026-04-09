@@ -48,6 +48,7 @@ from pydantic import BaseModel, Field
 
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION, FrameComposition, RawTokenCounts
+from figmaclaw.figma_utils import write_json_if_changed
 from figmaclaw.figma_hash import compute_frame_hashes, compute_page_hash
 from figmaclaw.figma_models import FigmaPage, FigmaSection, from_page_node
 from figmaclaw.figma_parse import parse_flows, parse_frontmatter
@@ -203,19 +204,7 @@ def _write_token_sidecar(
         "frames": frames_data,
     }
 
-    # Skip write when only generated_at changed — avoids spurious git commits every
-    # pull run when the page structure is unchanged but the timestamp differs.
-    if sidecar_path.exists():
-        try:
-            existing = json.loads(sidecar_path.read_text())
-            existing.pop("generated_at", None)
-            new_without_ts = {k: v for k, v in sidecar.items() if k != "generated_at"}
-            if existing == new_without_ts:
-                return
-        except Exception:
-            pass  # If comparison fails, write unconditionally
-
-    sidecar_path.write_text(json.dumps(sidecar, indent=2))
+    write_json_if_changed(sidecar_path, sidecar, ignore_keys=frozenset({"generated_at"}))
 
 
 def _compute_raw_frames(frame_docs: dict[str, dict]) -> dict[str, FrameComposition]:
