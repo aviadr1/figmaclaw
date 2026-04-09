@@ -208,6 +208,15 @@ async def _run(
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_text(content, encoding="utf-8")
 
+            # Enforce the round-trip invariant: _existing_hash must be able to read back
+            # the hash we just embedded. If this fires, _render and _existing_hash have
+            # drifted (e.g. the frontmatter field was renamed) and every subsequent run
+            # will rewrite the file, creating spurious git commits.
+            assert _existing_hash(out_path) == content_hash, (
+                f"BUG: wrote {out_path} but _existing_hash cannot recover content_hash={content_hash!r}. "
+                "The census skip check is broken — every future run will rewrite this file."
+            )
+
             rel = census_path(file_slug)
             click.echo(
                 f"{file_name}: wrote {len(component_sets)} component set(s)"
