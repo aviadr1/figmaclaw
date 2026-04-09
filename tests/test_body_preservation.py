@@ -301,9 +301,9 @@ async def test_bp5_sync_does_not_call_scaffold_on_existing_file(tmp_path: Path) 
         MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
         await sync_module._run("fake-api-key", tmp_path, md_path, auto_commit=False)
 
-    assert (
-        mock_write_new.call_count == 0
-    ), "BP-5 VIOLATED: sync called write_new_page (which calls scaffold_page) on an existing file"
+    assert mock_write_new.call_count == 0, (
+        "BP-5 VIOLATED: sync called write_new_page (which calls scaffold_page) on an existing file"
+    )
 
 
 @pytest.mark.asyncio
@@ -345,9 +345,9 @@ async def test_bp5_pull_does_not_call_scaffold_on_existing_file(tmp_path: Path) 
     ):
         await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
-    assert (
-        mock_write_new.call_count == 0
-    ), "BP-5 VIOLATED: pull_file called write_new_page on an existing file"
+    assert mock_write_new.call_count == 0, (
+        "BP-5 VIOLATED: pull_file called write_new_page on an existing file"
+    )
     mock_update.assert_called_once()
 
 
@@ -408,12 +408,12 @@ def test_sc3_scaffold_contains_all_llm_placeholders() -> None:
     entry = _make_entry()
     md = scaffold_page(page, entry)
 
-    assert (
-        "<!-- LLM: Write a 2-3 sentence page summary" in md
-    ), "SC-3: missing page summary placeholder"
-    assert (
-        "<!-- LLM: Write a 1-sentence section intro" in md
-    ), "SC-3: missing section intro placeholder"
+    assert "<!-- LLM: Write a 2-3 sentence page summary" in md, (
+        "SC-3: missing page summary placeholder"
+    )
+    assert "<!-- LLM: Write a 1-sentence section intro" in md, (
+        "SC-3: missing section intro placeholder"
+    )
     assert "<!-- LLM: Generate Mermaid flowchart" in md, "SC-3: missing mermaid placeholder"
 
 
@@ -530,9 +530,9 @@ async def test_cl1_scaffold_flag_does_not_modify_file(tmp_path: Path) -> None:
             show_scaffold=True,
         )
 
-    assert (
-        md_path.read_text() == original_content
-    ), "CL-1 VIOLATED: --scaffold modified the file on disk"
+    assert md_path.read_text() == original_content, (
+        "CL-1 VIOLATED: --scaffold modified the file on disk"
+    )
 
 
 # CL-2: --show-body prints without modifying file
@@ -557,9 +557,9 @@ async def test_cl2_show_body_flag_does_not_modify_file(tmp_path: Path) -> None:
             show_body=True,
         )
 
-    assert (
-        md_path.read_text() == original_content
-    ), "CL-2 VIOLATED: --show-body modified the file on disk"
+    assert md_path.read_text() == original_content, (
+        "CL-2 VIOLATED: --show-body modified the file on disk"
+    )
 
 
 # Bonus: body survives REPEATED sync operations

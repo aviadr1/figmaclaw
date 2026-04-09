@@ -93,9 +93,9 @@ def test_version_no_second_line_when_message_empty() -> None:
     ):
         result = runner.invoke(cli, ["--version"])
     assert result.exit_code == 0
-    assert (
-        result.output.strip().count("\n") == 0
-    ), "should be exactly one line when message is empty"
+    assert result.output.strip().count("\n") == 0, (
+        "should be exactly one line when message is empty"
+    )
 
 
 def test_version_no_pr_suffix_when_pr_is_none() -> None:

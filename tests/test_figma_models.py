@@ -381,9 +381,9 @@ def test_hidden_section_excludes_all_children_inherited_visibility():
     all_frame_ids = {f.node_id for s in page.sections for f in s.frames}
     assert "1:1" in all_frame_ids
     assert "5:1" in all_frame_ids
-    assert (
-        "3:1" not in all_frame_ids
-    ), "Frame inside a hidden SECTION must be excluded (inherited visibility)"
+    assert "3:1" not in all_frame_ids, (
+        "Frame inside a hidden SECTION must be excluded (inherited visibility)"
+    )
     assert "3:2" not in all_frame_ids
 
     # The hidden section itself must NOT appear in the model.
