@@ -633,4 +633,13 @@ async def pull_file(
         state.manifest.files[file_key].pull_schema_version = CURRENT_PULL_SCHEMA_VERSION
         state.save()
 
+    # Structural invariant: schema-only upgrades must never cause has_more=True.
+    # has_more=True with pages_written=0 is only valid when the budget was zero from
+    # the start (max_pages=0). If pages_schema_upgraded>0 alongside has_more=True and
+    # pages_written=0, a bypass path consumed the budget — that makes the CI loop infinite.
+    assert not (result.has_more and result.pages_written == 0 and result.pages_schema_upgraded > 0), (
+        f"BUG: has_more=True, pages_written=0, pages_schema_upgraded={result.pages_schema_upgraded} — "
+        "schema-only upgrades must not consume the max_pages budget (causes infinite CI loop)"
+    )
+
     return result
