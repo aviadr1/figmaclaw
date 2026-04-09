@@ -85,6 +85,14 @@ uv run pytest --cov=figmaclaw --cov-report=term-missing
 ./install.sh
 ```
 
+## Write idempotency rule
+
+**Every function that writes a file must be idempotent: skip the write if only a timestamp (`generated_at`, `updated_at`, etc.) would change.**
+
+Rationale: figmaclaw runs in a CI loop. Any unconditional write — even just a timestamp — lands in a git commit, triggers Claude enrichment, and wastes CI budget. The pattern is: load existing content, strip timestamp fields, compare with new content (also stripped of timestamps); write only if data differs. See `_write_token_sidecar` and `save_catalog` for the reference implementation.
+
+**Corollary — bypass flags and `max_pages` budget:** Any flag that bypasses the page-hash check (currently `force`, `schema_stale`) must NOT also consume the `max_pages` budget for pages it processes. If a bypass flag causes every page to be "processed" while also consuming budget, the `while pull` loop will never terminate. Schema-only upgrades are the canonical example: they bypass the hash skip but do not increment `pages_written_this_call`.
+
 ## Code conventions
 
 - **Use pydantic, not dataclass**, for structured values (decisions, results, model

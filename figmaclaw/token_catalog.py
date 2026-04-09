@@ -63,12 +63,25 @@ def load_catalog(repo_root: Path) -> TokenCatalog:
 
 
 def save_catalog(catalog: TokenCatalog, repo_root: Path) -> None:
+    """Write the catalog to disk, skipping the write if only updated_at would change.
+
+    Mirrors the _write_token_sidecar idempotency contract: token data equality
+    is checked without the timestamp so that a no-op merge does not create a
+    spurious git commit.
+    """
     path = catalog_path(repo_root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(catalog.model_dump(), indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    new_data = catalog.model_dump()
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+            existing.pop("updated_at", None)
+            new_without_ts = {k: v for k, v in new_data.items() if k != "updated_at"}
+            if existing == new_without_ts:
+                return
+        except Exception:
+            pass
+    path.write_text(json.dumps(new_data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def merge_bindings(catalog: TokenCatalog, bindings: list[ValidBinding]) -> int:
