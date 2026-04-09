@@ -38,6 +38,15 @@ jobs:
     secrets:
       FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
 
+  # Census: snapshot published DS component sets to figma/**/_census.md.
+  # Hash-gated in the reusable workflow: no-op when registry is unchanged.
+  census:
+    needs: sync
+    if: success()
+    uses: aviadr1/figmaclaw/.github/workflows/census.yml@main
+    secrets:
+      FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+
   # Whole-page enrichment: small pages (≤80 frames), many per run
   # Sorted smallest-first for throughput. ~38 pages/hour observed.
   enrich:
