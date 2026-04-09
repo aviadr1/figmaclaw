@@ -276,6 +276,7 @@ def test_write_section_preserves_frontmatter(tmp_path: Path) -> None:
     md_path.write_text(_SECTION_TEST_MD)
 
     original_fm = parse_frontmatter(_SECTION_TEST_MD)
+    assert original_fm is not None
 
     new_section = "## Auth (`10:1`)\n\nNew intro.\n\n| Screen | Node ID | Description |\n|--------|---------|-------------|\n| Login | `11:1` | desc |"
     runner = CliRunner()
@@ -287,6 +288,7 @@ def test_write_section_preserves_frontmatter(tmp_path: Path) -> None:
     ])
 
     updated_fm = parse_frontmatter(md_path.read_text())
+    assert updated_fm is not None
     assert updated_fm.file_key == original_fm.file_key
     assert updated_fm.frames == original_fm.frames
 

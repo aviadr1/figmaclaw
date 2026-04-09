@@ -60,6 +60,22 @@ figmaclaw init
 figmaclaw doctor
 ```
 
+## 5-minute local run
+
+```bash
+# 1) Track a file once
+figmaclaw track <file-key>
+
+# 2) Pull latest Figma metadata into markdown
+figmaclaw pull
+
+# 3) Inspect one page and see what needs enrichment
+figmaclaw inspect figma/<file>/pages/<page>.md --json
+
+# 4) (Optional) download stale frame screenshots for enrichment
+figmaclaw screenshots --stale figma/<file>/pages/<page>.md
+```
+
 ## Output format
 
 One `.md` per Figma page at `figma/{file-slug}/pages/{page-slug}.md`:
@@ -144,9 +160,30 @@ figmaclaw follows the same architecture as [issueclaw](https://github.com/aviadr
 ```bash
 git clone https://github.com/aviadr1/figmaclaw
 cd figmaclaw
-./install.sh          # uv sync + pre-commit install
+./install.sh                    # uv sync + pre-commit install
 
-uv run pytest         # run tests
-uv run basedpyright   # type check
-uv run ruff check     # lint
+# local quality checks (same gates as CI)
+uv run ruff format --check .
+uv run ruff check .
+uv run --group dev python -m basedpyright
+uv run python -m pytest -q --cov=figmaclaw --cov-report=term-missing --cov-fail-under=70
 ```
+
+## CI quality gates
+
+Pull requests and pushes to `main` run:
+
+- `ruff format --check`
+- `ruff check`
+- `basedpyright`
+- `pytest` with coverage gate (`--cov-fail-under=70`)
+- JUnit test report publishing (GitHub checks annotations)
+- Coverage XML artifact upload (and Codecov upload when available)
+
+All four quality jobs are expected to be blocking in branch protection.
+
+## Troubleshooting
+
+- `MCP initialize has no Mcp-Session-Id`: this is supported. `FigmaMcpClient` handles both sessionful and stateless MCP responses.
+- `No Figma token found`: set `FIGMA_MCP_TOKEN` or authenticate Figma in Claude Code so `~/.claude/.credentials.json` has `mcpOAuth` token data.
+- `pre-commit` not found locally: run `uv run --with pre-commit python -m pre_commit install`.

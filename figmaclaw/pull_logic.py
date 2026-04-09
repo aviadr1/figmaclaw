@@ -523,7 +523,7 @@ async def pull_file(
             # Scan raw/stale token bindings — zero extra API calls, walks page_node already in memory.
             # Skipped for schema-only upgrades: content is unchanged so token data can't have changed.
             token_scan: PageTokenScan | None = None
-            raw_tokens: dict[str, dict[str, int]] | None = None
+            raw_tokens: dict[str, RawTokenCounts] | None = None
             if screen_frame_ids and not schema_only:
                 try:
                     token_scan = scan_page(page_node, set(screen_frame_ids))

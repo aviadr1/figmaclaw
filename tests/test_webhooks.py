@@ -56,17 +56,26 @@ class FakeFigmaClient:
     async def list_file_webhooks(self, file_key: str):
         return [wh.model_dump() for wh in self.webhooks_by_file.get(file_key, [])]
 
-    async def create_file_webhook(self, file_key: str, endpoint: str, passcode: str, **_):
+    async def create_file_webhook(
+        self,
+        file_key: str,
+        endpoint: str,
+        passcode: str,
+        *,
+        event_type: str = "FILE_UPDATE",
+        description: str = "figmaclaw sync",
+    ):
+        _ = (passcode, event_type, description)
         self._create_counter += 1
         wh = _wh(file_key, endpoint, wh_id=f"new-{self._create_counter}")
         self.created.append(wh)
         self.webhooks_by_file.setdefault(file_key, []).append(wh)
         return wh.model_dump()
 
-    async def delete_webhook(self, wh_id: str) -> None:
-        self.deleted.append(wh_id)
+    async def delete_webhook(self, webhook_id: str) -> None:
+        self.deleted.append(webhook_id)
         for whs in self.webhooks_by_file.values():
-            whs[:] = [w for w in whs if w.id != wh_id]
+            whs[:] = [w for w in whs if w.id != webhook_id]
 
 
 @pytest.fixture(autouse=True)

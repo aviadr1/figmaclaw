@@ -41,12 +41,32 @@ import os
 import sys
 from collections import defaultdict
 from pathlib import Path
+from typing import Any, Protocol
 
 import click
 
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_models import ValidationReport, Webhook
 from figmaclaw.figma_sync_state import FigmaSyncState
+
+
+class WebhookClient(Protocol):
+    async def list_file_webhooks(self, file_key: str) -> list[dict[str, Any]]:
+        ...
+
+    async def create_file_webhook(
+        self,
+        file_key: str,
+        endpoint: str,
+        passcode: str,
+        *,
+        event_type: str = "FILE_UPDATE",
+        description: str = "figmaclaw sync",
+    ) -> dict[str, Any]:
+        ...
+
+    async def delete_webhook(self, webhook_id: str) -> None:
+        ...
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +102,7 @@ def _require_passcode() -> str:
 # ---------------------------------------------------------------------------
 
 async def _fetch_all_webhooks(
-    client: FigmaClient, file_keys: list[str],
+    client: WebhookClient, file_keys: list[str],
 ) -> list[Webhook]:
     """Return all webhooks across all tracked files as Webhook models."""
     all_webhooks: list[Webhook] = []
@@ -108,7 +128,7 @@ def _group_webhooks_by_file(
 # ---------------------------------------------------------------------------
 
 async def validate(
-    client: FigmaClient, endpoint: str, file_keys: list[str],
+    client: WebhookClient, endpoint: str, file_keys: list[str],
 ) -> ValidationReport:
     """Check exactly-one-webhook-per-file invariant and print findings."""
     webhooks = await _fetch_all_webhooks(client, file_keys)
@@ -147,7 +167,7 @@ async def validate(
 
 
 async def _create_missing(
-    client: FigmaClient,
+    client: WebhookClient,
     file_keys: list[str],
     by_file: dict[str, list[Webhook]],
     endpoint: str,
@@ -174,7 +194,7 @@ async def _create_missing(
 
 
 async def sync(
-    client: FigmaClient, endpoint: str, file_keys: list[str], *, dry_run: bool = False,
+    client: WebhookClient, endpoint: str, file_keys: list[str], *, dry_run: bool = False,
 ) -> None:
     """Enforce exactly-one webhook per tracked file for this endpoint."""
     passcode = _require_passcode()
@@ -224,7 +244,7 @@ async def sync(
 
 
 async def register(
-    client: FigmaClient, endpoint: str, file_keys: list[str], *, dry_run: bool = False,
+    client: WebhookClient, endpoint: str, file_keys: list[str], *, dry_run: bool = False,
 ) -> None:
     """Add webhooks only for files that have none. Never deletes."""
     passcode = _require_passcode()
@@ -252,7 +272,7 @@ async def register(
         sys.exit(1)
 
 
-async def list_all(client: FigmaClient, file_keys: list[str]) -> list[Webhook]:
+async def list_all(client: WebhookClient, file_keys: list[str]) -> list[Webhook]:
     """Print and return all webhooks registered for tracked files."""
     webhooks = await _fetch_all_webhooks(client, file_keys)
     if not webhooks:
@@ -267,7 +287,7 @@ async def list_all(client: FigmaClient, file_keys: list[str]) -> list[Webhook]:
 
 
 async def delete_all(
-    client: FigmaClient, file_keys: list[str], *, endpoint_filter: str | None = None,
+    client: WebhookClient, file_keys: list[str], *, endpoint_filter: str | None = None,
 ) -> None:
     webhooks = await _fetch_all_webhooks(client, file_keys)
     to_delete = [

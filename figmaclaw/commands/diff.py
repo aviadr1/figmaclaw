@@ -159,7 +159,7 @@ async def _find_version_before(
         vi = VersionInfo(
             id=v.id,
             created_at=v.created_at,
-            label=v.label,
+            label=v.label or "",
             user=v.user.handle,
         )
         if ts < cutoff:

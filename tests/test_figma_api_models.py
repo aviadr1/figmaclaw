@@ -301,6 +301,7 @@ class TestVersionsPage:
         assert v2.user.handle == ""  # defaulted
         assert v2.user.id is None
         assert page.pagination is not None
+        assert page.pagination.next_page is not None
         assert page.pagination.next_page.startswith("/v1/files/")
 
     def test_missing_pagination_is_legal(self) -> None:

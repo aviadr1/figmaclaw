@@ -189,7 +189,7 @@ def test_scaffold_page_has_no_quick_reference_table():
 
 # --- figma_parse ---
 
-def test_parse_frontmatter_from_rendered_output():
+def test_parse_frontmatter_from_rendered_output_v2():
     """INVARIANT: parse_frontmatter recovers FigmaPageFrontmatter (flat schema) from scaffold_page output."""
     page = _make_page()
     entry = _make_entry("deadbeef12345678")

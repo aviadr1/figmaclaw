@@ -44,11 +44,11 @@ async def test_get_file_meta_returns_version(api_key: str) -> None:
     async with FigmaClient(api_key=api_key) as client:
         meta = await client.get_file_meta(TEST_FILE_KEY)
 
-    assert meta["version"], "version must be non-empty"
-    assert meta["lastModified"], "lastModified must be non-empty"
-    pages = meta["document"]["children"]
+    assert meta.version, "version must be non-empty"
+    assert meta.lastModified, "lastModified must be non-empty"
+    pages = meta.document.children
     assert len(pages) > 0, "file must have at least one page"
-    assert all(p["type"] == "CANVAS" for p in pages)
+    assert all(p.type == "CANVAS" for p in pages)
 
 
 @pytest.mark.smoke
@@ -76,7 +76,7 @@ async def test_from_page_node_matches_real_api_structure(api_key: str) -> None:
     """
     async with FigmaClient(api_key=api_key) as client:
         meta = await client.get_file_meta(TEST_FILE_KEY)
-        file_name = meta["name"]
+        file_name = meta.name
         page_node = await client.get_page(TEST_FILE_KEY, TEST_PAGE_NODE_ID)
 
     page = from_page_node(page_node, file_key=TEST_FILE_KEY, file_name=file_name)
@@ -106,7 +106,7 @@ async def test_render_and_parse_round_trip_against_real_page(api_key: str) -> No
     """
     async with FigmaClient(api_key=api_key) as client:
         meta = await client.get_file_meta(TEST_FILE_KEY)
-        file_name = meta["name"]
+        file_name = meta.name
         page_node = await client.get_page(TEST_FILE_KEY, TEST_PAGE_NODE_ID)
 
     page = from_page_node(page_node, file_key=TEST_FILE_KEY, file_name=file_name)

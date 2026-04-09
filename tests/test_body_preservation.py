@@ -113,6 +113,7 @@ def _write_enriched_md(tmp_path: Path, page: FigmaPage | None = None) -> tuple[P
     """Write an .md file with LLM-authored body content. Return (path, body_text)."""
     page = page or _make_page(flows=[("11:1", "11:2")])
     entry = _make_entry()
+    assert entry.md_path is not None
     md = scaffold_page(page, entry)
 
     # Replace all LLM placeholders with real prose — simulating post-LLM state
@@ -289,7 +290,7 @@ async def test_bp5_sync_does_not_call_scaffold_on_existing_file(tmp_path: Path) 
         MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
         await sync_module._run("fake-api-key", tmp_path, md_path, auto_commit=False)
 
-    mock_write_new.assert_not_called(), (
+    assert mock_write_new.call_count == 0, (
         "BP-5 VIOLATED: sync called write_new_page (which calls scaffold_page) on an existing file"
     )
 
@@ -328,7 +329,7 @@ async def test_bp5_pull_does_not_call_scaffold_on_existing_file(tmp_path: Path) 
          patch.object(pull_logic_module, "update_page_frontmatter", wraps=update_page_frontmatter) as mock_update:
         await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
-    mock_write_new.assert_not_called(), (
+    assert mock_write_new.call_count == 0, (
         "BP-5 VIOLATED: pull_file called write_new_page on an existing file"
     )
     mock_update.assert_called_once()
@@ -343,6 +344,7 @@ async def test_sc1_sync_writes_scaffold_for_new_file(tmp_path: Path) -> None:
     # but at a different path than the output
     page = _make_page()
     entry = _make_entry()
+    assert entry.md_path is not None
     md = scaffold_page(page, entry)
     md_path = tmp_path / entry.md_path
     md_path.parent.mkdir(parents=True, exist_ok=True)

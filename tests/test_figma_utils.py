@@ -46,30 +46,35 @@ class TestParseSince:
     def test_days(self):
         """INVARIANT: '7d' produces a datetime approximately 7 days in the past."""
         result = parse_since("7d")
+        assert result is not None
         delta = datetime.now(timezone.utc) - result
         assert 6 < delta.days < 8
 
     def test_weeks(self):
         """INVARIANT: '2w' produces a datetime approximately 14 days in the past."""
         result = parse_since("2w")
+        assert result is not None
         delta = datetime.now(timezone.utc) - result
         assert 13 < delta.days < 15
 
     def test_months(self):
         """INVARIANT: '3m' produces a datetime approximately 90 days in the past."""
         result = parse_since("3m")
+        assert result is not None
         delta = datetime.now(timezone.utc) - result
         assert 89 < delta.days < 91
 
     def test_years(self):
         """INVARIANT: '1y' produces a datetime approximately 365 days in the past."""
         result = parse_since("1y")
+        assert result is not None
         delta = datetime.now(timezone.utc) - result
         assert 364 < delta.days < 366
 
     def test_result_is_timezone_aware(self):
         """INVARIANT: parse_since always returns a timezone-aware UTC datetime."""
         result = parse_since("1d")
+        assert result is not None
         assert result.tzinfo is not None
 
     def test_invalid_format_raises_value_error(self):

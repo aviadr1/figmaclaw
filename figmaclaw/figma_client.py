@@ -77,6 +77,7 @@ class FigmaClient:
         client = await self._ensure_client()
         url = f"{self._base_url}{path}"
         last_exc: Exception | None = None
+        response: httpx.Response | None = None
         for attempt in range(10):
             await self._pace()
             try:
@@ -102,6 +103,8 @@ class FigmaClient:
             return result
         if last_exc:
             raise last_exc
+        if response is None:
+            raise RuntimeError("GET request loop exited without a response.")
         response.raise_for_status()
         return {}
 
@@ -253,6 +256,7 @@ class FigmaClient:
         client = await self._ensure_client()
         full_url = url if url.startswith("http") else f"{self._base_url}{url}"
         last_exc: Exception | None = None
+        response: httpx.Response | None = None
         for attempt in range(10):
             await self._pace()
             try:
@@ -276,6 +280,8 @@ class FigmaClient:
             return result
         if last_exc:
             raise last_exc
+        if response is None:
+            raise RuntimeError("GET request loop exited without a response.")
         response.raise_for_status()
         return {}
 
