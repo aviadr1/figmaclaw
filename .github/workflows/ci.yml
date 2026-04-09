@@ -24,12 +24,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Detect changed Python files
+      - name: Detect Python-impacting changes
         id: changed
         uses: tj-actions/changed-files@48d8f15b2aaa3d255ca5af3eba4870f807ce6b3c # v45
         with:
           files: |
             **/*.py
+            pyproject.toml
+            uv.lock
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
@@ -181,6 +183,6 @@ jobs:
           flags: unittests
           fail_ci_if_error: false
 
-      - name: No Python changes
+      - name: No Python-impacting changes
         if: steps.changed.outputs.any_changed != 'true'
-        run: echo "No Python files changed; skipping tests."
+        run: echo "No Python or dependency changes; skipping tests."
