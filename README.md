@@ -1,5 +1,10 @@
 # figmaclaw
 
+[![CI](https://github.com/aviadr1/figmaclaw/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/aviadr1/figmaclaw/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/aviadr1/figmaclaw/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/aviadr1/figmaclaw/actions/workflows/codeql.yml)
+[![Coverage](https://codecov.io/gh/aviadr1/figmaclaw/branch/main/graph/badge.svg)](https://codecov.io/gh/aviadr1/figmaclaw)
+[![Dependabot](https://img.shields.io/badge/dependabot-enabled-025E8C?logo=dependabot)](https://github.com/aviadr1/figmaclaw/security/dependabot)
+
 Figma → git semantic design memory for AI agents.
 
 Mirrors Figma pages as AI-readable markdown maps stored in git. Each `.md` file has YAML frontmatter (machine-readable: frame IDs, flows, enrichment state) and a prose body (LLM-written: descriptions, summaries, Mermaid flowcharts). AI agents can find and understand any Figma screen without re-reading raw Figma.
