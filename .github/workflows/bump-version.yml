@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
 
+concurrency:
+  group: bump-version-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   bump:
     if: "!contains(github.event.head_commit.message, '[skip ci]')"
@@ -11,7 +15,9 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
 
       - name: Bump patch version and write build info
         env:
@@ -77,4 +83,20 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add pyproject.toml .claude-plugin/plugin.json .claude-plugin/marketplace.json figmaclaw/_build_info.py uv.lock
-          git diff --staged --quiet || git commit -m "chore: bump plugin version [skip ci]" && git push
+          if git diff --staged --quiet; then
+            echo "No version changes detected; exiting."
+            exit 0
+          fi
+
+          git commit -m "chore: bump plugin version [skip ci]"
+
+          for attempt in 1 2 3; do
+            echo "Push attempt ${attempt}/3"
+            if git pull --rebase origin "${GITHUB_REF_NAME}" && git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              exit 0
+            fi
+            sleep $((attempt * 2))
+          done
+
+          echo "Failed to push bump commit after 3 attempts."
+          exit 1
