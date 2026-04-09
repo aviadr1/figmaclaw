@@ -1,11 +1,8 @@
-"""figmaclaw build-context — generate use_figma calls to place a composite
-"Usage in Context" frame next to a DS component set in the draft file.
+"""figmaclaw build-context — generate call specs for "Usage in Context" placement.
 
 The command reads section positions from the source page's frontmatter
 (frame_sections field, written by the pull pass), fetches SVG or PNG data
 for each section, and outputs a JSON array of use_figma call specs.
-
-The caller (Claude Code / a skill) executes the calls in order.
 
 Usage
 -----
@@ -20,14 +17,8 @@ Usage
 
 Output
 ------
-JSON array of call specs, one per use_figma call:
-
-    [
-      {"file_key": "...", "description": "...", "code": "..."},
-      ...
-    ]
-
-Execute them in order with the use_figma MCP tool.
+By default: JSON array of generated use_figma call specs.
+With --execute: execute generated calls through Figma MCP and print summary.
 """
 
 from __future__ import annotations
@@ -40,8 +31,10 @@ from pathlib import Path
 import click
 
 from figmaclaw.figma_client import FigmaClient
+from figmaclaw.figma_mcp import FigmaMcpError
 from figmaclaw.figma_parse import parse_frontmatter
 from figmaclaw.in_context import ContextBuildError, fetch_section_data, make_context_calls
+from figmaclaw.use_figma_exec import execute_use_figma_calls
 
 
 @click.command("build-context")
@@ -80,6 +73,24 @@ from figmaclaw.in_context import ContextBuildError, fetch_section_data, make_con
 @click.option("--comp-y", "comp_y", required=True, type=int, help="Canvas y of the component set.")
 @click.option("--comp-w", "comp_w", required=True, type=int, help="Width of the component set.")
 @click.option("--label", "label", default="", help="Caption text placed below the context frame.")
+@click.option(
+    "--execute",
+    "execute_calls",
+    is_flag=True,
+    help="Execute generated use_figma call specs via Figma MCP.",
+)
+@click.option(
+    "--resume-from",
+    type=int,
+    default=0,
+    show_default=True,
+    help="0-based call index to start execution from (only with --execute).",
+)
+@click.option(
+    "--continue-on-error",
+    is_flag=True,
+    help="Continue executing remaining calls if one call fails (only with --execute).",
+)
 @click.pass_context
 def build_context_cmd(
     ctx: click.Context,
@@ -92,16 +103,21 @@ def build_context_cmd(
     comp_y: int,
     comp_w: int,
     label: str,
+    execute_calls: bool,
+    resume_from: int,
+    continue_on_error: bool,
 ) -> None:
     """Generate use_figma calls to build a composite 'Usage in Context' frame.
 
     Reads section positions from source .md frontmatter (frame_sections field).
     Fetches SVG or PNG for each section via the Figma REST API.
-    Outputs JSON array of use_figma call specs — execute in order.
+    Outputs JSON call specs by default; executes them with --execute.
     """
     api_key = os.environ.get("FIGMA_API_KEY", "")
     if not api_key:
         raise click.UsageError("FIGMA_API_KEY environment variable is not set.")
+    if not execute_calls and (resume_from != 0 or continue_on_error):
+        raise click.UsageError("--resume-from/--continue-on-error require --execute")
 
     try:
         calls = asyncio.run(
@@ -118,9 +134,24 @@ def build_context_cmd(
                 label=label,
             )
         )
+        if not execute_calls:
+            click.echo(json.dumps(calls, indent=2))
+            return
+
+        result = asyncio.run(
+            execute_use_figma_calls(
+                calls,
+                resume_from=resume_from,
+                continue_on_error=continue_on_error,
+                dry_run=False,
+            )
+        )
     except ContextBuildError as exc:
         raise click.ClickException(f"[{exc.category}] {exc}") from exc
-    click.echo(json.dumps(calls, indent=2))
+    except FigmaMcpError as exc:
+        raise click.ClickException(f"[MCP_CALL_FAILED] {exc}") from exc
+
+    click.echo(json.dumps(result, indent=2))
 
 
 async def _run(

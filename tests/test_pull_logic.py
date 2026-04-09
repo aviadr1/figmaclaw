@@ -1030,6 +1030,15 @@ def test_compute_raw_frames_returns_empty_for_no_input():
     assert frame_sections == {}
 
 
+def test_compute_raw_frames_handles_non_dict_input_defensively():
+    """INVARIANT: _compute_raw_frames returns empty dicts for malformed non-dict input."""
+    from figmaclaw.pull_logic import _compute_raw_frames
+
+    raw_frames, frame_sections = _compute_raw_frames(None)  # type: ignore[arg-type]
+    assert raw_frames == {}
+    assert frame_sections == {}
+
+
 def test_compute_raw_frames_section_positions_are_relative_to_frame():
     """INVARIANT: SectionNode positions are relative to the parent frame, not absolute canvas coords."""
     from figmaclaw.pull_logic import _compute_raw_frames

@@ -241,9 +241,16 @@ def _compute_raw_frames(
     """
     raw_frames: dict[str, FrameComposition] = {}
     frame_sections: dict[str, list[SectionNode]] = {}
+    if not isinstance(frame_docs, dict):
+        return raw_frames, frame_sections
 
     for node_id, node in frame_docs.items():
-        children: list[dict] = node.get("children", [])
+        if not isinstance(node, dict):
+            continue
+        children_raw = node.get("children", [])
+        if not isinstance(children_raw, list):
+            children_raw = []
+        children: list[dict] = [c for c in children_raw if isinstance(c, dict)]
         frame_bb = node.get("absoluteBoundingBox", {})
         frame_x: float = frame_bb.get("x", 0)
         frame_y: float = frame_bb.get("y", 0)
@@ -466,6 +473,15 @@ async def pull_file(
                 for i in range(0, len(all_screen_frame_ids), chunk_size):
                     chunk = all_screen_frame_ids[i : i + chunk_size]
                     chunk_docs = await client.get_nodes(file_key, chunk, depth=1)
+                    if not isinstance(chunk_docs, dict):
+                        log.warning(
+                            "get_nodes returned non-dict for %r chunk %d-%d (got %s)",
+                            file_key,
+                            i,
+                            i + len(chunk),
+                            type(chunk_docs).__name__,
+                        )
+                        continue
                     all_frame_docs.update(chunk_docs)
                 log.debug(
                     "Batch-fetched %d frame nodes for file %r", len(all_screen_frame_ids), file_key
