@@ -21,18 +21,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Auto-approve Dependabot updates
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
-        with:
-          script: |
-            await github.rest.pulls.createReview({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.payload.pull_request.number,
-              event: "APPROVE",
-              body: "Auto-approved: Dependabot update."
-            });
-
       - name: Enable auto-merge for Dependabot updates
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
@@ -71,18 +59,6 @@ jobs:
 
             for (const pr of pulls) {
               if (pr.user?.login !== "dependabot[bot]" || pr.draft) continue;
-
-              try {
-                await github.rest.pulls.createReview({
-                  owner,
-                  repo,
-                  pull_number: pr.number,
-                  event: "APPROVE",
-                  body: "Auto-approved: Dependabot update.",
-                });
-              } catch (error) {
-                core.info(`Skipping approval for #${pr.number}: ${error.message}`);
-              }
 
               try {
                 await github.graphql(
