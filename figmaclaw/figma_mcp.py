@@ -25,10 +25,11 @@ Usage::
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 
 import httpx
 
@@ -39,6 +40,90 @@ _CLIENT_VERSION = "1.0"
 
 class FigmaMcpError(Exception):
     """Raised when the Figma MCP server returns an error or token is missing."""
+
+
+class FigmaMcpSession:
+    """Reusable MCP session for multiple ``use_figma`` calls.
+
+    Sessions support both deployment modes:
+    - sessionful (initialize returns ``Mcp-Session-Id``)
+    - stateless (no session ID returned)
+    """
+
+    def __init__(
+        self,
+        owner: FigmaMcpClient,
+        client: httpx.AsyncClient,
+        session_id: str | None,
+    ) -> None:
+        self._owner = owner
+        self._client = client
+        self._session_id = session_id
+        self._closed = False
+
+    @property
+    def session_id(self) -> str | None:
+        """Current MCP session ID when provided by the server, else ``None``."""
+        return self._session_id
+
+    @property
+    def is_sessionful(self) -> bool:
+        """Whether this connection has a server-assigned MCP session ID."""
+        return bool(self._session_id)
+
+    @property
+    def is_closed(self) -> bool:
+        """Whether ``close()`` has been called."""
+        return self._closed
+
+    async def use_figma(
+        self,
+        file_key: str,
+        code: str,
+        description: str,
+    ) -> dict[str, Any]:
+        """Execute a ``tools/call use_figma`` request on this open session."""
+        if self._closed:
+            raise FigmaMcpError("Cannot use a closed FigmaMcpSession.")
+        return await self._owner._call_use_figma(
+            self._client,
+            self._session_id,
+            file_key,
+            code,
+            description,
+        )
+
+    async def refresh(self) -> str | None:
+        """Re-run MCP initialize + initialized notification on the same connection."""
+        if self._closed:
+            raise FigmaMcpError("Cannot refresh a closed FigmaMcpSession.")
+        self._session_id = await self._owner._initialize(self._client)
+        await self._owner._notify_initialized(self._client, self._session_id)
+        return self._session_id
+
+    async def close(self, *, best_effort: bool = True) -> None:
+        """Close the underlying HTTP client.
+
+        For sessionful servers this also attempts to terminate the MCP session
+        with ``DELETE /mcp``. If termination is unsupported, close still
+        succeeds by default (``best_effort=True``).
+        """
+        if self._closed:
+            return
+        try:
+            if self._session_id:
+                try:
+                    await self._owner._terminate_session(
+                        self._client,
+                        self._session_id,
+                        best_effort=best_effort,
+                    )
+                except Exception:
+                    if not best_effort:
+                        raise
+        finally:
+            self._closed = True
+            await self._client.aclose()
 
 
 class FigmaMcpClient:
@@ -147,6 +232,26 @@ class FigmaMcpClient:
             "Accept": "application/json, text/event-stream",
         }
 
+    async def open_session(self, timeout: float = 60.0) -> FigmaMcpSession:
+        """Create a reusable MCP session (or stateless connection)."""
+        client = httpx.AsyncClient(timeout=timeout)
+        try:
+            session_id = await self._initialize(client)
+            await self._notify_initialized(client, session_id)
+            return FigmaMcpSession(self, client, session_id)
+        except Exception:
+            await client.aclose()
+            raise
+
+    @asynccontextmanager
+    async def session(self, timeout: float = 60.0) -> AsyncIterator[FigmaMcpSession]:
+        """Context manager for automatic session open/close."""
+        sess = await self.open_session(timeout=timeout)
+        try:
+            yield sess
+        finally:
+            await sess.close()
+
     async def use_figma(
         self,
         file_key: str,
@@ -178,12 +283,8 @@ class FigmaMcpClient:
             If the MCP server returns an HTTP error or a JSON-RPC error at
             any step.
         """
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            session_id = await self._initialize(client)
-            await self._notify_initialized(client, session_id)
-            return await self._call_use_figma(
-                client, session_id, file_key, code, description
-            )
+        async with self.session(timeout=60.0) as sess:
+            return await sess.use_figma(file_key, code, description)
 
     async def _initialize(self, client: httpx.AsyncClient) -> str | None:
         """Send the MCP initialize request and return the optional session ID."""
@@ -263,6 +364,27 @@ class FigmaMcpClient:
         _check_jsonrpc_error(body, "tools/call")
         result: dict[str, Any] = body.get("result", {})
         return result
+
+    async def _terminate_session(
+        self,
+        client: httpx.AsyncClient,
+        session_id: str,
+        *,
+        best_effort: bool,
+    ) -> None:
+        """Best-effort MCP session termination for sessionful servers."""
+        resp = await client.delete(
+            _MCP_URL,
+            headers={**self._base_headers(), "Mcp-Session-Id": session_id},
+        )
+        # Many servers/deployments don't implement explicit termination.
+        if resp.status_code in (404, 405, 501):
+            return
+        if resp.status_code >= 400 and not best_effort:
+            raise FigmaMcpError(
+                f"MCP session termination failed: HTTP {resp.status_code}\n"
+                f"{resp.text[:500]}"
+            )
 
 
 def _check_http(resp: httpx.Response, step: str) -> None:

@@ -269,6 +269,56 @@ class TestUseFigma:
 
         assert result == _tools_call_response()["result"]
 
+
+class TestSessionLifecycle:
+    @pytest.mark.asyncio
+    async def test_reuses_single_handshake_for_multiple_calls(self) -> None:
+        """INVARIANT: open_session() initializes once and can run many tools/call requests."""
+        captured: list[httpx.Request] = []
+        responses: deque[httpx.Response] = deque([
+            httpx.Response(200, json=_init_response(), headers={"Mcp-Session-Id": SESSION_ID}),
+            httpx.Response(202),
+            httpx.Response(200, json=_tools_call_response()),
+            httpx.Response(200, json=_tools_call_response()),
+            httpx.Response(204),
+        ])
+
+        def _side_effect(request: httpx.Request) -> httpx.Response:
+            captured.append(request)
+            return responses.popleft()
+
+        with respx.mock() as router:
+            router.route().mock(side_effect=_side_effect)
+            client = FigmaMcpClient(_TOKEN)
+            sess = await client.open_session()
+            try:
+                await sess.use_figma(FILE_KEY, "1+1", "first")
+                await sess.use_figma(FILE_KEY, "2+2", "second")
+            finally:
+                await sess.close(best_effort=False)
+
+        methods = [
+            f"{req.method}:{json.loads(req.content)['method']}" if req.method == "POST" else req.method
+            for req in captured
+        ]
+        assert methods == [
+            "POST:initialize",
+            "POST:notifications/initialized",
+            "POST:tools/call",
+            "POST:tools/call",
+            "DELETE",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_closed_session_raises_on_use(self) -> None:
+        """INVARIANT: closed session objects reject further use_figma calls."""
+        with _mock_three_step():
+            client = FigmaMcpClient(_TOKEN)
+            sess = await client.open_session()
+            await sess.close()
+            with pytest.raises(FigmaMcpError, match="closed FigmaMcpSession"):
+                await sess.use_figma(FILE_KEY, "1+1", "after close")
+
     @pytest.mark.asyncio
     async def test_passes_file_key_and_code_to_tools_call(self) -> None:
         """INVARIANT: use_figma() forwards file_key, code, and description to the MCP arguments."""
