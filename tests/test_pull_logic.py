@@ -28,10 +28,23 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from figmaclaw.figma_api_models import FileMetaResponse, FileSummary, ProjectSummary
+from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
 from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection  # noqa: F401 — used in tests
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
 from figmaclaw.pull_logic import PullResult, pull_file, write_new_page
+
+from tests.conftest import (
+    PullEnv,
+    fake_file_meta,
+    fake_page_node,
+    fake_component_page_node,
+    fake_page_node_with_children,
+    fake_get_nodes_response,
+    fake_file_meta_multi,
+    fake_page_node_for_id,
+    fake_file_meta_with_pages,
+)
 
 # Schema version registry — must contain every version that has been superseded.
 # When you bump CURRENT_PULL_SCHEMA_VERSION from N to N+1, add N here and add
@@ -113,59 +126,6 @@ def test_write_new_page_returns_path(tmp_path: Path):
 
 # --- pull_file ---
 
-def _fake_file_meta(
-    version: str = "v2", last_modified: str = "2026-03-31T12:00:00Z",
-) -> "FileMetaResponse":
-    return FileMetaResponse.model_validate({
-        "version": version,
-        "lastModified": last_modified,
-        "name": "Web App",
-        "document": {
-            "children": [
-                {"id": "7741:45837", "name": "Onboarding", "type": "CANVAS"},
-            ],
-        },
-    })
-
-
-def _fake_component_page_node(page_id: str = "7741:45837") -> dict:
-    """A CANVAS page whose only section is a COMPONENT_SET-based component library."""
-    return {
-        "id": page_id,
-        "name": "Components",
-        "type": "CANVAS",
-        "children": [
-            {
-                "id": "20:1",
-                "name": "buttons",
-                "type": "SECTION",
-                "children": [
-                    {"id": "30:1", "name": "Button / Primary", "type": "COMPONENT_SET", "children": []},
-                    {"id": "30:2", "name": "Button / Secondary", "type": "COMPONENT_SET", "children": []},
-                ],
-            }
-        ],
-    }
-
-
-def _fake_page_node(page_id: str = "7741:45837") -> dict:
-    return {
-        "id": page_id,
-        "name": "Onboarding",
-        "type": "CANVAS",
-        "children": [
-            {
-                "id": "10:1",
-                "name": "intro",
-                "type": "SECTION",
-                "children": [
-                    {"id": "11:1", "name": "welcome", "type": "FRAME", "children": []},
-                    {"id": "11:2", "name": "permissions", "type": "FRAME", "children": []},
-                ],
-            }
-        ],
-    }
-
 
 @pytest.mark.asyncio
 async def test_pull_file_skips_when_version_unchanged(tmp_path: Path):
@@ -178,9 +138,8 @@ async def test_pull_file_skips_when_version_unchanged(tmp_path: Path):
     state.manifest.files["abc123"].last_modified = "2026-03-31T12:00:00Z"
     state.manifest.files["abc123"].pull_schema_version = CURRENT_PULL_SCHEMA_VERSION
 
-    from figmaclaw.figma_client import FigmaClient
     mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2", "2026-03-31T12:00:00Z"))
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2", "2026-03-31T12:00:00Z"))
 
     result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
@@ -198,10 +157,9 @@ async def test_pull_file_force_bypasses_version_check(tmp_path: Path):
     state.manifest.files["abc123"].version = "v2"
     state.manifest.files["abc123"].last_modified = "2026-03-31T12:00:00Z"
 
-    from figmaclaw.figma_client import FigmaClient
     mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2", "2026-03-31T12:00:00Z"))
-    mock_client.get_page = AsyncMock(return_value=_fake_page_node())
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2", "2026-03-31T12:00:00Z"))
+    mock_client.get_page = AsyncMock(return_value=fake_page_node())
 
     result = await pull_file(mock_client, "abc123", state, tmp_path, force=True)
 
@@ -213,7 +171,7 @@ async def test_pull_file_skips_page_when_hash_unchanged(tmp_path: Path):
     """INVARIANT: pull_file skips individual pages whose structural hash is unchanged (when schema is current)."""
     from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
     from figmaclaw.figma_hash import compute_page_hash
-    page_node = _fake_page_node()
+    page_node = fake_page_node()
     stored_hash = compute_page_hash(page_node)
 
     state = FigmaSyncState(tmp_path)
@@ -229,9 +187,8 @@ async def test_pull_file_skips_page_when_hash_unchanged(tmp_path: Path):
         last_refreshed_at="2026-03-30T00:00:00Z",
     )
 
-    from figmaclaw.figma_client import FigmaClient
     mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2"))
     mock_client.get_page = AsyncMock(return_value=page_node)
 
     result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
@@ -257,10 +214,9 @@ async def test_pull_file_writes_page_when_hash_changed(tmp_path: Path):
         last_refreshed_at="2026-03-30T00:00:00Z",
     )
 
-    from figmaclaw.figma_client import FigmaClient
     mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
-    mock_client.get_page = AsyncMock(return_value=_fake_page_node())
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2"))
+    mock_client.get_page = AsyncMock(return_value=fake_page_node())
 
     result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
@@ -273,7 +229,7 @@ async def test_pull_file_writes_page_when_hash_changed(tmp_path: Path):
 async def test_pull_file_updates_manifest_after_write(tmp_path: Path):
     """INVARIANT: pull_file updates the manifest with the new hash after writing."""
     from figmaclaw.figma_hash import compute_page_hash
-    page_node = _fake_page_node()
+    page_node = fake_page_node()
     new_hash = compute_page_hash(page_node)
 
     state = FigmaSyncState(tmp_path)
@@ -281,9 +237,8 @@ async def test_pull_file_updates_manifest_after_write(tmp_path: Path):
     state.add_tracked_file("abc123", "Web App")
     state.manifest.files["abc123"].version = "v1"
 
-    from figmaclaw.figma_client import FigmaClient
     mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2"))
     mock_client.get_page = AsyncMock(return_value=page_node)
 
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
@@ -293,17 +248,10 @@ async def test_pull_file_updates_manifest_after_write(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_pull_file_writes_component_md_for_component_section(tmp_path: Path):
+async def test_pull_file_writes_component_md_for_component_section(pull_env: PullEnv):
     """INVARIANT: pull_file writes a components/*.md for each component library section."""
-    state = FigmaSyncState(tmp_path)
-    state.load()
-    state.add_tracked_file("abc123", "Web App")
-    state.manifest.files["abc123"].version = "v1"
-
-    from figmaclaw.figma_client import FigmaClient
-    mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
-    mock_client.get_page = AsyncMock(return_value=_fake_component_page_node())
+    state, mock_client, tmp_path = pull_env.state, pull_env.client, pull_env.tmp_path
+    mock_client.get_page = AsyncMock(return_value=fake_component_page_node())
 
     result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
@@ -315,17 +263,10 @@ async def test_pull_file_writes_component_md_for_component_section(tmp_path: Pat
 
 
 @pytest.mark.asyncio
-async def test_pull_file_skips_screen_md_when_all_sections_are_components(tmp_path: Path):
+async def test_pull_file_skips_screen_md_when_all_sections_are_components(pull_env: PullEnv):
     """INVARIANT: No pages/*.md is written when a page has only component library sections."""
-    state = FigmaSyncState(tmp_path)
-    state.load()
-    state.add_tracked_file("abc123", "Web App")
-    state.manifest.files["abc123"].version = "v1"
-
-    from figmaclaw.figma_client import FigmaClient
-    mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
-    mock_client.get_page = AsyncMock(return_value=_fake_component_page_node())
+    state, mock_client, tmp_path = pull_env.state, pull_env.client, pull_env.tmp_path
+    mock_client.get_page = AsyncMock(return_value=fake_component_page_node())
 
     result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
@@ -335,17 +276,10 @@ async def test_pull_file_skips_screen_md_when_all_sections_are_components(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_pull_file_manifest_records_component_paths(tmp_path: Path):
+async def test_pull_file_manifest_records_component_paths(pull_env: PullEnv):
     """INVARIANT: Manifest entry stores component_md_paths after writing component sections."""
-    state = FigmaSyncState(tmp_path)
-    state.load()
-    state.add_tracked_file("abc123", "Web App")
-    state.manifest.files["abc123"].version = "v1"
-
-    from figmaclaw.figma_client import FigmaClient
-    mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
-    mock_client.get_page = AsyncMock(return_value=_fake_component_page_node())
+    state, mock_client, tmp_path = pull_env.state, pull_env.client, pull_env.tmp_path
+    mock_client.get_page = AsyncMock(return_value=fake_component_page_node())
 
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
@@ -355,17 +289,10 @@ async def test_pull_file_manifest_records_component_paths(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_pull_file_writes_component_section_with_frame_ids(tmp_path: Path):
+async def test_pull_file_writes_component_section_with_frame_ids(pull_env: PullEnv):
     """INVARIANT: pull_file writes component .md with frame IDs in frontmatter."""
-    state = FigmaSyncState(tmp_path)
-    state.load()
-    state.add_tracked_file("abc123", "Web App")
-    state.manifest.files["abc123"].version = "v1"
-
-    from figmaclaw.figma_client import FigmaClient
-    mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
-    mock_client.get_page = AsyncMock(return_value=_fake_component_page_node())
+    state, mock_client, tmp_path = pull_env.state, pull_env.client, pull_env.tmp_path
+    mock_client.get_page = AsyncMock(return_value=fake_component_page_node())
 
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
@@ -399,11 +326,10 @@ async def test_pull_file_preserves_existing_descriptions(tmp_path: Path):
         last_refreshed_at="2026-03-30T00:00:00Z",
     )
 
-    page_node = _fake_page_node()
+    page_node = fake_page_node()
 
-    from figmaclaw.figma_client import FigmaClient
     mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2"))
     mock_client.get_page = AsyncMock(return_value=page_node)
 
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
@@ -417,43 +343,10 @@ async def test_pull_file_preserves_existing_descriptions(tmp_path: Path):
 
 # --- max_pages / has_more ---
 
-def _fake_file_meta_multi(n_pages: int) -> "FileMetaResponse":
-    """File meta with n_pages CANVAS children."""
-    return FileMetaResponse.model_validate({
-        "version": "v2",
-        "lastModified": "2026-03-31T12:00:00Z",
-        "name": "Web App",
-        "document": {
-            "children": [
-                {"id": f"100:{i}", "name": f"Page {i}", "type": "CANVAS"}
-                for i in range(1, n_pages + 1)
-            ],
-        },
-    })
-
-
-def _fake_page_node_for_id(page_id: str, page_name: str) -> dict:
-    return {
-        "id": page_id,
-        "name": page_name,
-        "type": "CANVAS",
-        "children": [
-            {
-                "id": f"s:{page_id}",
-                "name": "section",
-                "type": "SECTION",
-                "children": [
-                    {"id": f"f:{page_id}", "name": "frame", "type": "FRAME", "children": []},
-                ],
-            }
-        ],
-    }
-
 
 @pytest.mark.asyncio
 async def test_pull_file_respects_max_pages(tmp_path: Path):
     """INVARIANT: pull_file writes at most max_pages pages when max_pages is set."""
-    from figmaclaw.figma_client import FigmaClient
 
     state = FigmaSyncState(tmp_path)
     state.load()
@@ -462,9 +355,9 @@ async def test_pull_file_respects_max_pages(tmp_path: Path):
 
     n_pages = 6
     mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta_multi(n_pages))
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta_multi(n_pages))
     mock_client.get_page = AsyncMock(
-        side_effect=lambda fk, pid: _fake_page_node_for_id(pid, f"Page {pid}")
+        side_effect=lambda fk, pid: fake_page_node_for_id(pid, f"Page {pid}")
     )
 
     result = await pull_file(mock_client, "abc123", state, tmp_path, force=False, max_pages=3)
@@ -476,7 +369,6 @@ async def test_pull_file_respects_max_pages(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_pull_file_has_more_false_when_all_pages_written(tmp_path: Path):
     """INVARIANT: has_more is False when all pages fit within max_pages."""
-    from figmaclaw.figma_client import FigmaClient
 
     state = FigmaSyncState(tmp_path)
     state.load()
@@ -484,9 +376,9 @@ async def test_pull_file_has_more_false_when_all_pages_written(tmp_path: Path):
     state.manifest.files["abc123"].version = "v1"
 
     mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta_multi(2))
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta_multi(2))
     mock_client.get_page = AsyncMock(
-        side_effect=lambda fk, pid: _fake_page_node_for_id(pid, f"Page {pid}")
+        side_effect=lambda fk, pid: fake_page_node_for_id(pid, f"Page {pid}")
     )
 
     result = await pull_file(mock_client, "abc123", state, tmp_path, force=False, max_pages=5)
@@ -498,7 +390,6 @@ async def test_pull_file_has_more_false_when_all_pages_written(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_pull_file_has_more_false_when_no_limit(tmp_path: Path):
     """INVARIANT: has_more is False when max_pages is not set."""
-    from figmaclaw.figma_client import FigmaClient
 
     state = FigmaSyncState(tmp_path)
     state.load()
@@ -506,9 +397,9 @@ async def test_pull_file_has_more_false_when_no_limit(tmp_path: Path):
     state.manifest.files["abc123"].version = "v1"
 
     mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta_multi(4))
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta_multi(4))
     mock_client.get_page = AsyncMock(
-        side_effect=lambda fk, pid: _fake_page_node_for_id(pid, f"Page {pid}")
+        side_effect=lambda fk, pid: fake_page_node_for_id(pid, f"Page {pid}")
     )
 
     result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
@@ -521,7 +412,6 @@ async def test_pull_file_has_more_false_when_no_limit(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_pull_file_increments_pages_errored_on_fetch_failure(tmp_path: Path):
     """INVARIANT: pull_file increments pages_errored when a page fetch fails."""
-    from figmaclaw.figma_client import FigmaClient
 
     state = FigmaSyncState(tmp_path)
     state.load()
@@ -529,12 +419,12 @@ async def test_pull_file_increments_pages_errored_on_fetch_failure(tmp_path: Pat
     state.manifest.files["abc123"].version = "v1"
 
     mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta_multi(2))
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta_multi(2))
     # First page raises, second succeeds
     mock_client.get_page = AsyncMock(
         side_effect=[
             Exception("network error"),
-            _fake_page_node_for_id("100:2", "Page 2"),
+            fake_page_node_for_id("100:2", "Page 2"),
         ]
     )
 
@@ -547,7 +437,6 @@ async def test_pull_file_increments_pages_errored_on_fetch_failure(tmp_path: Pat
 @pytest.mark.asyncio
 async def test_pull_file_continues_after_page_fetch_error(tmp_path: Path):
     """INVARIANT: a single page fetch error does not abort processing of remaining pages."""
-    from figmaclaw.figma_client import FigmaClient
 
     state = FigmaSyncState(tmp_path)
     state.load()
@@ -556,12 +445,12 @@ async def test_pull_file_continues_after_page_fetch_error(tmp_path: Path):
 
     n_pages = 3
     mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta_multi(n_pages))
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta_multi(n_pages))
     mock_client.get_page = AsyncMock(
         side_effect=[
             Exception("quota exceeded"),
-            _fake_page_node_for_id("100:2", "Page 2"),
-            _fake_page_node_for_id("100:3", "Page 3"),
+            fake_page_node_for_id("100:2", "Page 2"),
+            fake_page_node_for_id("100:3", "Page 3"),
         ]
     )
 
@@ -573,24 +462,10 @@ async def test_pull_file_continues_after_page_fetch_error(tmp_path: Path):
 
 # --- skip_pages ---
 
-def _fake_file_meta_with_pages(*page_names: str) -> "FileMetaResponse":
-    return FileMetaResponse.model_validate({
-        "version": "v2",
-        "lastModified": "2026-03-31T12:00:00Z",
-        "name": "Web App",
-        "document": {
-            "children": [
-                {"id": f"100:{i}", "name": name, "type": "CANVAS"}
-                for i, name in enumerate(page_names, 1)
-            ],
-        },
-    })
-
 
 @pytest.mark.asyncio
 async def test_pull_file_skips_pages_matching_skip_pages_patterns(tmp_path: Path):
     """INVARIANT: pull_file skips pages whose names match skip_pages glob patterns."""
-    from figmaclaw.figma_client import FigmaClient
 
     state = FigmaSyncState(tmp_path)
     state.load()
@@ -598,11 +473,11 @@ async def test_pull_file_skips_pages_matching_skip_pages_patterns(tmp_path: Path
     state.manifest.files["abc123"].version = "v1"
 
     mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta_with_pages(
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta_with_pages(
         "Onboarding", "old-components", "old concept", "---"
     ))
     mock_client.get_page = AsyncMock(
-        side_effect=lambda fk, pid: _fake_page_node_for_id(pid, "Onboarding")
+        side_effect=lambda fk, pid: fake_page_node_for_id(pid, "Onboarding")
     )
 
     result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
@@ -617,7 +492,6 @@ async def test_pull_file_skips_pages_matching_skip_pages_patterns(tmp_path: Path
 @pytest.mark.asyncio
 async def test_pull_file_skip_pages_does_not_fetch_page_content(tmp_path: Path):
     """INVARIANT: Skipped pages are filtered before any API fetch — no wasted calls."""
-    from figmaclaw.figma_client import FigmaClient
 
     state = FigmaSyncState(tmp_path)
     state.load()
@@ -625,7 +499,7 @@ async def test_pull_file_skip_pages_does_not_fetch_page_content(tmp_path: Path):
     state.manifest.files["abc123"].version = "v1"
 
     mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta_with_pages("old-archive"))
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta_with_pages("old-archive"))
     mock_client.get_page = AsyncMock()
 
     result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
@@ -640,7 +514,6 @@ async def test_pull_file_skip_pages_does_not_fetch_page_content(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_pull_file_calls_progress_for_each_page(tmp_path: Path):
     """INVARIANT: pull_file calls the progress callback for each page processed."""
-    from figmaclaw.figma_client import FigmaClient
 
     state = FigmaSyncState(tmp_path)
     state.load()
@@ -648,9 +521,9 @@ async def test_pull_file_calls_progress_for_each_page(tmp_path: Path):
     state.manifest.files["abc123"].version = "v1"
 
     mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta_multi(2))
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta_multi(2))
     mock_client.get_page = AsyncMock(
-        side_effect=lambda fk, pid: _fake_page_node_for_id(pid, f"Page {pid}")
+        side_effect=lambda fk, pid: fake_page_node_for_id(pid, f"Page {pid}")
     )
 
     progress_messages: list[str] = []
@@ -668,7 +541,6 @@ async def test_pull_file_calls_progress_for_each_page(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_pull_file_calls_on_page_written_for_each_written_page(tmp_path: Path):
     """INVARIANT: pull_file calls on_page_written after each page is written to disk."""
-    from figmaclaw.figma_client import FigmaClient
 
     state = FigmaSyncState(tmp_path)
     state.load()
@@ -676,9 +548,9 @@ async def test_pull_file_calls_on_page_written_for_each_written_page(tmp_path: P
     state.manifest.files["abc123"].version = "v1"
 
     mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta_multi(2))
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta_multi(2))
     mock_client.get_page = AsyncMock(
-        side_effect=lambda fk, pid: _fake_page_node_for_id(pid, f"Page {pid}")
+        side_effect=lambda fk, pid: fake_page_node_for_id(pid, f"Page {pid}")
     )
 
     written_labels: list[str] = []
@@ -695,7 +567,6 @@ async def test_pull_file_calls_on_page_written_for_each_written_page(tmp_path: P
 @pytest.mark.asyncio
 async def test_pull_file_on_page_written_receives_written_paths(tmp_path: Path):
     """INVARIANT: on_page_written receives the list of paths that were written."""
-    from figmaclaw.figma_client import FigmaClient
 
     state = FigmaSyncState(tmp_path)
     state.load()
@@ -703,9 +574,9 @@ async def test_pull_file_on_page_written_receives_written_paths(tmp_path: Path):
     state.manifest.files["abc123"].version = "v1"
 
     mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta_multi(1))
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta_multi(1))
     mock_client.get_page = AsyncMock(
-        side_effect=lambda fk, pid: _fake_page_node_for_id(pid, f"Page {pid}")
+        side_effect=lambda fk, pid: fake_page_node_for_id(pid, f"Page {pid}")
     )
 
     received_paths: list[list[str]] = []
@@ -723,10 +594,9 @@ async def test_pull_file_on_page_written_receives_written_paths(tmp_path: Path):
 async def test_pull_file_skipped_pages_do_not_trigger_on_page_written(tmp_path: Path):
     """INVARIANT: on_page_written is NOT called for pages that are skipped (hash unchanged, schema current)."""
     from figmaclaw.figma_hash import compute_page_hash
-    from figmaclaw.figma_client import FigmaClient
     from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
 
-    page_node = _fake_page_node()
+    page_node = fake_page_node()
     stored_hash = compute_page_hash(page_node)
 
     state = FigmaSyncState(tmp_path)
@@ -741,7 +611,7 @@ async def test_pull_file_skipped_pages_do_not_trigger_on_page_written(tmp_path: 
     )
 
     mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2"))
     mock_client.get_page = AsyncMock(return_value=page_node)
 
     written_labels: list[str] = []
@@ -759,7 +629,6 @@ async def test_pull_file_skipped_pages_do_not_trigger_on_page_written(tmp_path: 
 @pytest.mark.asyncio
 async def test_pull_file_parallel_fetch_writes_all_pages(tmp_path: Path):
     """INVARIANT: without max_pages, all pages are fetched and written (parallel path)."""
-    from figmaclaw.figma_client import FigmaClient
 
     state = FigmaSyncState(tmp_path)
     state.load()
@@ -768,9 +637,9 @@ async def test_pull_file_parallel_fetch_writes_all_pages(tmp_path: Path):
 
     n_pages = 4
     mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta_multi(n_pages))
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta_multi(n_pages))
     mock_client.get_page = AsyncMock(
-        side_effect=lambda fk, pid: _fake_page_node_for_id(pid, f"Page {pid}")
+        side_effect=lambda fk, pid: fake_page_node_for_id(pid, f"Page {pid}")
     )
 
     result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
@@ -782,7 +651,6 @@ async def test_pull_file_parallel_fetch_writes_all_pages(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_pull_file_parallel_fetch_handles_individual_page_errors(tmp_path: Path):
     """INVARIANT: parallel fetch tolerates individual page errors and processes the rest."""
-    from figmaclaw.figma_client import FigmaClient
 
     state = FigmaSyncState(tmp_path)
     state.load()
@@ -790,12 +658,12 @@ async def test_pull_file_parallel_fetch_handles_individual_page_errors(tmp_path:
     state.manifest.files["abc123"].version = "v1"
 
     mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta_multi(3))
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta_multi(3))
     mock_client.get_page = AsyncMock(
         side_effect=[
-            _fake_page_node_for_id("100:1", "Page 1"),
+            fake_page_node_for_id("100:1", "Page 1"),
             Exception("timeout"),
-            _fake_page_node_for_id("100:3", "Page 3"),
+            fake_page_node_for_id("100:3", "Page 3"),
         ]
     )
 
@@ -1083,59 +951,11 @@ def test_build_component_set_keys_returns_empty_when_no_match():
 
 # --- pull_file: new API calls and frontmatter fields ---
 
-def _fake_page_node_with_children() -> dict:
-    """Screen page whose frames have both raw and instance children."""
-    return {
-        "id": "7741:45837",
-        "name": "Onboarding",
-        "type": "CANVAS",
-        "children": [
-            {
-                "id": "10:1",
-                "name": "intro",
-                "type": "SECTION",
-                "children": [
-                    {
-                        "id": "11:1",
-                        "name": "welcome",
-                        "type": "FRAME",
-                        "children": [],  # children are fetched via get_nodes, not here
-                    },
-                ],
-            }
-        ],
-    }
-
-
-def _fake_get_nodes_response() -> dict:
-    """Simulated get_nodes response: frame 11:1 has 1 INSTANCE + 2 raw children."""
-    return {
-        "11:1": {
-            "id": "11:1",
-            "type": "FRAME",
-            "children": [
-                {"type": "INSTANCE", "name": "AvatarV2"},
-                {"type": "RECTANGLE", "name": "bg"},
-                {"type": "TEXT", "name": "label"},
-            ],
-        }
-    }
-
 
 @pytest.mark.asyncio
-async def test_pull_file_calls_get_component_sets_once_per_changed_file(tmp_path: Path):
+async def test_pull_file_calls_get_component_sets_once_per_changed_file(pull_env: PullEnv):
     """INVARIANT: pull_file calls get_component_sets exactly once per changed file."""
-    from figmaclaw.figma_client import FigmaClient
-    state = FigmaSyncState(tmp_path)
-    state.load()
-    state.add_tracked_file("abc123", "Web App")
-    state.manifest.files["abc123"].version = "v1"
-
-    mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
-    mock_client.get_page = AsyncMock(return_value=_fake_page_node())
-    mock_client.get_component_sets = AsyncMock(return_value=[])
-    mock_client.get_nodes = AsyncMock(return_value={})
+    state, mock_client, tmp_path = pull_env.state, pull_env.client, pull_env.tmp_path
 
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
@@ -1145,7 +965,6 @@ async def test_pull_file_calls_get_component_sets_once_per_changed_file(tmp_path
 @pytest.mark.asyncio
 async def test_pull_file_does_not_call_get_component_sets_when_file_unchanged(tmp_path: Path):
     """INVARIANT: pull_file skips get_component_sets when the file version is unchanged and schema is current."""
-    from figmaclaw.figma_client import FigmaClient
     from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
     state = FigmaSyncState(tmp_path)
     state.load()
@@ -1155,7 +974,7 @@ async def test_pull_file_does_not_call_get_component_sets_when_file_unchanged(tm
     state.manifest.files["abc123"].pull_schema_version = CURRENT_PULL_SCHEMA_VERSION
 
     mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2", "2026-03-31T12:00:00Z"))
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2", "2026-03-31T12:00:00Z"))
     mock_client.get_component_sets = AsyncMock(return_value=[])
 
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
@@ -1164,19 +983,11 @@ async def test_pull_file_does_not_call_get_component_sets_when_file_unchanged(tm
 
 
 @pytest.mark.asyncio
-async def test_pull_file_calls_get_nodes_for_changed_screen_page(tmp_path: Path):
+async def test_pull_file_calls_get_nodes_for_changed_screen_page(pull_env: PullEnv):
     """INVARIANT: pull_file calls get_nodes once for each changed page that has screen frames."""
-    from figmaclaw.figma_client import FigmaClient
-    state = FigmaSyncState(tmp_path)
-    state.load()
-    state.add_tracked_file("abc123", "Web App")
-    state.manifest.files["abc123"].version = "v1"
-
-    mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
-    mock_client.get_page = AsyncMock(return_value=_fake_page_node_with_children())
-    mock_client.get_component_sets = AsyncMock(return_value=[])
-    mock_client.get_nodes = AsyncMock(return_value=_fake_get_nodes_response())
+    state, mock_client, tmp_path = pull_env.state, pull_env.client, pull_env.tmp_path
+    mock_client.get_page = AsyncMock(return_value=fake_page_node_with_children())
+    mock_client.get_nodes = AsyncMock(return_value=fake_get_nodes_response())
 
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
@@ -1187,20 +998,12 @@ async def test_pull_file_calls_get_nodes_for_changed_screen_page(tmp_path: Path)
 
 
 @pytest.mark.asyncio
-async def test_pull_file_writes_raw_frames_to_new_page_frontmatter(tmp_path: Path):
+async def test_pull_file_writes_raw_frames_to_new_page_frontmatter(pull_env: PullEnv):
     """INVARIANT: raw_frames from get_nodes appears in written page frontmatter."""
-    from figmaclaw.figma_client import FigmaClient
     from figmaclaw.figma_parse import parse_frontmatter
-    state = FigmaSyncState(tmp_path)
-    state.load()
-    state.add_tracked_file("abc123", "Web App")
-    state.manifest.files["abc123"].version = "v1"
-
-    mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
-    mock_client.get_page = AsyncMock(return_value=_fake_page_node_with_children())
-    mock_client.get_component_sets = AsyncMock(return_value=[])
-    mock_client.get_nodes = AsyncMock(return_value=_fake_get_nodes_response())
+    state, mock_client, tmp_path = pull_env.state, pull_env.client, pull_env.tmp_path
+    mock_client.get_page = AsyncMock(return_value=fake_page_node_with_children())
+    mock_client.get_nodes = AsyncMock(return_value=fake_get_nodes_response())
 
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
@@ -1213,27 +1016,20 @@ async def test_pull_file_writes_raw_frames_to_new_page_frontmatter(tmp_path: Pat
 
 
 @pytest.mark.asyncio
-async def test_pull_file_writes_component_set_keys_to_component_frontmatter(tmp_path: Path):
+async def test_pull_file_writes_component_set_keys_to_component_frontmatter(pull_env: PullEnv):
     """INVARIANT: component_set_keys from get_component_sets appears in component .md frontmatter."""
-    from figmaclaw.figma_client import FigmaClient
     from figmaclaw.figma_parse import parse_frontmatter
-    state = FigmaSyncState(tmp_path)
-    state.load()
-    state.add_tracked_file("abc123", "Web App")
-    state.manifest.files["abc123"].version = "v1"
+    state, mock_client, tmp_path = pull_env.state, pull_env.client, pull_env.tmp_path
 
     # Matching is by containing_frame.pageId, not by frame node IDs.
-    # The page node ID for _fake_component_page_node is "7741:45837".
+    # The page node ID for fake_component_page_node is "7741:45837".
     component_sets = [
         {"containing_frame": {"pageId": "7741:45837"}, "name": "ButtonV2", "key": "aabb1122cc334455"},
         {"containing_frame": {"pageId": "7741:45837"}, "name": "ButtonOutline", "key": "ddeeff0011223344"},
         {"containing_frame": {"pageId": "9999:1"}, "name": "OtherFile", "key": "unrelated"},
     ]
-    mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
-    mock_client.get_page = AsyncMock(return_value=_fake_component_page_node())
+    mock_client.get_page = AsyncMock(return_value=fake_component_page_node())
     mock_client.get_component_sets = AsyncMock(return_value=component_sets)
-    mock_client.get_nodes = AsyncMock(return_value={})
 
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
@@ -1248,18 +1044,11 @@ async def test_pull_file_writes_component_set_keys_to_component_frontmatter(tmp_
 
 
 @pytest.mark.asyncio
-async def test_pull_file_handles_get_component_sets_failure_gracefully(tmp_path: Path):
+async def test_pull_file_handles_get_component_sets_failure_gracefully(pull_env: PullEnv):
     """INVARIANT: pull_file continues and omits component_set_keys when get_component_sets fails."""
-    from figmaclaw.figma_client import FigmaClient
     from figmaclaw.figma_parse import parse_frontmatter
-    state = FigmaSyncState(tmp_path)
-    state.load()
-    state.add_tracked_file("abc123", "Web App")
-    state.manifest.files["abc123"].version = "v1"
-
-    mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
-    mock_client.get_page = AsyncMock(return_value=_fake_component_page_node())
+    state, mock_client, tmp_path = pull_env.state, pull_env.client, pull_env.tmp_path
+    mock_client.get_page = AsyncMock(return_value=fake_component_page_node())
     mock_client.get_component_sets = AsyncMock(side_effect=Exception("API error"))
     mock_client.get_nodes = AsyncMock(return_value={})
 
@@ -1273,19 +1062,11 @@ async def test_pull_file_handles_get_component_sets_failure_gracefully(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_pull_file_handles_get_nodes_failure_gracefully(tmp_path: Path):
+async def test_pull_file_handles_get_nodes_failure_gracefully(pull_env: PullEnv):
     """INVARIANT: pull_file continues and omits raw_frames when get_nodes fails."""
-    from figmaclaw.figma_client import FigmaClient
     from figmaclaw.figma_parse import parse_frontmatter
-    state = FigmaSyncState(tmp_path)
-    state.load()
-    state.add_tracked_file("abc123", "Web App")
-    state.manifest.files["abc123"].version = "v1"
-
-    mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
-    mock_client.get_page = AsyncMock(return_value=_fake_page_node_with_children())
-    mock_client.get_component_sets = AsyncMock(return_value=[])
+    state, mock_client, tmp_path = pull_env.state, pull_env.client, pull_env.tmp_path
+    mock_client.get_page = AsyncMock(return_value=fake_page_node_with_children())
     mock_client.get_nodes = AsyncMock(side_effect=Exception("timeout"))
 
     result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
@@ -1300,20 +1081,10 @@ async def test_pull_file_handles_get_nodes_failure_gracefully(tmp_path: Path):
 # --- Pull schema version (staleness bypass) ---
 
 @pytest.mark.asyncio
-async def test_pull_file_writes_pull_schema_version_to_manifest_after_success(tmp_path: Path):
+async def test_pull_file_writes_pull_schema_version_to_manifest_after_success(pull_env: PullEnv):
     """INVARIANT: pull_schema_version is written to the manifest after all pages complete."""
-    from figmaclaw.figma_client import FigmaClient
     from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
-    state = FigmaSyncState(tmp_path)
-    state.load()
-    state.add_tracked_file("abc123", "Web App")
-    state.manifest.files["abc123"].version = "v1"
-
-    mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
-    mock_client.get_page = AsyncMock(return_value=_fake_page_node())
-    mock_client.get_component_sets = AsyncMock(return_value=[])
-    mock_client.get_nodes = AsyncMock(return_value={})
+    state, mock_client, tmp_path = pull_env.state, pull_env.client, pull_env.tmp_path
 
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
@@ -1321,19 +1092,9 @@ async def test_pull_file_writes_pull_schema_version_to_manifest_after_success(tm
 
 
 @pytest.mark.asyncio
-async def test_pull_file_does_not_write_pull_schema_version_when_has_more(tmp_path: Path):
+async def test_pull_file_does_not_write_pull_schema_version_when_has_more(pull_env: PullEnv):
     """INVARIANT: pull_schema_version is NOT written when max_pages was hit (partial run)."""
-    from figmaclaw.figma_client import FigmaClient
-    state = FigmaSyncState(tmp_path)
-    state.load()
-    state.add_tracked_file("abc123", "Web App")
-    state.manifest.files["abc123"].version = "v1"
-
-    mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
-    mock_client.get_page = AsyncMock(return_value=_fake_page_node())
-    mock_client.get_component_sets = AsyncMock(return_value=[])
-    mock_client.get_nodes = AsyncMock(return_value={})
+    state, mock_client, tmp_path = pull_env.state, pull_env.client, pull_env.tmp_path
 
     # With max_pages=0 the loop exits immediately without writing any pages
     result = await pull_file(mock_client, "abc123", state, tmp_path, force=False, max_pages=0)
@@ -1345,7 +1106,6 @@ async def test_pull_file_does_not_write_pull_schema_version_when_has_more(tmp_pa
 @pytest.mark.asyncio
 async def test_pull_file_processes_schema_stale_file_even_when_figma_unchanged(tmp_path: Path):
     """INVARIANT: when pull_schema_version < CURRENT, file is re-processed even if Figma version matches."""
-    from figmaclaw.figma_client import FigmaClient
     from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
     state = FigmaSyncState(tmp_path)
     state.load()
@@ -1357,8 +1117,8 @@ async def test_pull_file_processes_schema_stale_file_even_when_figma_unchanged(t
     assert state.manifest.files["abc123"].pull_schema_version < CURRENT_PULL_SCHEMA_VERSION
 
     mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2", "2026-03-31T12:00:00Z"))
-    mock_client.get_page = AsyncMock(return_value=_fake_page_node())
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2", "2026-03-31T12:00:00Z"))
+    mock_client.get_page = AsyncMock(return_value=fake_page_node())
     mock_client.get_component_sets = AsyncMock(return_value=[])
     mock_client.get_nodes = AsyncMock(return_value={})
 
@@ -1376,7 +1136,6 @@ async def test_pull_file_processes_schema_stale_pages_even_when_page_hash_unchan
     Schema-only upgrades (hash unchanged) go to pages_schema_upgraded, NOT pages_written.
     They don't consume the max_pages budget so the upgrade always completes in a single pass.
     """
-    from figmaclaw.figma_client import FigmaClient
     from figmaclaw.figma_parse import parse_frontmatter
     state = FigmaSyncState(tmp_path)
     state.load()
@@ -1384,11 +1143,11 @@ async def test_pull_file_processes_schema_stale_pages_even_when_page_hash_unchan
     state.manifest.files["abc123"].version = "v1"
 
     mock_client = MagicMock(spec=FigmaClient)
-    page_node = _fake_page_node_with_children()
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2"))
+    page_node = fake_page_node_with_children()
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2"))
     mock_client.get_page = AsyncMock(return_value=page_node)
     mock_client.get_component_sets = AsyncMock(return_value=[])
-    mock_client.get_nodes = AsyncMock(return_value=_fake_get_nodes_response())
+    mock_client.get_nodes = AsyncMock(return_value=fake_get_nodes_response())
 
     # First pull: write the page, bump version and schema version
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
@@ -1404,7 +1163,7 @@ async def test_pull_file_processes_schema_stale_pages_even_when_page_hash_unchan
     state.manifest.files["abc123"].last_modified = "2026-03-31T12:00:00Z"
     state.save()
 
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2", "2026-03-31T12:00:00Z"))
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2", "2026-03-31T12:00:00Z"))
 
     result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
@@ -1422,7 +1181,6 @@ async def test_pull_file_processes_schema_stale_pages_even_when_page_hash_unchan
 @pytest.mark.asyncio
 async def test_pull_file_skips_file_when_schema_current_and_figma_unchanged(tmp_path: Path):
     """INVARIANT: when pull_schema_version == CURRENT and Figma unchanged, file is skipped."""
-    from figmaclaw.figma_client import FigmaClient
     from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
     state = FigmaSyncState(tmp_path)
     state.load()
@@ -1432,7 +1190,7 @@ async def test_pull_file_skips_file_when_schema_current_and_figma_unchanged(tmp_
     state.manifest.files["abc123"].pull_schema_version = CURRENT_PULL_SCHEMA_VERSION
 
     mock_client = MagicMock(spec=FigmaClient)
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2", "2026-03-31T12:00:00Z"))
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2", "2026-03-31T12:00:00Z"))
 
     result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
@@ -1449,18 +1207,17 @@ async def test_schema_upgrade_does_not_cause_infinite_loop_with_max_pages(tmp_pa
     This prevents the infinite loop where the same N pages are reprocessed every batch
     because has_more=True always prevents pull_schema_version from being updated.
     """
-    from figmaclaw.figma_client import FigmaClient
     from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
     state = FigmaSyncState(tmp_path)
     state.load()
     state.add_tracked_file("abc123", "Web App")
 
     mock_client = MagicMock(spec=FigmaClient)
-    page_node = _fake_page_node_with_children()
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2", "2026-03-31T12:00:00Z"))
+    page_node = fake_page_node_with_children()
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2", "2026-03-31T12:00:00Z"))
     mock_client.get_page = AsyncMock(return_value=page_node)
     mock_client.get_component_sets = AsyncMock(return_value=[])
-    mock_client.get_nodes = AsyncMock(return_value=_fake_get_nodes_response())
+    mock_client.get_nodes = AsyncMock(return_value=fake_get_nodes_response())
 
     # First pull: write the page, schema version set to CURRENT
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
@@ -1490,7 +1247,6 @@ async def test_schema_upgrade_does_not_cause_infinite_loop_with_max_pages(tmp_pa
 async def test_pull_file_sets_no_access_on_http_400(tmp_path: Path):
     """INVARIANT: pull_file returns no_access=True when get_file_meta raises HTTP 400."""
     import httpx
-    from figmaclaw.figma_client import FigmaClient
 
     state = FigmaSyncState(tmp_path)
     state.load()
@@ -1516,18 +1272,17 @@ async def test_pull_file_is_idempotent_second_call_changes_nothing(tmp_path: Pat
     writing generated_at timestamps, always rewriting frontmatter even when unchanged).
     Any such violation would produce spurious git commits and waste CI resources.
     """
-    from figmaclaw.figma_client import FigmaClient
     state = FigmaSyncState(tmp_path)
     state.load()
     state.add_tracked_file("abc123", "Web App")
     state.manifest.files["abc123"].version = "v1"
 
     mock_client = MagicMock(spec=FigmaClient)
-    page_node = _fake_page_node_with_children()
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2", "2026-01-01T00:00:00Z"))
+    page_node = fake_page_node_with_children()
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2", "2026-01-01T00:00:00Z"))
     mock_client.get_page = AsyncMock(return_value=page_node)
     mock_client.get_component_sets = AsyncMock(return_value=[])
-    mock_client.get_nodes = AsyncMock(return_value=_fake_get_nodes_response())
+    mock_client.get_nodes = AsyncMock(return_value=fake_get_nodes_response())
 
     # First pull: writes the page and tokens sidecar
     result1 = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
@@ -1565,18 +1320,17 @@ async def test_has_more_only_set_when_content_changes_exhaust_budget(tmp_path: P
     hashes. This prevented pull_schema_version from ever reaching CURRENT_PULL_SCHEMA_VERSION.
     Schema-only upgrades must NOT consume the max_pages budget.
     """
-    from figmaclaw.figma_client import FigmaClient
     state = FigmaSyncState(tmp_path)
     state.load()
     state.add_tracked_file("abc123", "Web App")
     state.manifest.files["abc123"].version = "v1"
 
     mock_client = MagicMock(spec=FigmaClient)
-    page_node = _fake_page_node_with_children()
-    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2", "2026-01-01T00:00:00Z"))
+    page_node = fake_page_node_with_children()
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2", "2026-01-01T00:00:00Z"))
     mock_client.get_page = AsyncMock(return_value=page_node)
     mock_client.get_component_sets = AsyncMock(return_value=[])
-    mock_client.get_nodes = AsyncMock(return_value=_fake_get_nodes_response())
+    mock_client.get_nodes = AsyncMock(return_value=fake_get_nodes_response())
 
     # First pull: establishes page hash and schema version
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
