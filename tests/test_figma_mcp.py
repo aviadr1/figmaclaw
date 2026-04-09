@@ -12,6 +12,10 @@ INVARIANTS:
 - use_figma() uses Authorization: Bearer, not X-Figma-Token
 - use_figma() raises FigmaMcpError on HTTP >= 400
 - use_figma() raises FigmaMcpError on JSON-RPC error responses
+- FigmaMcpSession properties (session_id, is_sessionful, is_closed) reflect live state
+- FigmaMcpSession.refresh() re-runs the MCP handshake on the same HTTP connection
+- SSE responses with no data line raise FigmaMcpError
+- _terminate_session raises FigmaMcpError on unexpected errors when best_effort=False
 """
 
 from __future__ import annotations
@@ -446,3 +450,177 @@ class TestSessionLifecycle:
             result = await client.use_figma(file_key=FILE_KEY, code="1+1", description="test")
 
         assert result == _tools_call_response()["result"]
+
+    @pytest.mark.asyncio
+    async def test_raises_on_sse_with_no_data_line(self) -> None:
+        """INVARIANT: _parse_body raises FigmaMcpError when SSE has no data: line."""
+        sse_body = "event: message\n\n"  # event line but no data
+        with _mock_three_step(
+            call_resp=httpx.Response(
+                200,
+                content=sse_body.encode(),
+                headers={"Content-Type": "text/event-stream"},
+            ),
+        ):
+            client = FigmaMcpClient(_TOKEN)
+            with pytest.raises(FigmaMcpError, match="no data line"):
+                await client.use_figma(file_key=FILE_KEY, code="1+1", description="test")
+
+
+class TestSessionProperties:
+    @pytest.mark.asyncio
+    async def test_session_id_reflects_server_value(self) -> None:
+        """INVARIANT: FigmaMcpSession.session_id returns the value from initialize."""
+        with _mock_three_step():
+            client = FigmaMcpClient(_TOKEN)
+            sess = await client.open_session()
+            assert sess.session_id == SESSION_ID
+            assert sess.is_sessionful is True
+            assert sess.is_closed is False
+            await sess.close()
+
+    @pytest.mark.asyncio
+    async def test_session_id_is_none_for_stateless_server(self) -> None:
+        """INVARIANT: session_id is None and is_sessionful is False for stateless servers."""
+        with _mock_three_step(
+            init_resp=httpx.Response(200, json=_init_response()),  # no session header
+        ):
+            client = FigmaMcpClient(_TOKEN)
+            sess = await client.open_session()
+            assert sess.session_id is None
+            assert sess.is_sessionful is False
+            await sess.close()
+
+    @pytest.mark.asyncio
+    async def test_is_closed_becomes_true_after_close(self) -> None:
+        """INVARIANT: is_closed is True after close() is called."""
+        with _mock_three_step():
+            client = FigmaMcpClient(_TOKEN)
+            sess = await client.open_session()
+            assert sess.is_closed is False
+            await sess.close()
+            assert sess.is_closed is True
+
+    @pytest.mark.asyncio
+    async def test_close_is_idempotent(self) -> None:
+        """INVARIANT: calling close() twice does not raise."""
+        with _mock_three_step():
+            client = FigmaMcpClient(_TOKEN)
+            sess = await client.open_session()
+            await sess.close()
+            await sess.close()  # second close must not raise
+
+
+class TestSessionRefresh:
+    @pytest.mark.asyncio
+    async def test_refresh_re_runs_handshake(self) -> None:
+        """INVARIANT: refresh() sends a new initialize+initialized pair on the same connection."""
+        captured: list[httpx.Request] = []
+        responses: deque[httpx.Response] = deque(
+            [
+                httpx.Response(200, json=_init_response(), headers={"Mcp-Session-Id": SESSION_ID}),
+                httpx.Response(202),
+                # refresh: new session id
+                httpx.Response(200, json=_init_response(), headers={"Mcp-Session-Id": "new-sess"}),
+                httpx.Response(202),
+                httpx.Response(204),  # DELETE on close
+            ]
+        )
+
+        def _side(req: httpx.Request) -> httpx.Response:
+            captured.append(req)
+            return responses.popleft()
+
+        with respx.mock() as router:
+            router.route().mock(side_effect=_side)
+            client = FigmaMcpClient(_TOKEN)
+            sess = await client.open_session()
+            new_id = await sess.refresh()
+            await sess.close(best_effort=False)
+
+        assert new_id == "new-sess"
+        assert sess.session_id == "new-sess"
+        post_methods = [json.loads(r.content)["method"] for r in captured if r.method == "POST"]
+        assert post_methods == [
+            "initialize",
+            "notifications/initialized",  # open_session
+            "initialize",
+            "notifications/initialized",  # refresh
+        ]
+
+    @pytest.mark.asyncio
+    async def test_refresh_raises_on_closed_session(self) -> None:
+        """INVARIANT: refresh() raises FigmaMcpError on a closed session."""
+        with _mock_three_step():
+            client = FigmaMcpClient(_TOKEN)
+            sess = await client.open_session()
+            await sess.close()
+            with pytest.raises(FigmaMcpError, match="closed FigmaMcpSession"):
+                await sess.refresh()
+
+
+class TestTerminateSession:
+    @pytest.mark.asyncio
+    async def test_terminate_raises_on_unexpected_error_when_not_best_effort(self) -> None:
+        """INVARIANT: _terminate_session raises FigmaMcpError on unexpected HTTP errors
+        when best_effort=False."""
+        responses: deque[httpx.Response] = deque(
+            [
+                httpx.Response(200, json=_init_response(), headers={"Mcp-Session-Id": SESSION_ID}),
+                httpx.Response(202),
+                httpx.Response(500, text="server error"),  # DELETE response
+            ]
+        )
+
+        def _side(req: httpx.Request) -> httpx.Response:
+            return responses.popleft()
+
+        with respx.mock() as router:
+            router.route().mock(side_effect=_side)
+            client = FigmaMcpClient(_TOKEN)
+            sess = await client.open_session()
+            with pytest.raises(FigmaMcpError, match="session termination failed"):
+                await sess.close(best_effort=False)
+
+    @pytest.mark.asyncio
+    async def test_terminate_silences_unexpected_error_when_best_effort(self) -> None:
+        """INVARIANT: _terminate_session swallows errors when best_effort=True (default)."""
+        responses: deque[httpx.Response] = deque(
+            [
+                httpx.Response(200, json=_init_response(), headers={"Mcp-Session-Id": SESSION_ID}),
+                httpx.Response(202),
+                httpx.Response(500, text="server error"),  # DELETE — ignored
+            ]
+        )
+
+        def _side(req: httpx.Request) -> httpx.Response:
+            return responses.popleft()
+
+        with respx.mock() as router:
+            router.route().mock(side_effect=_side)
+            client = FigmaMcpClient(_TOKEN)
+            sess = await client.open_session()
+            await sess.close(best_effort=True)  # must not raise
+        assert sess.is_closed is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [404, 405, 501])
+    async def test_terminate_succeeds_gracefully_on_unsupported_status(self, status: int) -> None:
+        """INVARIANT: _terminate_session treats 404/405/501 as 'not supported' and returns cleanly."""
+        responses: deque[httpx.Response] = deque(
+            [
+                httpx.Response(200, json=_init_response(), headers={"Mcp-Session-Id": SESSION_ID}),
+                httpx.Response(202),
+                httpx.Response(status),  # DELETE — server doesn't implement termination
+            ]
+        )
+
+        def _side(req: httpx.Request, _r: deque[httpx.Response] = responses) -> httpx.Response:
+            return _r.popleft()
+
+        with respx.mock() as router:
+            router.route().mock(side_effect=_side)
+            client = FigmaMcpClient(_TOKEN)
+            sess = await client.open_session()
+            await sess.close(best_effort=False)  # must not raise even with best_effort=False
+        assert sess.is_closed is True
