@@ -7,6 +7,17 @@ INVARIANTS:
 - pull_file skips file entirely when version and lastModified unchanged (not --force)
 - write_new_page creates parent dirs and writes rendered markdown
 - existing frame descriptions are preserved for unchanged frames (LLM idempotency)
+- pull_file is idempotent: second call on unchanged Figma content must not modify any file
+- has_more=True is only set when content-changed pages exhaust the budget, never by schema upgrades
+- schema upgrades always converge in a single pass regardless of max_pages
+
+Schema version registry
+-----------------------
+Every time CURRENT_PULL_SCHEMA_VERSION is bumped, a convergence test must be added
+for the upgrade path FROM the previous version. Add the old version to
+TESTED_UPGRADE_FROM_VERSIONS below and add a corresponding test.
+
+Current: see test_schema_upgrade_does_not_cause_infinite_loop_with_max_pages (v2→v3).
 """
 
 from __future__ import annotations
@@ -17,9 +28,29 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from figmaclaw.figma_api_models import FileMetaResponse, FileSummary, ProjectSummary
+from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
 from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection  # noqa: F401 — used in tests
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
 from figmaclaw.pull_logic import PullResult, pull_file, write_new_page
+
+# Schema version registry — must contain every version that has been superseded.
+# When you bump CURRENT_PULL_SCHEMA_VERSION from N to N+1, add N here and add
+# a corresponding convergence test (like test_schema_upgrade_does_not_cause_infinite_loop_with_max_pages).
+TESTED_UPGRADE_FROM_VERSIONS: frozenset[int] = frozenset({1, 2})
+
+
+def test_schema_upgrade_coverage_is_current():
+    """INVARIANT: every superseded pull schema version has a convergence upgrade test.
+
+    If this test fails after bumping CURRENT_PULL_SCHEMA_VERSION, add the old version
+    to TESTED_UPGRADE_FROM_VERSIONS above and write a new convergence test.
+    """
+    expected = frozenset(range(1, CURRENT_PULL_SCHEMA_VERSION))
+    assert TESTED_UPGRADE_FROM_VERSIONS == expected, (
+        f"CURRENT_PULL_SCHEMA_VERSION={CURRENT_PULL_SCHEMA_VERSION} but "
+        f"TESTED_UPGRADE_FROM_VERSIONS only covers {sorted(TESTED_UPGRADE_FROM_VERSIONS)}. "
+        "Add N to TESTED_UPGRADE_FROM_VERSIONS and write a convergence test for the N→N+1 upgrade."
+    )
 
 
 def _make_page(page_node_id: str = "7741:45837", page_name: str = "Onboarding") -> FigmaPage:
@@ -1475,4 +1506,94 @@ async def test_pull_file_sets_no_access_on_http_400(tmp_path: Path):
     result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
     assert result.no_access is True
-    assert result.skipped_file is True
+
+
+@pytest.mark.asyncio
+async def test_pull_file_is_idempotent_second_call_changes_nothing(tmp_path: Path):
+    """INVARIANT: a second pull on identical Figma content must not modify any file on disk.
+
+    This catches any write operation that ignores content equality (e.g. always
+    writing generated_at timestamps, always rewriting frontmatter even when unchanged).
+    Any such violation would produce spurious git commits and waste CI resources.
+    """
+    from figmaclaw.figma_client import FigmaClient
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    mock_client = MagicMock(spec=FigmaClient)
+    page_node = _fake_page_node_with_children()
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2", "2026-01-01T00:00:00Z"))
+    mock_client.get_page = AsyncMock(return_value=page_node)
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+    mock_client.get_nodes = AsyncMock(return_value=_fake_get_nodes_response())
+
+    # First pull: writes the page and tokens sidecar
+    result1 = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+    assert result1.pages_written == 1
+
+    # Capture all file contents after first pull
+    all_files_before = {
+        str(p.relative_to(tmp_path)): p.read_bytes()
+        for p in tmp_path.rglob("*")
+        if p.is_file()
+    }
+
+    # Second pull: same Figma version, same content — no file should change
+    result2 = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+    assert result2.pages_written == 0
+    assert result2.skipped_file is True  # file-level skip fires when version/last_modified unchanged
+
+    all_files_after = {
+        str(p.relative_to(tmp_path)): p.read_bytes()
+        for p in tmp_path.rglob("*")
+        if p.is_file()
+    }
+
+    assert all_files_before == all_files_after, (
+        "Files changed on second pull despite identical Figma content: "
+        + str({k for k in all_files_after if all_files_after[k] != all_files_before.get(k)})
+    )
+
+
+@pytest.mark.asyncio
+async def test_has_more_only_set_when_content_changes_exhaust_budget(tmp_path: Path):
+    """INVARIANT: has_more=True requires content-changed pages, not just schema upgrades.
+
+    Before the fix, schema_stale caused has_more=True even when all pages had unchanged
+    hashes. This prevented pull_schema_version from ever reaching CURRENT_PULL_SCHEMA_VERSION.
+    Schema-only upgrades must NOT consume the max_pages budget.
+    """
+    from figmaclaw.figma_client import FigmaClient
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    mock_client = MagicMock(spec=FigmaClient)
+    page_node = _fake_page_node_with_children()
+    mock_client.get_file_meta = AsyncMock(return_value=_fake_file_meta("v2", "2026-01-01T00:00:00Z"))
+    mock_client.get_page = AsyncMock(return_value=page_node)
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+    mock_client.get_nodes = AsyncMock(return_value=_fake_get_nodes_response())
+
+    # First pull: establishes page hash and schema version
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    # Simulate schema bump by resetting pull_schema_version
+    state.manifest.files["abc123"].pull_schema_version = 0
+    state.save()
+
+    # Schema-stale pull with max_pages=1: schema-only pages must not trigger has_more
+    result = await pull_file(
+        mock_client, "abc123", state, tmp_path, force=False, max_pages=1,
+    )
+
+    assert result.has_more is False, (
+        "has_more=True on a schema-only upgrade — schema upgrades must not consume "
+        "the max_pages budget (would cause an infinite loop in the CI batch loop)"
+    )
+    assert result.pages_written == 0
+    assert result.pages_schema_upgraded >= 1
+    assert result.skipped_file is False  # schema_stale=True bypasses file-level skip
