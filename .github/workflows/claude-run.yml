@@ -71,18 +71,18 @@ jobs:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 2
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v6
         with:
           node-version: '22'
 
       - name: Install Claude Code CLI
         run: npm install -g @anthropic-ai/claude-code
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -177,7 +177,7 @@ jobs:
 
       - name: Upload raw stream-json artifact
         if: always()  # success, failure, cancelled, or timeout
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7.0.0
         with:
           name: claude-run-raw-${{ github.run_id }}-${{ inputs.section_mode && 'large' || 'bulk' }}
           path: .figma-sync/claude-stream.jsonl

@@ -155,9 +155,7 @@ def decide_next_batch(
     )
 
 
-def load_per_frame_history(
-    csv_path: Path, mode: str, window: int = 5
-) -> list[float]:
+def load_per_frame_history(csv_path: Path, mode: str, window: int = 5) -> list[float]:
     """Read the per-frame time history for *mode* from the enrichment log.
 
     Returns seconds-per-frame values from the last *window* **successful**

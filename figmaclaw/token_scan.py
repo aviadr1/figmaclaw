@@ -23,6 +23,7 @@ Detection rules (per-property):
 INSTANCE children are not recursed — overrides on the instance itself are checked,
 but its internal children belong to the component definition, not the screen.
 """
+
 from __future__ import annotations
 
 from typing import Any, Literal
@@ -33,6 +34,16 @@ DS_LIB_HASH = "778120a439be1fc5e95e31d08a39a2e70bed3e63"
 OLD_LIB_PREFIX = "a3972cba"
 
 Classification = Literal["valid", "stale", "raw"]
+
+
+class ValidBinding(BaseModel):
+    """A resolved valid DS variable binding observed during a scan."""
+
+    variable_id: str
+    property: str
+    hex: str | None = None
+    numeric_value: float | None = None
+
 
 _SPACING_PROPS = (
     "itemSpacing",
@@ -101,6 +112,7 @@ class FrameTokenScan(BaseModel):
     stale: int = 0
     valid: int = 0
     issues: list[TokenIssue] = Field(default_factory=list)
+    valid_bindings: list[ValidBinding] = Field(default_factory=list)
 
 
 class PageTokenScan(BaseModel):
@@ -110,6 +122,7 @@ class PageTokenScan(BaseModel):
     stale: int = 0
     valid: int = 0
     frames: dict[str, FrameTokenScan] = Field(default_factory=dict)
+    valid_bindings: list[ValidBinding] = Field(default_factory=list)
 
 
 def _scan_node(
@@ -118,10 +131,12 @@ def _scan_node(
     counters: dict[str, int],
     path: list[str],
     depth: int,
+    valid_bindings: list[ValidBinding] | None = None,
 ) -> None:
     """Recursively walk a node, collecting token classification results.
 
     counters is mutated in-place: keys "raw", "stale", "valid".
+    valid_bindings is mutated in-place when provided: collects resolved valid bindings.
     INSTANCE children are not recursed (their internals belong to the component).
     """
     if depth > 8:
@@ -140,9 +155,17 @@ def _scan_node(
         current_value: Any,
         idx: int | None = None,
         stale_var_id: str | None = None,
+        var_id: str | None = None,
     ) -> None:
         counters[cls] = counters.get(cls, 0) + 1
         if cls == "valid":
+            if valid_bindings is not None and var_id:
+                binding = ValidBinding(variable_id=var_id, property=prop)
+                if isinstance(current_value, dict) and "r" in current_value:
+                    binding.hex = _rgb_to_hex(current_value)
+                elif isinstance(current_value, int | float):
+                    binding.numeric_value = float(current_value)
+                valid_bindings.append(binding)
             return
         issue = TokenIssue(
             node_id=node_id,
@@ -173,8 +196,14 @@ def _scan_node(
         cbv = fills_bv[i] if isinstance(fills_bv, list) and i < len(fills_bv) else None
         var_id = _get_bv_id(cbv)
         cls = classify_variable_id(var_id)
-        record("fill", cls, fill.get("color"), idx=i,
-               stale_var_id=var_id if cls == "stale" else None)
+        record(
+            "fill",
+            cls,
+            fill.get("color"),
+            idx=i,
+            stale_var_id=var_id if cls == "stale" else None,
+            var_id=var_id if cls == "valid" else None,
+        )
 
     # strokes
     strokes: list[dict] = node.get("strokes") or []
@@ -185,23 +214,39 @@ def _scan_node(
         cbv = strokes_bv[i] if isinstance(strokes_bv, list) and i < len(strokes_bv) else None
         var_id = _get_bv_id(cbv)
         cls = classify_variable_id(var_id)
-        record("stroke", cls, stroke.get("color"), idx=i,
-               stale_var_id=var_id if cls == "stale" else None)
+        record(
+            "stroke",
+            cls,
+            stroke.get("color"),
+            idx=i,
+            stale_var_id=var_id if cls == "stale" else None,
+            var_id=var_id if cls == "valid" else None,
+        )
 
     # strokeWeight (only when node has at least one stroke)
     if strokes and node.get("strokeWeight") is not None:
         var_id = _get_bv_id(bv.get("strokeWeight"))
         cls = classify_variable_id(var_id)
-        record("strokeWeight", cls, node.get("strokeWeight"),
-               stale_var_id=var_id if cls == "stale" else None)
+        record(
+            "strokeWeight",
+            cls,
+            node.get("strokeWeight"),
+            stale_var_id=var_id if cls == "stale" else None,
+            var_id=var_id if cls == "valid" else None,
+        )
 
     # cornerRadius (non-zero scalars only; "mixed" means individual corners are set)
     cr = node.get("cornerRadius")
     if cr is not None and cr != "mixed" and cr != 0:
         var_id = _get_bv_id(bv.get("cornerRadius"))
         cls = classify_variable_id(var_id)
-        record("cornerRadius", cls, cr,
-               stale_var_id=var_id if cls == "stale" else None)
+        record(
+            "cornerRadius",
+            cls,
+            cr,
+            stale_var_id=var_id if cls == "stale" else None,
+            var_id=var_id if cls == "valid" else None,
+        )
 
     # gap and padding (auto-layout nodes)
     if node.get("layoutMode") and node.get("layoutMode") != "NONE":
@@ -210,14 +255,17 @@ def _scan_node(
             if val is not None and val != 0:
                 var_id = _get_bv_id(bv.get(prop))
                 cls = classify_variable_id(var_id)
-                record(prop, cls, val,
-                       stale_var_id=var_id if cls == "stale" else None)
+                record(
+                    prop,
+                    cls,
+                    val,
+                    stale_var_id=var_id if cls == "stale" else None,
+                    var_id=var_id if cls == "valid" else None,
+                )
 
     # font properties (TEXT nodes only)
     if is_text:
-        has_text_style = bool(
-            node.get("textStyleId") or (node.get("styles") or {}).get("text")
-        )
+        has_text_style = bool(node.get("textStyleId") or (node.get("styles") or {}).get("text"))
         if has_text_style:
             # All three font props are covered by the text style → valid
             counters["valid"] = counters.get("valid", 0) + len(_FONT_PROPS)
@@ -227,27 +275,34 @@ def _scan_node(
                 if val is not None:
                     var_id = _get_bv_id(bv.get(prop))
                     cls = classify_variable_id(var_id)
-                    record(prop, cls, val,
-                           stale_var_id=var_id if cls == "stale" else None)
+                    record(
+                        prop,
+                        cls,
+                        val,
+                        stale_var_id=var_id if cls == "stale" else None,
+                        var_id=var_id if cls == "valid" else None,
+                    )
 
     # recurse — skip INSTANCE children (component internals, not this screen's concern)
     if node_type == "INSTANCE":
         return
     for child in node.get("children") or []:
-        _scan_node(child, issues, counters, node_path, depth + 1)
+        _scan_node(child, issues, counters, node_path, depth + 1, valid_bindings)
 
 
 def scan_frame(frame_node: dict[str, Any]) -> FrameTokenScan:
     """Scan a single FRAME node (including its own properties and all descendants)."""
     issues: list[TokenIssue] = []
     counters: dict[str, int] = {}
-    _scan_node(frame_node, issues, counters, path=[], depth=0)
+    valid_bindings: list[ValidBinding] = []
+    _scan_node(frame_node, issues, counters, path=[], depth=0, valid_bindings=valid_bindings)
     return FrameTokenScan(
         name=frame_node.get("name", ""),
         raw=counters.get("raw", 0),
         stale=counters.get("stale", 0),
         valid=counters.get("valid", 0),
         issues=issues,
+        valid_bindings=valid_bindings,
     )
 
 
@@ -270,6 +325,7 @@ def scan_page(page_node: dict[str, Any], frame_ids: set[str]) -> PageTokenScan:
             result.raw += fscan.raw
             result.stale += fscan.stale
             result.valid += fscan.valid
+            result.valid_bindings.extend(fscan.valid_bindings)
             # Sparse — only include frames that have at least one actionable issue
             if fscan.raw > 0 or fscan.stale > 0:
                 result.frames[node_id] = fscan

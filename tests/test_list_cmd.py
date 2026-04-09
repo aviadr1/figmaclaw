@@ -23,7 +23,6 @@ from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_sync_state import FigmaSyncState
 from figmaclaw.main import cli
 
-
 TEAM_ID = "1314617533998771588"
 FILE_KEY_A = "aaaabbbbcccc"
 FILE_KEY_B = "ddddeeeefffg"
@@ -34,7 +33,9 @@ def _project(project_id: str = "proj1", name: str = "Web") -> ProjectSummary:
 
 
 def _file(
-    key: str, name: str, last_modified: str = "2026-01-15T10:00:00Z",
+    key: str,
+    name: str,
+    last_modified: str = "2026-01-15T10:00:00Z",
 ) -> FileSummary:
     return FileSummary(key=key, name=name, last_modified=last_modified)
 
@@ -50,10 +51,12 @@ def mock_client():
     client.__aenter__ = AsyncMock(return_value=client)
     client.__aexit__ = AsyncMock(return_value=None)
     client.list_team_projects = AsyncMock(return_value=[_project()])
-    client.list_project_files = AsyncMock(return_value=[
-        _file(FILE_KEY_A, "Web App", "2026-03-01T00:00:00Z"),
-        _file(FILE_KEY_B, "Mobile App", "2025-10-01T00:00:00Z"),
-    ])
+    client.list_project_files = AsyncMock(
+        return_value=[
+            _file(FILE_KEY_A, "Web App", "2026-03-01T00:00:00Z"),
+            _file(FILE_KEY_B, "Mobile App", "2025-10-01T00:00:00Z"),
+        ]
+    )
     return client
 
 
@@ -116,7 +119,7 @@ def test_list_cmd_marks_tracked_files(runner: CliRunner, tmp_path: Path, mock_cl
     assert result.exit_code == 0
     assert "[tracked]" in result.output
     # Only the tracked file should be labelled
-    lines_with_tracked = [l for l in result.output.splitlines() if "[tracked]" in l]
+    lines_with_tracked = [line for line in result.output.splitlines() if "[tracked]" in line]
     assert len(lines_with_tracked) == 1
     assert FILE_KEY_A in lines_with_tracked[0]
 
@@ -128,9 +131,11 @@ def test_list_cmd_no_results_message(runner: CliRunner, tmp_path: Path):
     client.__aexit__ = AsyncMock(return_value=None)
     client.list_team_projects = AsyncMock(return_value=[_project()])
     # All files are old
-    client.list_project_files = AsyncMock(return_value=[
-        _file(FILE_KEY_A, "Old App", "2020-01-01T00:00:00Z"),
-    ])
+    client.list_project_files = AsyncMock(
+        return_value=[
+            _file(FILE_KEY_A, "Old App", "2020-01-01T00:00:00Z"),
+        ]
+    )
 
     with patch.object(FigmaClient, "__new__", return_value=client):
         result = runner.invoke(

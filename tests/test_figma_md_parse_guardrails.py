@@ -28,9 +28,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-_MD_PARSE_PATH = (
-    Path(__file__).parent.parent / "figmaclaw" / "figma_md_parse.py"
-)
+_MD_PARSE_PATH = Path(__file__).parent.parent / "figmaclaw" / "figma_md_parse.py"
 
 
 def _load_ast() -> ast.Module:
@@ -84,9 +82,7 @@ def test_figma_md_parse_has_no_regex_compile_calls() -> None:
                 else ""
             )
             if name == "compile":
-                offenders.append(
-                    f"line {getattr(node, 'lineno', '?')}: {ast.unparse(node)}"
-                )
+                offenders.append(f"line {getattr(node, 'lineno', '?')}: {ast.unparse(node)}")
     assert not offenders, (
         "figma_md_parse must not call .compile() — regex patterns belong "
         "in figma_schema. Found:\n  " + "\n  ".join(offenders)
@@ -124,8 +120,7 @@ def test_figma_md_parse_has_no_inline_schema_constants() -> None:
     offenders = [lit for lit in _FORBIDDEN_LITERALS if lit in source]
     assert not offenders, (
         "figma_md_parse contains canonical schema literals that must "
-        "instead be imported from figma_schema:\n  "
-        + "\n  ".join(offenders)
+        "instead be imported from figma_schema:\n  " + "\n  ".join(offenders)
     )
 
 
@@ -152,12 +147,14 @@ def test_figma_md_parse_imports_from_figma_schema() -> None:
 # ---------------------------------------------------------------------------
 
 
-_EXPECTED_PUBLIC_NAMES: frozenset[str] = frozenset({
-    "ParsedFrame",
-    "ParsedSection",
-    "section_line_ranges",
-    "parse_sections",
-})
+_EXPECTED_PUBLIC_NAMES: frozenset[str] = frozenset(
+    {
+        "ParsedFrame",
+        "ParsedSection",
+        "section_line_ranges",
+        "parse_sections",
+    }
+)
 
 
 def test_figma_md_parse_public_surface_is_stable() -> None:

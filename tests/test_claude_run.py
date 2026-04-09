@@ -8,17 +8,16 @@ invocation is never called — we test everything up to that boundary.
 INVARIANT: all figmaclaw commands must be valid Python. A syntax error
 breaks the entire enrichment pipeline (24+ hours of silent CI failures).
 """
+
 from __future__ import annotations
 
 import py_compile
 import textwrap
 from pathlib import Path
 
-import pytest
 from click.testing import CliRunner
 
 from figmaclaw.commands.claude_run import (
-    SECTION_THRESHOLD,
     build_prompt,
     collect_files,
     enrichment_info,
@@ -26,7 +25,6 @@ from figmaclaw.commands.claude_run import (
     pending_sections,
 )
 from figmaclaw.main import cli
-
 
 # ---------------------------------------------------------------------------
 # META-TEST: syntax validity (would have caught the orphaned except block)
@@ -64,7 +62,8 @@ class TestEnrichmentInfo:
     def test_file_without_enriched_hash_needs_enrichment(self, tmp_path: Path) -> None:
         """No enriched_hash → needs enrichment."""
         md = tmp_path / "page.md"
-        md.write_text(textwrap.dedent("""\
+        md.write_text(
+            textwrap.dedent("""\
             ---
             file_key: abc123
             page_node_id: "0:1"
@@ -77,7 +76,8 @@ class TestEnrichmentInfo:
             |--------|---------|-------------|
             | Login  | `1:1`   | (no description yet) |
             | Home   | `1:2`   | (no description yet) |
-        """))
+        """)
+        )
         needs, count = enrichment_info(md)
         assert needs is True
         assert count == 2
@@ -85,7 +85,8 @@ class TestEnrichmentInfo:
     def test_file_with_enriched_hash_skipped(self, tmp_path: Path) -> None:
         """enriched_hash in frontmatter → already enriched, skip."""
         md = tmp_path / "page.md"
-        md.write_text(textwrap.dedent("""\
+        md.write_text(
+            textwrap.dedent("""\
             ---
             file_key: abc123
             page_node_id: "0:1"
@@ -98,7 +99,8 @@ class TestEnrichmentInfo:
             | Screen | Node ID | Description |
             |--------|---------|-------------|
             | Login  | `1:1`   | Login screen with email/password form |
-        """))
+        """)
+        )
         needs, count = enrichment_info(md)
         assert needs is False
         assert count == 0
@@ -106,7 +108,8 @@ class TestEnrichmentInfo:
     def test_counts_frame_rows_correctly(self, tmp_path: Path) -> None:
         """Frame count = table rows with backtick node IDs, excluding header/separator."""
         md = tmp_path / "page.md"
-        md.write_text(textwrap.dedent("""\
+        md.write_text(
+            textwrap.dedent("""\
             ---
             file_key: abc123
             page_node_id: "0:1"
@@ -117,7 +120,8 @@ class TestEnrichmentInfo:
             | Login  | `1:1`   | desc |
             | Home   | `1:2`   | desc |
             | Profile | `1:3`  | desc |
-        """))
+        """)
+        )
         needs, count = enrichment_info(md)
         assert needs is True
         assert count == 3
@@ -141,7 +145,8 @@ class TestEnrichmentInfo:
     ) -> None:
         """enriched_hash must be in frontmatter (before closing ---), not body."""
         md = tmp_path / "page.md"
-        md.write_text(textwrap.dedent("""\
+        md.write_text(
+            textwrap.dedent("""\
             ---
             file_key: abc123
             page_node_id: "0:1"
@@ -152,7 +157,8 @@ class TestEnrichmentInfo:
             | Screen | Node ID | Description |
             |--------|---------|-------------|
             | Login  | `1:1`   | desc |
-        """))
+        """)
+        )
         needs, count = enrichment_info(md)
         assert needs is True
         assert count == 1
@@ -167,7 +173,8 @@ class TestEnrichmentInfo:
     def test_header_and_separator_rows_not_counted(self, tmp_path: Path) -> None:
         """Table header (Node ID) and separator (---) rows must not be counted as frames."""
         md = tmp_path / "page.md"
-        md.write_text(textwrap.dedent("""\
+        md.write_text(
+            textwrap.dedent("""\
             ---
             file_key: x
             ---
@@ -175,7 +182,8 @@ class TestEnrichmentInfo:
             | Screen | Node ID | Description |
             |--------|---------|-------------|
             | A | `1:1` | desc |
-        """))
+        """)
+        )
         needs, count = enrichment_info(md)
         assert needs is True
         assert count == 1
@@ -236,8 +244,11 @@ class TestCollectFiles:
         self._make_page(pages / "small.md", frames=5)
         self._make_page(pages / "huge.md", frames=81)
         result = collect_files(
-            tmp_path / "figma", "**/*.md", changed_only=False,
-            needs_enrichment=True, max_frames=80,
+            tmp_path / "figma",
+            "**/*.md",
+            changed_only=False,
+            needs_enrichment=True,
+            max_frames=80,
         )
         assert len(result) == 1
         assert result[0].name == "small.md"
@@ -248,8 +259,11 @@ class TestCollectFiles:
         self._make_page(pages / "small.md", frames=5)
         self._make_page(pages / "large.md", frames=100)
         result = collect_files(
-            tmp_path / "figma", "**/*.md", changed_only=False,
-            needs_enrichment=True, min_frames=81,
+            tmp_path / "figma",
+            "**/*.md",
+            changed_only=False,
+            needs_enrichment=True,
+            min_frames=81,
         )
         assert len(result) == 1
         assert result[0].name == "large.md"
@@ -326,10 +340,18 @@ class TestCLI:
         md = tmp_path / "page.md"
         md.write_text("---\nfile_key: x\n---\n")
         runner = CliRunner()
-        result = runner.invoke(cli, [
-            "--repo-dir", str(tmp_path),
-            "claude-run", str(md), "--prompt", "test {file_path}", "--dry-run",
-        ])
+        result = runner.invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "claude-run",
+                str(md),
+                "--prompt",
+                "test {file_path}",
+                "--dry-run",
+            ],
+        )
         assert result.exit_code == 0
         assert str(md) in result.output
 
@@ -337,10 +359,18 @@ class TestCLI:
         empty = tmp_path / "empty"
         empty.mkdir()
         runner = CliRunner()
-        result = runner.invoke(cli, [
-            "--repo-dir", str(tmp_path),
-            "claude-run", str(empty), "--prompt", "test", "--dry-run",
-        ])
+        result = runner.invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "claude-run",
+                str(empty),
+                "--prompt",
+                "test",
+                "--dry-run",
+            ],
+        )
         assert result.exit_code == 0
 
     def test_stream_format_help(self) -> None:
@@ -539,9 +569,7 @@ class TestPendingSectionsEmptyNameRegression:
             "| Frame C | `21:3` | (no description yet) |\n"
         )
         sections = pending_sections(md)
-        assert len(sections) == 1, (
-            "Empty-name section was dropped — the bug is back"
-        )
+        assert len(sections) == 1, "Empty-name section was dropped — the bug is back"
         assert sections[0]["node_id"] == "20:1"
         assert sections[0]["pending_frames"] == 3
 
@@ -554,8 +582,11 @@ class TestBuildPromptSectionPlaceholders:
         md.write_text("# content")
         template = "Enrich {section_node_id} ({section_name}) in {file_path}"
         result = build_prompt(
-            template, tmp_path, [md],
-            section_node_id="10:1", section_name="Auth",
+            template,
+            tmp_path,
+            [md],
+            section_node_id="10:1",
+            section_name="Auth",
         )
         assert "10:1" in result
         assert "Auth" in result

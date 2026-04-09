@@ -7,7 +7,6 @@ from pathlib import Path
 
 import click
 
-
 _TEMPLATES = ["figmaclaw-webhook.yaml", "figmaclaw-sync.yaml"]
 _PROXY_DIR = "webhook-proxy"
 
@@ -26,7 +25,9 @@ _PROXY_DIR = "webhook-proxy"
     help="Also copy the Cloudflare Worker webhook proxy template into workers/figma-webhook-proxy/.",
 )
 @click.pass_context
-def init_cmd(ctx: click.Context, workflows_dir: str, overwrite: bool, with_webhook_proxy: bool) -> None:
+def init_cmd(
+    ctx: click.Context, workflows_dir: str, overwrite: bool, with_webhook_proxy: bool
+) -> None:
     """Copy figmaclaw workflow templates into .github/workflows/."""
     repo_dir = Path(ctx.obj["repo_dir"])
     dest_dir = repo_dir / workflows_dir

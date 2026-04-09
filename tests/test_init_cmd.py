@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 import yaml
 from click.testing import CliRunner
 
@@ -39,7 +38,7 @@ def test_init_copied_files_are_valid_yaml(tmp_path: Path):
         content = (workflows_dir / fname).read_text()
         parsed = yaml.safe_load(content)
         assert isinstance(parsed, dict), f"{fname} must be a YAML mapping"
-        assert "on" in parsed or True  # GitHub Actions key
+        assert ("on" in parsed) or (True in parsed)  # YAML 1.1 may parse "on" as True
 
 
 def test_init_skips_existing_files_by_default(tmp_path: Path):
@@ -105,7 +104,9 @@ def test_init_webhook_proxy_overwrites_with_flag(tmp_path: Path):
     (proxy_dir / "old-file.txt").write_text("stale")
 
     runner = CliRunner()
-    result = runner.invoke(cli, ["--repo-dir", str(tmp_path), "init", "--with-webhook-proxy", "--overwrite"])
+    result = runner.invoke(
+        cli, ["--repo-dir", str(tmp_path), "init", "--with-webhook-proxy", "--overwrite"]
+    )
     assert result.exit_code == 0
 
     assert (proxy_dir / "src" / "index.js").exists()

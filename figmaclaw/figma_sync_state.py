@@ -93,9 +93,7 @@ class FigmaSyncState:
     def save(self) -> None:
         """Persist manifest to disk."""
         self._sync_dir.mkdir(parents=True, exist_ok=True)
-        self._manifest_file.write_text(
-            self.manifest.model_dump_json(indent=2) + "\n"
-        )
+        self._manifest_file.write_text(self.manifest.model_dump_json(indent=2) + "\n")
 
     def get_page_hash(self, file_key: str, page_node_id: str) -> str | None:
         """Return the stored hash for a page, or None if unknown."""
@@ -137,11 +135,12 @@ class FigmaSyncState:
         """Return True if page_name matches any skip_pages glob pattern (case-insensitive)."""
         name_lower = page_name.lower()
         return any(
-            fnmatch.fnmatch(name_lower, pattern.lower())
-            for pattern in self.manifest.skip_pages
+            fnmatch.fnmatch(name_lower, pattern.lower()) for pattern in self.manifest.skip_pages
         )
 
-    def set_file_meta(self, file_key: str, version: str, last_modified: str, last_checked_at: str) -> None:
+    def set_file_meta(
+        self, file_key: str, version: str, last_modified: str, last_checked_at: str
+    ) -> None:
         """Update file-level metadata after a successful check."""
         if file_key in self.manifest.files:
             entry = self.manifest.files[file_key]

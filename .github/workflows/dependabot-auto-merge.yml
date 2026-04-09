@@ -1,0 +1,79 @@
+name: Dependabot Auto Merge
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+  workflow_dispatch:
+  schedule:
+    - cron: "15 * * * *"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge-event:
+    if: github.event_name == 'pull_request_target' && github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Enable auto-merge for Dependabot updates
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const pullRequestId = pr.node_id;
+            await github.graphql(
+              `mutation($pullRequestId: ID!) {
+                enablePullRequestAutoMerge(input: {
+                  pullRequestId: $pullRequestId,
+                  mergeMethod: SQUASH
+                }) {
+                  clientMutationId
+                }
+              }`,
+              { pullRequestId }
+            );
+
+  auto-merge-backlog:
+    if: github.event_name != 'pull_request_target'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Enable auto-merge for open Dependabot PRs
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const { data: pulls } = await github.rest.pulls.list({
+              owner,
+              repo,
+              state: "open",
+              per_page: 100,
+            });
+
+            for (const pr of pulls) {
+              if (pr.user?.login !== "dependabot[bot]" || pr.draft) continue;
+
+              try {
+                await github.graphql(
+                  `mutation($pullRequestId: ID!) {
+                    enablePullRequestAutoMerge(input: {
+                      pullRequestId: $pullRequestId,
+                      mergeMethod: SQUASH
+                    }) {
+                      clientMutationId
+                    }
+                  }`,
+                  { pullRequestId: pr.node_id }
+                );
+                core.info(`Enabled auto-merge for #${pr.number}`);
+              } catch (error) {
+                core.info(`Skipping auto-merge for #${pr.number}: ${error.message}`);
+              }
+            }

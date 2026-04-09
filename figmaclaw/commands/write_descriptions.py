@@ -18,15 +18,15 @@ from pathlib import Path
 
 import click
 
-from figmaclaw.figma_parse import parse_frontmatter, split_frontmatter
+from figmaclaw.figma_parse import parse_frontmatter
 from figmaclaw.git_utils import git_commit
 
 # Match a table row with a backtick-quoted node_id in the second column.
 # Captures: (1) everything before the description, (2) the description, (3) trailing |
 _ROW_RE = re.compile(
     r"^(\| [^|]+ \| `([^`]+)` \| )"  # prefix: | name | `node_id` |<space>
-    r"(.*)"                            # description (everything until end)
-    r"( \|)\s*$"                       # trailing " |"
+    r"(.*)"  # description (everything until end)
+    r"( \|)\s*$"  # trailing " |"
 )
 
 
@@ -54,7 +54,9 @@ def _update_descriptions(md: str, descriptions: dict[str, str]) -> tuple[str, in
 @click.command("write-descriptions")
 @click.argument("md_path", type=click.Path(exists=True, path_type=Path))
 @click.option(
-    "--descriptions", "desc_input", default=None,
+    "--descriptions",
+    "desc_input",
+    default=None,
     help='JSON object: {"node_id": "description", ...}. Reads stdin if omitted.',
 )
 @click.option("--auto-commit", "auto_commit", is_flag=True, help="git commit the result.")
@@ -81,13 +83,11 @@ def write_descriptions_cmd(
         descriptions = json.loads(desc_input)
     else:
         if sys.stdin.isatty():
-            raise click.UsageError(
-                "Provide --descriptions or pipe JSON to stdin."
-            )
+            raise click.UsageError("Provide --descriptions or pipe JSON to stdin.")
         descriptions = json.loads(sys.stdin.read())
 
     if not isinstance(descriptions, dict):
-        raise click.UsageError("Descriptions must be a JSON object: {\"node_id\": \"desc\", ...}")
+        raise click.UsageError('Descriptions must be a JSON object: {"node_id": "desc", ...}')
 
     md_text = md_path.read_text()
     fm = parse_frontmatter(md_text)
@@ -101,12 +101,16 @@ def write_descriptions_cmd(
     click.echo(f"write-descriptions: updated {count}/{len(descriptions)} rows in {rel}")
 
     not_found = set(descriptions.keys()) - {
-        m.group(2) for line in updated_text.splitlines()
+        m.group(2)
+        for line in updated_text.splitlines()
         if (m := _ROW_RE.match(line)) and m.group(2) in descriptions
     }
     if not_found:
-        click.echo(f"  warning: {len(not_found)} node_id(s) not found in table: {not_found}", err=True)
+        click.echo(
+            f"  warning: {len(not_found)} node_id(s) not found in table: {not_found}", err=True
+        )
 
-    if auto_commit:
-        if git_commit(repo_dir, [rel], f"sync: update {count} frame descriptions in {rel}"):
-            click.echo(f"  committed: {rel}")
+    if auto_commit and git_commit(
+        repo_dir, [rel], f"sync: update {count} frame descriptions in {rel}"
+    ):
+        click.echo(f"  committed: {rel}")

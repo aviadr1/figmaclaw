@@ -59,10 +59,13 @@ flowchart LR
 
 def test_update_descriptions_replaces_matched_rows() -> None:
     """INVARIANT: matched node_ids get their descriptions updated."""
-    result, count = _update_descriptions(_TEST_MD, {
-        "11:1": "A login screen with email/password fields",
-        "21:1": "The main dashboard with activity feed",
-    })
+    result, count = _update_descriptions(
+        _TEST_MD,
+        {
+            "11:1": "A login screen with email/password fields",
+            "21:1": "The main dashboard with activity feed",
+        },
+    )
     assert count == 2
     assert "A login screen with email/password fields" in result
     assert "The main dashboard with activity feed" in result
@@ -107,27 +110,36 @@ def test_update_descriptions_preserves_screen_flows() -> None:
 
 def test_update_descriptions_escapes_pipe() -> None:
     """INVARIANT: pipe characters in descriptions are escaped."""
-    result, count = _update_descriptions(_TEST_MD, {
-        "11:1": "A screen with yes | no options",
-    })
+    result, count = _update_descriptions(
+        _TEST_MD,
+        {
+            "11:1": "A screen with yes | no options",
+        },
+    )
     assert count == 1
     assert "yes \\| no" in result
 
 
 def test_update_descriptions_missing_node_id() -> None:
     """INVARIANT: missing node_ids are silently skipped (count reflects actual updates)."""
-    result, count = _update_descriptions(_TEST_MD, {
-        "99:99": "Ghost description",
-    })
+    result, count = _update_descriptions(
+        _TEST_MD,
+        {
+            "99:99": "Ghost description",
+        },
+    )
     assert count == 0
 
 
 def test_update_descriptions_partial_match() -> None:
     """INVARIANT: only matched rows updated, count reflects actual updates."""
-    result, count = _update_descriptions(_TEST_MD, {
-        "11:1": "Updated login",
-        "99:99": "Ghost",
-    })
+    result, count = _update_descriptions(
+        _TEST_MD,
+        {
+            "11:1": "Updated login",
+            "99:99": "Ghost",
+        },
+    )
     assert count == 1
     assert "Updated login" in result
 
@@ -139,11 +151,17 @@ def test_cli_write_descriptions(tmp_path: Path) -> None:
 
     descs = json.dumps({"11:1": "CLI test description", "11:2": "Signup form"})
     runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "write-descriptions", str(md_path),
-        "--descriptions", descs,
-    ])
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "write-descriptions",
+            str(md_path),
+            "--descriptions",
+            descs,
+        ],
+    )
     assert result.exit_code == 0
     assert "updated 2/2" in result.output
 
@@ -162,11 +180,17 @@ def test_cli_write_descriptions_warns_on_missing(tmp_path: Path) -> None:
 
     descs = json.dumps({"99:99": "Ghost"})
     runner = CliRunner()
-    result = runner.invoke(cli, [
-        "--repo-dir", str(tmp_path),
-        "write-descriptions", str(md_path),
-        "--descriptions", descs,
-    ])
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "write-descriptions",
+            str(md_path),
+            "--descriptions",
+            descs,
+        ],
+    )
     assert result.exit_code == 0
     assert "updated 0/1" in result.output
 
@@ -181,9 +205,12 @@ def test_update_descriptions_idempotent() -> None:
 
 def test_update_descriptions_handles_failed_frames() -> None:
     """INVARIANT: failed frames (screenshot unavailable) clear the placeholder."""
-    result, count = _update_descriptions(_TEST_MD, {
-        "11:1": "(screenshot unavailable)",
-    })
+    result, count = _update_descriptions(
+        _TEST_MD,
+        {
+            "11:1": "(screenshot unavailable)",
+        },
+    )
     assert count == 1
     assert "(screenshot unavailable)" in result
     assert "| Login | `11:1` | (screenshot unavailable) |" in result
@@ -194,10 +221,13 @@ def test_update_descriptions_handles_failed_frames() -> None:
 
 def test_update_descriptions_clears_all_placeholders_with_mixed() -> None:
     """INVARIANT: mix of real descriptions and unavailable markers works."""
-    result, count = _update_descriptions(_TEST_MD, {
-        "11:1": "A real login screen description",
-        "11:2": "(screenshot unavailable)",
-        "21:1": "The dashboard",
-    })
+    result, count = _update_descriptions(
+        _TEST_MD,
+        {
+            "11:1": "A real login screen description",
+            "11:2": "(screenshot unavailable)",
+            "21:1": "The dashboard",
+        },
+    )
     assert count == 3
     assert "(no description yet)" not in result

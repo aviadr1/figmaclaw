@@ -15,6 +15,7 @@ INVARIANT: the ``FigmaAPIValidationError`` message format is part of
 the contract. CI log consumers grep for "Figma API response validation
 failed"; tests pin that exact string.
 """
+
 from __future__ import annotations
 
 import py_compile
@@ -208,7 +209,6 @@ class TestNodesResponse:
 
 
 class TestTeamProjectsResponse:
-
     def test_happy_path(self) -> None:
         data = {
             "name": "Engineering",
@@ -237,7 +237,6 @@ class TestTeamProjectsResponse:
 
 
 class TestProjectFilesResponse:
-
     def test_happy_path(self) -> None:
         data = {
             "name": "Mobile App",
@@ -271,7 +270,6 @@ class TestProjectFilesResponse:
 
 
 class TestVersionsPage:
-
     HAPPY_PATH: dict = {
         "versions": [
             {
@@ -301,6 +299,7 @@ class TestVersionsPage:
         assert v2.user.handle == ""  # defaulted
         assert v2.user.id is None
         assert page.pagination is not None
+        assert page.pagination.next_page is not None
         assert page.pagination.next_page.startswith("/v1/files/")
 
     def test_missing_pagination_is_legal(self) -> None:
@@ -356,8 +355,10 @@ class TestValidationErrorWrapper:
         bad = {"name": "x"}
         with pytest.raises(FigmaAPIValidationError) as exc_info:
             _validate(
-                FileMetaResponse, bad,
-                endpoint="GET /v1/files/{key}", context="file_key=abc",
+                FileMetaResponse,
+                bad,
+                endpoint="GET /v1/files/{key}",
+                context="file_key=abc",
             )
         msg = str(exc_info.value)
         assert "version" in msg
@@ -370,8 +371,10 @@ class TestValidationErrorWrapper:
             "lastModified": "2026-04-05T12:00:00Z",
         }
         result = _validate(
-            FileMetaResponse, good,
-            endpoint="GET /v1/files/{key}", context="file_key=abc",
+            FileMetaResponse,
+            good,
+            endpoint="GET /v1/files/{key}",
+            context="file_key=abc",
         )
         assert isinstance(result, FileMetaResponse)
         assert result.name == "x"

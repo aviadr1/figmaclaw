@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
-import subprocess
 from pathlib import Path
 
 import click
@@ -20,20 +20,61 @@ from figmaclaw.pull_logic import PullResult, pull_file
 @click.command("pull")
 @click.option("--file-key", "file_key", default=None, help="Pull only this file key.")
 @click.option("--force", is_flag=True, help="Regenerate all pages even if hash is unchanged.")
-@click.option("--max-pages", "max_pages", default=None, type=int, help="Global page budget per run (batch loop mode).")
-@click.option("--auto-commit", "auto_commit", is_flag=True, help="git commit after each page. CI should do a final git push.")
-@click.option("--push-every", "push_every", default=10, type=int, show_default=True, help="Push every N commits when --auto-commit is set.")
-@click.option("--team-id", "team_id", default=None, envvar="FIGMA_TEAM_ID", help="Figma team ID. Enables fast listing pre-filter and auto-discovery of new files.")
-@click.option("--since", "since", default="3m", show_default=True, help="When --team-id is set, only track files modified within this window (e.g. 3m, 7d, all).")
+@click.option(
+    "--max-pages",
+    "max_pages",
+    default=None,
+    type=int,
+    help="Global page budget per run (batch loop mode).",
+)
+@click.option(
+    "--auto-commit",
+    "auto_commit",
+    is_flag=True,
+    help="git commit after each page. CI should do a final git push.",
+)
+@click.option(
+    "--push-every",
+    "push_every",
+    default=10,
+    type=int,
+    show_default=True,
+    help="Push every N commits when --auto-commit is set.",
+)
+@click.option(
+    "--team-id",
+    "team_id",
+    default=None,
+    envvar="FIGMA_TEAM_ID",
+    help="Figma team ID. Enables fast listing pre-filter and auto-discovery of new files.",
+)
+@click.option(
+    "--since",
+    "since",
+    default="3m",
+    show_default=True,
+    help="When --team-id is set, only track files modified within this window (e.g. 3m, 7d, all).",
+)
 @click.pass_context
-def pull_cmd(ctx: click.Context, file_key: str | None, force: bool, max_pages: int | None, auto_commit: bool, push_every: int, team_id: str | None, since: str) -> None:
+def pull_cmd(
+    ctx: click.Context,
+    file_key: str | None,
+    force: bool,
+    max_pages: int | None,
+    auto_commit: bool,
+    push_every: int,
+    team_id: str | None,
+    since: str,
+) -> None:
     """Pull all tracked Figma files and write changed pages to disk."""
     repo_dir = Path(ctx.obj["repo_dir"])
     api_key = os.environ.get("FIGMA_API_KEY", "")
     if not api_key:
         raise click.UsageError("FIGMA_API_KEY environment variable is not set.")
 
-    asyncio.run(_run(api_key, repo_dir, file_key, force, max_pages, auto_commit, push_every, team_id, since))
+    asyncio.run(
+        _run(api_key, repo_dir, file_key, force, max_pages, auto_commit, push_every, team_id, since)
+    )
 
 
 def _git_commit_page(repo_dir: Path, page_label: str) -> bool:
@@ -57,15 +98,12 @@ async def _listing_prefilter(
     calling get_file_meta — the cheap listing replaces 63 individual meta calls
     in the no-op case.
     """
-    from figmaclaw.figma_utils import parse_since
     from datetime import datetime
 
     since_dt: datetime | None = None
     if since:
-        try:
+        with contextlib.suppress(ValueError):
             since_dt = parse_since(since)
-        except ValueError:
-            pass
 
     projects = await client.list_team_projects(team_id)
 
@@ -190,7 +228,10 @@ async def _run(
 
             try:
                 result = await pull_file(
-                    client, key, state, repo_dir,
+                    client,
+                    key,
+                    state,
+                    repo_dir,
                     force=force,
                     max_pages=pages_budget,
                     on_page_written=on_page_written,
@@ -201,6 +242,8 @@ async def _run(
             all_results.append(result)
 
             if max_pages is not None and pages_budget is not None:
+                # Schema-only upgrades don't count toward the budget — they can't cause
+                # infinite loops and always complete in a single pass regardless of max_pages.
                 pages_budget -= result.pages_written
             if result.has_more:
                 has_more_global = True
@@ -224,7 +267,14 @@ async def _run(
                 click.echo(f"{key}: unchanged (skipped)")
             else:
                 errored = f", {result.pages_errored} error(s)" if result.pages_errored else ""
-                click.echo(f"{key}: wrote {result.pages_written} page(s), {result.component_sections_written} component(s), skipped {result.pages_skipped}{errored}")
+                upgraded = (
+                    f", {result.pages_schema_upgraded} schema-upgraded"
+                    if result.pages_schema_upgraded
+                    else ""
+                )
+                click.echo(
+                    f"{key}: wrote {result.pages_written} page(s), {result.component_sections_written} component(s), skipped {result.pages_skipped}{upgraded}{errored}"
+                )
                 for path in result.md_paths:
                     click.echo(f"  → {path}")
                 for path in result.component_paths:
@@ -234,12 +284,17 @@ async def _run(
 
     all_screen_paths = [p for r in all_results for p in r.md_paths]
     all_comp_paths = [p for r in all_results for p in r.component_paths]
+    total_written = sum(r.pages_written for r in all_results)
+    total_schema_upgraded = sum(r.pages_schema_upgraded for r in all_results)
     if all_screen_paths or all_comp_paths:
         parts = []
-        if all_screen_paths:
-            parts.append(f"{len(all_screen_paths)} page(s)")
+        if total_written:
+            parts.append(f"{total_written} page(s)")
         if all_comp_paths:
             parts.append(f"{len(all_comp_paths)} component(s)")
+        if total_schema_upgraded and not total_written:
+            # Schema-only run: use a different verb so it's recognizable in git log
+            parts.append(f"{total_schema_upgraded} page(s) schema-upgraded")
         click.echo(f"COMMIT_MSG:sync: figmaclaw pull — {', '.join(parts)} updated")
 
     if has_more_global:

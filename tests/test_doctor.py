@@ -27,10 +27,14 @@ def test_doctor_fails_without_api_key(tmp_path: Path) -> None:
     _init_git(tmp_path)
     runner = CliRunner()
     with patch.dict("os.environ", {"FIGMA_API_KEY": ""}, clear=False):
-        result = runner.invoke(cli, [
-            "--repo-dir", str(tmp_path),
-            "doctor",
-        ])
+        result = runner.invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "doctor",
+            ],
+        )
     assert result.exit_code == 1
     assert "FIGMA_API_KEY" in result.output
 
@@ -40,10 +44,14 @@ def test_doctor_reports_missing_manifest(tmp_path: Path) -> None:
     _init_git(tmp_path)
     runner = CliRunner()
     with patch.dict("os.environ", {"FIGMA_API_KEY": ""}, clear=False):
-        result = runner.invoke(cli, [
-            "--repo-dir", str(tmp_path),
-            "doctor",
-        ])
+        result = runner.invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "doctor",
+            ],
+        )
     assert "manifest" in result.output.lower()
     assert "figmaclaw track" in result.output
 
@@ -53,10 +61,14 @@ def test_doctor_reports_missing_workflows(tmp_path: Path) -> None:
     _init_git(tmp_path)
     runner = CliRunner()
     with patch.dict("os.environ", {"FIGMA_API_KEY": ""}, clear=False):
-        result = runner.invoke(cli, [
-            "--repo-dir", str(tmp_path),
-            "doctor",
-        ])
+        result = runner.invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "doctor",
+            ],
+        )
     assert "figmaclaw init" in result.output
 
 
@@ -70,10 +82,14 @@ def test_doctor_detects_workflow_files(tmp_path: Path) -> None:
 
     runner = CliRunner()
     with patch.dict("os.environ", {"FIGMA_API_KEY": ""}, clear=False):
-        result = runner.invoke(cli, [
-            "--repo-dir", str(tmp_path),
-            "doctor",
-        ])
+        result = runner.invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "doctor",
+            ],
+        )
     assert "figmaclaw-sync.yaml" in result.output
     assert "figmaclaw-webhook.yaml" in result.output
 
@@ -88,8 +104,12 @@ def test_doctor_detects_figma_pages(tmp_path: Path) -> None:
 
     runner = CliRunner()
     with patch.dict("os.environ", {"FIGMA_API_KEY": ""}, clear=False):
-        result = runner.invoke(cli, [
-            "--repo-dir", str(tmp_path),
-            "doctor",
-        ])
+        result = runner.invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "doctor",
+            ],
+        )
     assert "2 .md file(s)" in result.output

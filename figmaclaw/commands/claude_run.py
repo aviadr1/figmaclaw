@@ -27,6 +27,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import UTC
 from pathlib import Path
 
 import click
@@ -49,8 +50,12 @@ STREAM_JSON_LOG = ".figma-sync/claude-stream.jsonl"  # raw stream-json, appended
 
 
 def _log_enrichment(
-    repo_dir: Path, file_path: Path, mode: str,
-    frames: int, duration_s: float, success: bool,
+    repo_dir: Path,
+    file_path: Path,
+    mode: str,
+    frames: int,
+    duration_s: float,
+    success: bool,
     section_name: str = "",
     claude: ClaudeResult | None = None,
 ) -> None:
@@ -62,9 +67,14 @@ def _log_enrichment(
             "timestamp,file,mode,frames,duration_s,success,section,"
             "turns,cost_usd,claude_duration_ms,stop_reason\n"
         )
-    from datetime import datetime, timezone
-    ts = datetime.now(timezone.utc).isoformat()
-    rel = str(file_path.relative_to(repo_dir)) if file_path.is_relative_to(repo_dir) else str(file_path)
+    from datetime import datetime
+
+    ts = datetime.now(UTC).isoformat()
+    rel = (
+        str(file_path.relative_to(repo_dir))
+        if file_path.is_relative_to(repo_dir)
+        else str(file_path)
+    )
     turns = claude.turns if claude else ""
     cost = f"{claude.cost_usd:.4f}" if claude else ""
     claude_dur = claude.duration_ms if claude else ""
@@ -212,15 +222,15 @@ def pending_sections(md_path: Path) -> list[dict[str, str | int]]:
     for section, start, end in section_line_ranges(text):
         if not section.node_id:
             continue  # prose sections (Screen Flow) have no node_id
-        pending = sum(
-            1 for line in lines[start:end] if is_placeholder_row(line)
-        )
+        pending = sum(1 for line in lines[start:end] if is_placeholder_row(line))
         if pending > 0:
-            result.append({
-                "node_id": section.node_id,
-                "name": section.name,
-                "pending_frames": pending,
-            })
+            result.append(
+                {
+                    "node_id": section.node_id,
+                    "name": section.name,
+                    "pending_frames": pending,
+                }
+            )
     return result
 
 
@@ -241,10 +251,7 @@ def needs_finalization(md_path: Path) -> bool:
 
     # If already marked as enriched, no need to finalize
     fm_block = text.split("\n---")[0] if "\n---" in text else ""
-    if "enriched_hash:" in fm_block:
-        return False
-
-    return True
+    return "enriched_hash:" not in fm_block
 
 
 # ---------------------------------------------------------------------------
@@ -265,8 +272,7 @@ def build_prompt(
     content = file_path.read_text() if file_path.exists() else ""
     file_list = "\n".join(f"- {f}" for f in files)
     return (
-        template
-        .replace("{file_path}", str(file_path))
+        template.replace("{file_path}", str(file_path))
         .replace("{file_content}", content)
         .replace("{filename}", file_path.name)
         .replace("{file_list}", file_list)
@@ -287,7 +293,6 @@ def default_prompt_path() -> Path:
     return _prompt_path("figma-batch-enrich.md")
 
 
-
 def finalize_prompt_path() -> Path:
     """Return the path to the bundled ``figma-section-finalize.md`` prompt."""
     return _prompt_path("figma-section-finalize.md")
@@ -300,6 +305,7 @@ def finalize_prompt_path() -> Path:
 
 class ClaudeResult(pydantic.BaseModel):
     """Metrics extracted from a ``claude -p`` stream-json run."""
+
     exit_code: int = 0
     turns: int = 0
     cost_usd: float = 0.0
@@ -323,11 +329,15 @@ def _run_claude(
     import json as _json
 
     cmd = [
-        "claude", "-p",
-        "--output-format", "stream-json",
+        "claude",
+        "-p",
+        "--output-format",
+        "stream-json",
         "--verbose",
-        "--model", model,
-        "--max-turns", str(max_turns),
+        "--model",
+        model,
+        "--max-turns",
+        str(max_turns),
         *extra_flags,
     ]
     if skip_permissions:
@@ -353,13 +363,16 @@ def _run_claude(
     t = threading.Thread(target=_relay_stderr, daemon=True)
     t.start()
 
+    import contextlib
+
     result = ClaudeResult()
-    log_fp = None
     if stream_log_path is not None:
         stream_log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_fp = open(stream_log_path, "ab")  # append, binary for line bytes
+    log_ctx = (
+        stream_log_path.open("ab") if stream_log_path is not None else contextlib.nullcontext(None)
+    )
 
-    try:
+    with log_ctx as log_fp:
         for line in proc.stdout:
             sys.stdout.buffer.write(line)
             sys.stdout.buffer.flush()
@@ -379,9 +392,6 @@ def _run_claude(
                     result.stop_reason = msg.get("stop_reason", "")
             except (ValueError, KeyError):
                 pass
-    finally:
-        if log_fp is not None:
-            log_fp.close()
 
     t.join()
     result.exit_code = proc.wait()
@@ -396,49 +406,67 @@ def _run_claude(
 @click.command("claude-run")
 @click.argument("target", type=click.Path(exists=True, path_type=Path))
 @click.option(
-    "--prompt-file", type=click.Path(exists=True, path_type=Path), default=None,
+    "--prompt-file",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
     help="Prompt template file. Defaults to bundled figma-batch-enrich.md.",
 )
 @click.option(
-    "--prompt", "prompt_text", default=None,
+    "--prompt",
+    "prompt_text",
+    default=None,
     help="Inline prompt template (overrides --prompt-file).",
 )
 @click.option(
-    "--model", default="claude-sonnet-4-6",
+    "--model",
+    default="claude-sonnet-4-6",
     help="Claude model.",
 )
 @click.option(
-    "--max-turns", type=int, default=50,
+    "--max-turns",
+    type=int,
+    default=50,
     help="Max turns (needs headroom for tool use + subagent round-trips).",
 )
 @click.option(
-    "--glob", "glob_pattern", default="**/*.md",
+    "--glob",
+    "glob_pattern",
+    default="**/*.md",
     help="Glob for directory mode.",
 )
 @click.option("--changed-only", is_flag=True, help="Only process git-changed files.")
 @click.option(
-    "--needs-enrichment", is_flag=True,
+    "--needs-enrichment",
+    is_flag=True,
     help="Filter to files needing enrichment (missing enriched_hash).",
 )
 @click.option(
-    "--min-frames", type=int, default=0,
+    "--min-frames",
+    type=int,
+    default=0,
     help="Only process files with at least N frames (use with --needs-enrichment).",
 )
 @click.option(
-    "--max-frames", type=int, default=0,
+    "--max-frames",
+    type=int,
+    default=0,
     help="Only process files with at most N frames (use with --needs-enrichment). 0 = no limit.",
 )
 @click.option(
-    "--max-files", type=int, default=0,
+    "--max-files",
+    type=int,
+    default=0,
     help="Limit to N files (0 = unlimited).",
 )
 @click.option(
-    "--section-mode", is_flag=True,
+    "--section-mode",
+    is_flag=True,
     help="For large pages (>80 frames), enrich one section at a time.",
 )
 @click.option("--dry-run", is_flag=True, help="Print file list without calling claude.")
 @click.option(
-    "--skip-permissions/--no-skip-permissions", default=True,
+    "--skip-permissions/--no-skip-permissions",
+    default=True,
     help="Pass --dangerously-skip-permissions to claude (default: on for CI).",
 )
 @click.pass_context
@@ -488,8 +516,12 @@ def claude_run_cmd(
         template = default_prompt_path().read_text()
 
     files = collect_files(
-        target, glob_pattern, changed_only, needs_enrichment,
-        min_frames=min_frames, max_frames=max_frames,
+        target,
+        glob_pattern,
+        changed_only,
+        needs_enrichment,
+        min_frames=min_frames,
+        max_frames=max_frames,
     )
     if max_files > 0 and len(files) > max_files:
         click.echo(f"[claude-run] limiting to {max_files}/{len(files)} files", err=True)
@@ -506,9 +538,13 @@ def claude_run_cmd(
             if section_mode and fc > SECTION_THRESHOLD:
                 sections = pending_sections(f)
                 fin = needs_finalization(f)
-                click.echo(f"  {f} ({fc} frames, section-mode: {len(sections)} pending sections, finalize={fin})")
+                click.echo(
+                    f"  {f} ({fc} frames, section-mode: {len(sections)} pending sections, finalize={fin})"
+                )
                 for s in sections:
-                    click.echo(f"    section {s['node_id']} ({s['name']}): {s['pending_frames']} pending")
+                    click.echo(
+                        f"    section {s['node_id']} ({s['name']}): {s['pending_frames']} pending"
+                    )
             else:
                 click.echo(f"  {f} ({fc} frames)")
         sys.exit(0)
@@ -639,8 +675,12 @@ def claude_run_cmd(
                                 err=True,
                             )
                             _log_enrichment(
-                                repo_dir, file_path, "stuck",
-                                total_pending, 0, False,
+                                repo_dir,
+                                file_path,
+                                "stuck",
+                                total_pending,
+                                0,
+                                False,
                             )
                             break
                     else:
@@ -660,9 +700,9 @@ def claude_run_cmd(
                         )
                         break
 
-                    section_names = ", ".join(
-                        str(s["name"]) for s in sections[:5]
-                    ) + (f" +{len(sections)-5} more" if len(sections) > 5 else "")
+                    section_names = ", ".join(str(s["name"]) for s in sections[:5]) + (
+                        f" +{len(sections) - 5} more" if len(sections) > 5 else ""
+                    )
 
                     click.echo(
                         f"[claude-run] [{i}/{total}] batch {chunk_num} "
@@ -671,19 +711,29 @@ def claude_run_cmd(
                     )
                     t0 = time.monotonic()
                     prompt = build_prompt(
-                        batch_template, file_path, [file_path],
+                        batch_template,
+                        file_path,
+                        [file_path],
                         section_list=section_names,
                     )
                     rc = _run_claude(
-                        prompt=prompt, model=model, max_turns=max_turns,
-                        skip_permissions=skip_permissions, extra_flags=[],
+                        prompt=prompt,
+                        model=model,
+                        max_turns=max_turns,
+                        skip_permissions=skip_permissions,
+                        extra_flags=[],
                         stream_log_path=stream_log,
                     )
                     dur = time.monotonic() - t0
                     ok = rc.exit_code == 0
                     _log_enrichment(
-                        repo_dir, file_path, "batch",
-                        total_pending, dur, ok, claude=rc,
+                        repo_dir,
+                        file_path,
+                        "batch",
+                        total_pending,
+                        dur,
+                        ok,
+                        claude=rc,
                     )
                     if not ok:
                         click.echo(
@@ -729,15 +779,23 @@ def claude_run_cmd(
                     fin_template = finalize_prompt_path().read_text()
                     prompt = build_prompt(fin_template, file_path, [file_path])
                     rc = _run_claude(
-                        prompt=prompt, model=model, max_turns=max_turns,
-                        skip_permissions=skip_permissions, extra_flags=[],
+                        prompt=prompt,
+                        model=model,
+                        max_turns=max_turns,
+                        skip_permissions=skip_permissions,
+                        extra_flags=[],
                         stream_log_path=stream_log,
                     )
                     dur = time.monotonic() - t0
                     ok = rc.exit_code == 0
                     _log_enrichment(
-                        repo_dir, file_path, "finalize",
-                        frame_count, dur, ok, claude=rc,
+                        repo_dir,
+                        file_path,
+                        "finalize",
+                        frame_count,
+                        dur,
+                        ok,
+                        claude=rc,
                     )
                     if not ok:
                         click.echo(
@@ -749,8 +807,7 @@ def claude_run_cmd(
                         errors += 1
                     else:
                         click.echo(
-                            f"[claude-run] [{i}/{total}] finalize OK "
-                            f"({dur:.0f}s): {file_path}",
+                            f"[claude-run] [{i}/{total}] finalize OK ({dur:.0f}s): {file_path}",
                             err=True,
                         )
                         _record_success("finalize", frame_count, dur)
@@ -769,22 +826,29 @@ def claude_run_cmd(
                     break
 
                 click.echo(
-                    f"[claude-run] [{i}/{total}] enriching: {file_path} "
-                    f"({frame_count} frames)",
+                    f"[claude-run] [{i}/{total}] enriching: {file_path} ({frame_count} frames)",
                     err=True,
                 )
                 t0 = time.monotonic()
                 prompt = build_prompt(template, file_path, [file_path])
                 rc = _run_claude(
-                    prompt=prompt, model=model, max_turns=max_turns,
-                    skip_permissions=skip_permissions, extra_flags=[],
+                    prompt=prompt,
+                    model=model,
+                    max_turns=max_turns,
+                    skip_permissions=skip_permissions,
+                    extra_flags=[],
                     stream_log_path=stream_log,
                 )
                 dur = time.monotonic() - t0
                 ok = rc.exit_code == 0
                 _log_enrichment(
-                    repo_dir, file_path, "whole-page",
-                    frame_count, dur, ok, claude=rc,
+                    repo_dir,
+                    file_path,
+                    "whole-page",
+                    frame_count,
+                    dur,
+                    ok,
+                    claude=rc,
                 )
                 if not ok:
                     click.echo(
@@ -806,6 +870,7 @@ def claude_run_cmd(
         # Surface as RED but still compute + write the verdict so the step
         # summary has as much context as possible.
         import traceback
+
         click.echo(
             f"[claude-run] CRASH in dispatch loop: {type(exc).__name__}: {exc}",
             err=True,

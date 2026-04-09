@@ -45,6 +45,7 @@ def doctor_cmd(ctx: click.Context) -> None:
     # 1. Version
     try:
         import figmaclaw._build_info as bi
+
         ver = bi.__version__
         sha = bi.__commit__[:8] if bi.__commit__ else "unknown"
         if _check("figmaclaw installed", True, f"v{ver} ({sha})"):
@@ -67,6 +68,7 @@ def doctor_cmd(ctx: click.Context) -> None:
         # Test the key by fetching user info
         try:
             import httpx
+
             r = httpx.get(
                 "https://api.figma.com/v1/me",
                 headers={"X-Figma-Token": api_key},
@@ -106,14 +108,14 @@ def doctor_cmd(ctx: click.Context) -> None:
     if manifest_file.exists():
         try:
             from figmaclaw.figma_sync_state import FigmaSyncState
+
             state = FigmaSyncState(repo_dir)
             state.load()
             n_files = len(state.manifest.files)
-            n_pages = sum(
-                len(f.pages) for f in state.manifest.files.values()
-            )
+            n_pages = sum(len(f.pages) for f in state.manifest.files.values())
             _check(
-                "manifest loadable", True,
+                "manifest loadable",
+                True,
                 f"{n_files} file(s), {n_pages} page(s) tracked",
             )
             passed += 1
@@ -122,7 +124,8 @@ def doctor_cmd(ctx: click.Context) -> None:
             failed += 1
     else:
         _check(
-            "manifest exists", False,
+            "manifest exists",
+            False,
             "no .figma-sync/manifest.json — run 'figmaclaw track' first",
         )
         warnings += 1
@@ -135,7 +138,8 @@ def doctor_cmd(ctx: click.Context) -> None:
         passed += 1
     else:
         _check(
-            "figma/ directory", False,
+            "figma/ directory",
+            False,
             "no figma/ — run 'figmaclaw pull' first",
         )
         warnings += 1
@@ -153,13 +157,15 @@ def doctor_cmd(ctx: click.Context) -> None:
         passed += 1
     elif found_wf:
         _check(
-            "CI workflows", False,
+            "CI workflows",
+            False,
             f"found: {', '.join(found_wf)}; missing: {', '.join(missing_wf)}",
         )
         warnings += 1
     else:
         _check(
-            "CI workflows", False,
+            "CI workflows",
+            False,
             "none found — run 'figmaclaw init' to copy templates",
         )
         warnings += 1
@@ -171,7 +177,8 @@ def doctor_cmd(ctx: click.Context) -> None:
         passed += 1
     else:
         _check(
-            "Claude Code CLI (optional)", False,
+            "Claude Code CLI (optional)",
+            False,
             "not found — enrichment won't work without it",
         )
         warnings += 1
@@ -182,15 +189,14 @@ def doctor_cmd(ctx: click.Context) -> None:
         passed += 1
     else:
         _check(
-            "CLAUDE_CODE_OAUTH_TOKEN (optional)", False,
+            "CLAUDE_CODE_OAUTH_TOKEN (optional)",
+            False,
             "not set — CI enrichment requires this",
         )
         warnings += 1
 
     # Summary
     click.echo("")
-    click.echo(
-        f"{passed} passed, {failed} failed, {warnings} warnings"
-    )
+    click.echo(f"{passed} passed, {failed} failed, {warnings} warnings")
     if failed > 0:
         sys.exit(1)

@@ -8,18 +8,17 @@ The validate / sync / register coroutines enforce this invariant. Tests stub
 the FigmaClient file-webhook methods with in-memory fakes — we exercise the
 decision logic, not HTTP.
 """
+
 from __future__ import annotations
 
 import asyncio
 import os
-from contextlib import ExitStack
 from unittest.mock import patch
 
 import pytest
 
 from figmaclaw.commands import webhooks as sut
 from figmaclaw.figma_models import ValidationReport, Webhook
-
 
 # ---------------------------------------------------------------------------
 # Constants & helpers
@@ -56,17 +55,26 @@ class FakeFigmaClient:
     async def list_file_webhooks(self, file_key: str):
         return [wh.model_dump() for wh in self.webhooks_by_file.get(file_key, [])]
 
-    async def create_file_webhook(self, file_key: str, endpoint: str, passcode: str, **_):
+    async def create_file_webhook(
+        self,
+        file_key: str,
+        endpoint: str,
+        passcode: str,
+        *,
+        event_type: str = "FILE_UPDATE",
+        description: str = "figmaclaw sync",
+    ):
+        _ = (passcode, event_type, description)
         self._create_counter += 1
         wh = _wh(file_key, endpoint, wh_id=f"new-{self._create_counter}")
         self.created.append(wh)
         self.webhooks_by_file.setdefault(file_key, []).append(wh)
         return wh.model_dump()
 
-    async def delete_webhook(self, wh_id: str) -> None:
-        self.deleted.append(wh_id)
+    async def delete_webhook(self, webhook_id: str) -> None:
+        self.deleted.append(webhook_id)
         for whs in self.webhooks_by_file.values():
-            whs[:] = [w for w in whs if w.id != wh_id]
+            whs[:] = [w for w in whs if w.id != webhook_id]
 
 
 @pytest.fixture(autouse=True)
@@ -83,6 +91,7 @@ def _run(coro):
 # ===================================================================
 # SUT: validate — read-only invariant checker
 # ===================================================================
+
 
 class TestValidateInvariant:
     """validate() must detect every class of invariant violation."""
@@ -114,9 +123,11 @@ class TestValidateInvariant:
     def test_detects_stale_webhook_wrong_endpoint(self):
         """INVARIANT VIOLATION: webhook exists but points to wrong endpoint."""
         files = ["file-A"]
-        client = FakeFigmaClient({
-            "file-A": [_wh("file-A"), _wh("file-A", OTHER_ENDPOINT)],
-        })
+        client = FakeFigmaClient(
+            {
+                "file-A": [_wh("file-A"), _wh("file-A", OTHER_ENDPOINT)],
+            }
+        )
         report = _run(sut.validate(client, ENDPOINT, files))
         assert not report.ok
         assert len(report.stale) == 1
@@ -135,6 +146,7 @@ class TestValidateInvariant:
 # ===================================================================
 # SUT: sync — enforce invariant (create missing, delete duplicates)
 # ===================================================================
+
 
 class TestSyncEnforcesInvariant:
     """sync() must bring the system to the invariant state."""
@@ -187,6 +199,7 @@ class TestSyncEnforcesInvariant:
 # SUT: register — conservative add-only
 # ===================================================================
 
+
 class TestRegisterAddOnly:
     """register() must only add, never delete — even when duplicates exist."""
 
@@ -214,6 +227,7 @@ class TestRegisterAddOnly:
 # SUT: _group_webhooks_by_file — shared helper
 # ===================================================================
 
+
 class TestGroupWebhooksByFile:
     def test_groups_by_file_key_filtering_endpoint(self):
         webhooks = [
@@ -236,6 +250,7 @@ class TestGroupWebhooksByFile:
 # SUT: ValidationReport model
 # ===================================================================
 
+
 class TestValidationReport:
     def test_ok_when_empty(self):
         assert ValidationReport().ok
@@ -255,19 +270,24 @@ class TestValidationReport:
 # SUT: delete_all — bulk cleanup
 # ===================================================================
 
+
 class TestDeleteAll:
     def test_deletes_everything_when_no_filter(self):
-        client = FakeFigmaClient({
-            "file-A": [_wh("file-A"), _wh("file-A", OTHER_ENDPOINT)],
-            "file-B": [_wh("file-B")],
-        })
+        client = FakeFigmaClient(
+            {
+                "file-A": [_wh("file-A"), _wh("file-A", OTHER_ENDPOINT)],
+                "file-B": [_wh("file-B")],
+            }
+        )
         _run(sut.delete_all(client, ["file-A", "file-B"]))
         assert len(client.deleted) == 3
 
     def test_endpoint_filter_deletes_only_matching(self):
-        client = FakeFigmaClient({
-            "file-A": [_wh("file-A", wh_id="keep")],
-            "file-B": [_wh("file-B", OTHER_ENDPOINT, wh_id="drop")],
-        })
+        client = FakeFigmaClient(
+            {
+                "file-A": [_wh("file-A", wh_id="keep")],
+                "file-B": [_wh("file-B", OTHER_ENDPOINT, wh_id="drop")],
+            }
+        )
         _run(sut.delete_all(client, ["file-A", "file-B"], endpoint_filter=OTHER_ENDPOINT))
         assert client.deleted == ["drop"]

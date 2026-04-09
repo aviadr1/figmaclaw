@@ -115,9 +115,7 @@ def section_line_ranges(md: str) -> list[tuple[ParsedSection, int, int]]:
             # slice around it.
             headings.append((i, ParsedSection(name="", node_id="")))
             continue
-        headings.append(
-            (i, ParsedSection(name=parsed.name, node_id=parsed.node_id))
-        )
+        headings.append((i, ParsedSection(name=parsed.name, node_id=parsed.node_id)))
 
     if not headings:
         return []
@@ -134,9 +132,7 @@ def section_line_ranges(md: str) -> list[tuple[ParsedSection, int, int]]:
             if in_table:
                 row = parse_frame_row(line)
                 if row is not None:
-                    section.frames.append(
-                        ParsedFrame(name=row.name, node_id=row.node_id)
-                    )
+                    section.frames.append(ParsedFrame(name=row.name, node_id=row.node_id))
                 elif not line.strip():
                     in_table = False
         result.append((section, start, end))
@@ -151,8 +147,4 @@ def parse_sections(md: str) -> list[ParsedSection]:
     ``(`node_id`)`` suffix) are skipped. Component library files with a
     ``Variants`` section are handled identically to page files.
     """
-    return [
-        section
-        for section, _, _ in section_line_ranges(md)
-        if section.node_id
-    ]
+    return [section for section, _, _ in section_line_ranges(md) if section.node_id]

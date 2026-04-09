@@ -9,6 +9,7 @@ INVARIANT: the ``reason`` string is part of the function contract. It is
 grep-able in CI logs and pinned by :class:`TestGoldenLog`. Any refactor
 that changes its format must update the golden test deliberately.
 """
+
 from __future__ import annotations
 
 import py_compile
@@ -181,30 +182,31 @@ class TestDecideReplaysRealRuns:
     # different unit and a different rolling window in the real dispatcher.
     SUCCESS_BATCHES = [
         # (planned_frames, wall_clock_seconds, per_frame_seconds)
-        (80, 587.0, 7.4),   # b0
-        (80, 693.0, 8.7),   # b1
-        (80, 462.0, 5.8),   # b2
-        (80, 499.0, 6.2),   # b3
-        (35, 134.0, 3.8),   # b4
+        (80, 587.0, 7.4),  # b0
+        (80, 693.0, 8.7),  # b1
+        (80, 462.0, 5.8),  # b2
+        (80, 499.0, 6.2),  # b3
+        (35, 134.0, 3.8),  # b4
         # b5 of the success run is a finalize (different shape) — excluded.
     ]
 
     CANCEL_BATCHES = [
-        (81, 515.0, 6.4),   # b0
-        (80, 199.0, 2.5),   # b1
-        (80, 237.0, 2.9),   # b2
-        (48, 153.0, 3.3),   # b3
+        (81, 515.0, 6.4),  # b0
+        (80, 199.0, 2.5),  # b1
+        (80, 237.0, 2.9),  # b2
+        (48, 153.0, 3.3),  # b3
         # b4 of the cancel run is a finalize — excluded from per-frame stats
         # but still consumes wall-clock
-        (81, 478.0, 5.9),   # b5
-        (81, 604.0, 7.5),   # b6
-        (81, 531.0, 6.5),   # b7
+        (81, 478.0, 5.9),  # b5
+        (81, 604.0, 7.5),  # b6
+        (81, 531.0, 6.5),  # b7
     ]
 
     INTER_BATCH_OVERHEAD = 5.0  # empirical ~5s for git pull/commit/push
 
     def _replay(
-        self, batches: list[tuple[int, float, float]],
+        self,
+        batches: list[tuple[int, float, float]],
     ) -> tuple[list[bool], float, list[float]]:
         """Walk the batches in order, calling decide_next_batch before each.
 
@@ -339,17 +341,17 @@ class TestLoadHistoryFromCSV:
         lines = [header]
         for r in rows:
             lines.append(
-                f"{r.get('timestamp','2026-04-05T00:00:00+00:00')},"
-                f"{r.get('file','figma/x.md')},"
-                f"{r.get('mode','batch')},"
-                f"{r.get('frames','80')},"
-                f"{r.get('duration_s','480')},"
-                f"{r.get('success','True')},"
-                f"{r.get('section','')},"
-                f"{r.get('turns','15')},"
-                f"{r.get('cost_usd','1.2')},"
-                f"{r.get('claude_duration_ms','480000')},"
-                f"{r.get('stop_reason','end_turn')}"
+                f"{r.get('timestamp', '2026-04-05T00:00:00+00:00')},"
+                f"{r.get('file', 'figma/x.md')},"
+                f"{r.get('mode', 'batch')},"
+                f"{r.get('frames', '80')},"
+                f"{r.get('duration_s', '480')},"
+                f"{r.get('success', 'True')},"
+                f"{r.get('section', '')},"
+                f"{r.get('turns', '15')},"
+                f"{r.get('cost_usd', '1.2')},"
+                f"{r.get('claude_duration_ms', '480000')},"
+                f"{r.get('stop_reason', 'end_turn')}"
             )
         path.write_text("\n".join(lines) + "\n")
 
@@ -358,40 +360,52 @@ class TestLoadHistoryFromCSV:
 
     def test_reads_batch_rows_into_per_frame_times(self, tmp_path: Path) -> None:
         csv = tmp_path / "log.csv"
-        self._write_csv(csv, [
-            {"frames": "80", "duration_s": "480", "mode": "batch"},
-            {"frames": "80", "duration_s": "560", "mode": "batch"},
-            {"frames": "40", "duration_s": "200", "mode": "batch"},
-        ])
+        self._write_csv(
+            csv,
+            [
+                {"frames": "80", "duration_s": "480", "mode": "batch"},
+                {"frames": "80", "duration_s": "560", "mode": "batch"},
+                {"frames": "40", "duration_s": "200", "mode": "batch"},
+            ],
+        )
         h = load_per_frame_history(csv, "batch")
         assert h == [6.0, 7.0, 5.0]
 
     def test_filters_by_mode(self, tmp_path: Path) -> None:
         csv = tmp_path / "log.csv"
-        self._write_csv(csv, [
-            {"frames": "80", "duration_s": "480", "mode": "batch"},
-            {"frames": "100", "duration_s": "900", "mode": "whole-page"},
-            {"frames": "80", "duration_s": "400", "mode": "batch"},
-        ])
+        self._write_csv(
+            csv,
+            [
+                {"frames": "80", "duration_s": "480", "mode": "batch"},
+                {"frames": "100", "duration_s": "900", "mode": "whole-page"},
+                {"frames": "80", "duration_s": "400", "mode": "batch"},
+            ],
+        )
         assert load_per_frame_history(csv, "batch") == [6.0, 5.0]
         assert load_per_frame_history(csv, "whole-page") == [9.0]
 
     def test_skips_failed_rows(self, tmp_path: Path) -> None:
         csv = tmp_path / "log.csv"
-        self._write_csv(csv, [
-            {"frames": "80", "duration_s": "480", "mode": "batch", "success": "True"},
-            {"frames": "80", "duration_s": "999", "mode": "batch", "success": "False"},
-            {"frames": "80", "duration_s": "400", "mode": "batch", "success": "True"},
-        ])
+        self._write_csv(
+            csv,
+            [
+                {"frames": "80", "duration_s": "480", "mode": "batch", "success": "True"},
+                {"frames": "80", "duration_s": "999", "mode": "batch", "success": "False"},
+                {"frames": "80", "duration_s": "400", "mode": "batch", "success": "True"},
+            ],
+        )
         assert load_per_frame_history(csv, "batch") == [6.0, 5.0]
 
     def test_skips_rows_with_zero_frames(self, tmp_path: Path) -> None:
         # Stuck/error rows may have frames=0 — don't pollute the prior.
         csv = tmp_path / "log.csv"
-        self._write_csv(csv, [
-            {"frames": "0", "duration_s": "10", "mode": "batch"},
-            {"frames": "80", "duration_s": "480", "mode": "batch"},
-        ])
+        self._write_csv(
+            csv,
+            [
+                {"frames": "0", "duration_s": "10", "mode": "batch"},
+                {"frames": "80", "duration_s": "480", "mode": "batch"},
+            ],
+        )
         assert load_per_frame_history(csv, "batch") == [6.0]
 
     def test_honours_window_size(self, tmp_path: Path) -> None:
@@ -407,9 +421,12 @@ class TestLoadHistoryFromCSV:
 
     def test_skips_malformed_rows(self, tmp_path: Path) -> None:
         csv = tmp_path / "log.csv"
-        self._write_csv(csv, [
-            {"frames": "abc", "duration_s": "480", "mode": "batch"},
-            {"frames": "80", "duration_s": "xyz", "mode": "batch"},
-            {"frames": "80", "duration_s": "480", "mode": "batch"},
-        ])
+        self._write_csv(
+            csv,
+            [
+                {"frames": "abc", "duration_s": "480", "mode": "batch"},
+                {"frames": "80", "duration_s": "xyz", "mode": "batch"},
+                {"frames": "80", "duration_s": "480", "mode": "batch"},
+            ],
+        )
         assert load_per_frame_history(csv, "batch") == [6.0]

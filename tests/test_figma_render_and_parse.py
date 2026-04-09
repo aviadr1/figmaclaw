@@ -14,15 +14,13 @@ INVARIANTS:
 
 from __future__ import annotations
 
-import pytest
 import yaml
 
 from figmaclaw.figma_frontmatter import FigmaPageFrontmatter
 from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection
-from figmaclaw.figma_render import scaffold_page
 from figmaclaw.figma_parse import parse_frontmatter
+from figmaclaw.figma_render import scaffold_page
 from figmaclaw.figma_sync_state import PageEntry
-import yaml
 
 
 def _make_page(
@@ -54,6 +52,7 @@ def _make_entry(page_hash: str = "deadbeef12345678") -> PageEntry:
 
 
 # --- scaffold_page: frontmatter ---
+
 
 def test_scaffold_page_has_yaml_frontmatter():
     """INVARIANT: Rendered markdown starts with a valid YAML frontmatter block."""
@@ -109,6 +108,7 @@ def test_scaffold_page_frontmatter_includes_frame_ids():
 
 # --- scaffold_page: body ---
 
+
 def test_scaffold_page_has_h1_header():
     """INVARIANT: Body contains # {file_name} / {page_name}"""
     page = _make_page()
@@ -134,8 +134,12 @@ def test_scaffold_page_section_heading_with_node_id():
 def test_scaffold_page_section_table_has_all_frames():
     """INVARIANT: Every frame appears in the section table with its node ID."""
     frames = [
-        FigmaFrame(node_id="10635:89503", name="schedule / information box", description="Empty form."),
-        FigmaFrame(node_id="10635:89347", name="schedule / socials enabled", description="Filled form."),
+        FigmaFrame(
+            node_id="10635:89503", name="schedule / information box", description="Empty form."
+        ),
+        FigmaFrame(
+            node_id="10635:89347", name="schedule / socials enabled", description="Filled form."
+        ),
     ]
     section = FigmaSection(node_id="10639:4378", name="schedule event", frames=frames)
     page = _make_page(sections=[section])
@@ -189,7 +193,8 @@ def test_scaffold_page_has_no_quick_reference_table():
 
 # --- figma_parse ---
 
-def test_parse_frontmatter_from_rendered_output():
+
+def test_parse_frontmatter_from_rendered_output_v2():
     """INVARIANT: parse_frontmatter recovers FigmaPageFrontmatter (flat schema) from scaffold_page output."""
     page = _make_page()
     entry = _make_entry("deadbeef12345678")
@@ -230,8 +235,8 @@ def test_scaffold_page_frontmatter_is_compact_flow_style():
     md = scaffold_page(page, _make_entry())
     fm_block = md.split("---\n")[1]  # content between first two ---
     lines = fm_block.strip().splitlines()
-    frames_lines = [l for l in lines if l.startswith("frames:")]
-    flows_lines = [l for l in lines if l.startswith("flows:")]
+    frames_lines = [line for line in lines if line.startswith("frames:")]
+    flows_lines = [line for line in lines if line.startswith("flows:")]
     assert len(frames_lines) == 1, "frames must be on a single line (no multi-line block style)"
     assert len(flows_lines) == 1, "flows must be on a single line (no multi-line block style)"
     # Both must use inline flow-style notation (curly/square brackets)
@@ -258,7 +263,7 @@ def test_scaffold_page_frontmatter_flow_style_no_wrapping():
     section = FigmaSection(node_id="10:1", name="Going live", frames=[frame])
     md = scaffold_page(_make_page(sections=[section]), _make_entry())
     fm_block = md.split("---\n")[1]
-    frames_lines = [l for l in fm_block.strip().splitlines() if l.startswith("frames:")]
+    frames_lines = [line for line in fm_block.strip().splitlines() if line.startswith("frames:")]
     assert len(frames_lines) == 1, "frames must stay on one line regardless of frame count"
     data = yaml.safe_load(fm_block)
     assert "11:1" in data["frames"]
@@ -277,7 +282,9 @@ def test_parse_frontmatter_frames_is_list():
     """INVARIANT: frontmatter.frames is a list of node IDs (v2 format)."""
     frames = [
         FigmaFrame(node_id="11:1", name="welcome screen", description="The onboarding welcome."),
-        FigmaFrame(node_id="11:2", name="permissions screen", description="Asks for camera access."),
+        FigmaFrame(
+            node_id="11:2", name="permissions screen", description="Asks for camera access."
+        ),
     ]
     section = FigmaSection(node_id="10:1", name="onboarding", frames=frames)
     page = _make_page(sections=[section])
@@ -291,7 +298,9 @@ def test_parse_frontmatter_frames_is_list():
 
 def test_parse_frontmatter_backward_compat_dict():
     """INVARIANT: old v1 dict format is normalized to list of keys."""
-    md = "---\nfile_key: abc\npage_node_id: '1:1'\nframes: {'11:1': 'desc', '11:2': ''}\n---\n\nbody"
+    md = (
+        "---\nfile_key: abc\npage_node_id: '1:1'\nframes: {'11:1': 'desc', '11:2': ''}\n---\n\nbody"
+    )
     fm = parse_frontmatter(md)
     assert fm is not None
     assert isinstance(fm.frames, list)
@@ -300,9 +309,11 @@ def test_parse_frontmatter_backward_compat_dict():
 
 # --- scaffold_page: component library sections skipped ---
 
+
 def test_scaffold_page_skips_component_library_sections():
     """INVARIANT: scaffold_page omits component library sections — they get their own files."""
-    from figmaclaw.figma_models import FigmaSection, FigmaFrame
+    from figmaclaw.figma_models import FigmaFrame, FigmaSection
+
     comp_section = FigmaSection(
         node_id="20:1",
         name="Buttons",
@@ -317,15 +328,16 @@ def test_scaffold_page_skips_component_library_sections():
     page = _make_page(sections=[screen_section, comp_section])
     md = scaffold_page(page, _make_entry())
 
-    assert "Onboarding" in md          # screen section present
+    assert "Onboarding" in md  # screen section present
     assert "welcome" in md
-    assert "Buttons" not in md         # component section absent
+    assert "Buttons" not in md  # component section absent
     assert "Button / Primary" not in md
 
 
 def test_scaffold_page_omits_component_frame_descriptions_from_frontmatter():
     """INVARIANT: Component frame descriptions are not in the page frontmatter.frames."""
-    from figmaclaw.figma_models import FigmaSection, FigmaFrame
+    from figmaclaw.figma_models import FigmaFrame, FigmaSection
+
     comp_section = FigmaSection(
         node_id="20:1",
         name="Buttons",
@@ -342,8 +354,10 @@ def test_scaffold_page_omits_component_frame_descriptions_from_frontmatter():
 
 # --- render_component_section ---
 
-def _make_component_section() -> tuple["FigmaSection", FigmaPage]:
-    from figmaclaw.figma_models import FigmaSection, FigmaFrame
+
+def _make_component_section() -> tuple[FigmaSection, FigmaPage]:
+    from figmaclaw.figma_models import FigmaFrame, FigmaSection
+
     section = FigmaSection(
         node_id="20:1",
         name="Buttons",
@@ -371,6 +385,7 @@ def _make_component_section() -> tuple["FigmaSection", FigmaPage]:
 def test_render_component_section_has_yaml_frontmatter():
     """INVARIANT: Component .md starts with valid YAML frontmatter."""
     from figmaclaw.figma_render import render_component_section
+
     section, page = _make_component_section()
     md = render_component_section(section, page)
     assert md.startswith("---\n")
@@ -380,6 +395,7 @@ def test_render_component_section_has_yaml_frontmatter():
 def test_render_component_section_frontmatter_has_section_node_id():
     """INVARIANT: Component frontmatter carries section_node_id for direct Figma navigation."""
     from figmaclaw.figma_render import render_component_section
+
     section, page = _make_component_section()
     md = render_component_section(section, page)
     fm = parse_frontmatter(md)
@@ -390,6 +406,7 @@ def test_render_component_section_frontmatter_has_section_node_id():
 def test_render_component_section_frontmatter_carries_identity_fields():
     """INVARIANT: Component frontmatter carries file_key and page_node_id (flat schema, no page_hash)."""
     from figmaclaw.figma_render import render_component_section
+
     section, page = _make_component_section()
     md = render_component_section(section, page)
     fm = parse_frontmatter(md)
@@ -401,6 +418,7 @@ def test_render_component_section_frontmatter_carries_identity_fields():
 def test_render_component_section_title_includes_page_and_section():
     """INVARIANT: Component .md title is '{file} / {page} / {section}' for unambiguous lookup."""
     from figmaclaw.figma_render import render_component_section
+
     section, page = _make_component_section()
     md = render_component_section(section, page)
     assert "# Design System / Core Components / Buttons" in md
@@ -409,6 +427,7 @@ def test_render_component_section_title_includes_page_and_section():
 def test_render_component_section_has_variants_table():
     """INVARIANT: Component .md has a Variants table listing all component nodes."""
     from figmaclaw.figma_render import render_component_section
+
     section, page = _make_component_section()
     md = render_component_section(section, page)
     assert "## Variants" in md
@@ -420,6 +439,7 @@ def test_render_component_section_has_variants_table():
 def test_render_component_section_uses_placeholder_for_empty_description():
     """INVARIANT: Frames with no description show placeholder in the Variants table."""
     from figmaclaw.figma_render import render_component_section
+
     section, page = _make_component_section()
     md = render_component_section(section, page)
     assert "(no description yet)" in md
@@ -428,6 +448,7 @@ def test_render_component_section_uses_placeholder_for_empty_description():
 def test_render_component_section_stores_descriptions_in_frontmatter():
     """INVARIANT: Component descriptions appear in frontmatter.frames keyed by node_id."""
     from figmaclaw.figma_render import render_component_section
+
     section, page = _make_component_section()
     md = render_component_section(section, page)
     fm = parse_frontmatter(md)
@@ -439,6 +460,7 @@ def test_render_component_section_stores_descriptions_in_frontmatter():
 def test_render_component_section_has_no_mermaid():
     """INVARIANT: Component .md never contains a Mermaid flowchart (components don't have flows)."""
     from figmaclaw.figma_render import render_component_section
+
     section, page = _make_component_section()
     md = render_component_section(section, page)
     assert "```mermaid" not in md
@@ -447,6 +469,7 @@ def test_render_component_section_has_no_mermaid():
 def test_render_component_section_figma_url_points_to_section():
     """INVARIANT: Component .md Figma link targets the section node, not the page."""
     from figmaclaw.figma_render import render_component_section
+
     section, page = _make_component_section()
     md = render_component_section(section, page)
     # Section node ID "20:1" → "20-1" in URL
@@ -455,9 +478,11 @@ def test_render_component_section_figma_url_points_to_section():
 
 # --- component_set_keys in component section frontmatter ---
 
+
 def test_render_component_section_with_component_set_keys_in_frontmatter():
     """INVARIANT: component_set_keys is written to component section frontmatter when provided."""
     from figmaclaw.figma_render import render_component_section
+
     section, page = _make_component_section()
     keys = {"ButtonV2": "a1b2c3d4e5f67890", "IconV2": "b2c3d4e5f6789012"}
     md = render_component_section(section, page, component_set_keys=keys)
@@ -469,6 +494,7 @@ def test_render_component_section_with_component_set_keys_in_frontmatter():
 def test_render_component_section_without_keys_omits_field():
     """INVARIANT: component_set_keys is absent from frontmatter when not provided."""
     from figmaclaw.figma_render import render_component_section
+
     section, page = _make_component_section()
     md = render_component_section(section, page)
     fm_block = md.split("---\n")[1]
@@ -478,12 +504,13 @@ def test_render_component_section_without_keys_omits_field():
 def test_render_component_section_keys_are_single_line_flow_style():
     """INVARIANT: component_set_keys renders as single-line YAML flow style (not block-indented)."""
     from figmaclaw.figma_render import render_component_section
+
     section, page = _make_component_section()
     keys = {"ButtonV2": "a1b2c3d4e5f67890", "IconV2": "b2c3d4e5f6789012"}
     md = render_component_section(section, page, component_set_keys=keys)
     fm_block = md.split("---\n")[1]
     lines = fm_block.strip().splitlines()
-    key_lines = [l for l in lines if l.startswith("component_set_keys:")]
+    key_lines = [line for line in lines if line.startswith("component_set_keys:")]
     assert len(key_lines) == 1, "component_set_keys must be on a single line"
     assert "{" in key_lines[0], "component_set_keys must use inline flow-style {}"
     data = yaml.safe_load(fm_block)
@@ -492,10 +519,12 @@ def test_render_component_section_keys_are_single_line_flow_style():
 
 # --- raw_frames in screen page frontmatter ---
 
+
 def test_build_page_frontmatter_with_raw_frames():
     """INVARIANT: raw_frames is written to screen page frontmatter when provided."""
-    from figmaclaw.figma_render import build_page_frontmatter
     from figmaclaw.figma_frontmatter import FrameComposition
+    from figmaclaw.figma_render import build_page_frontmatter
+
     frames = [FigmaFrame(node_id="11:1", name="welcome"), FigmaFrame(node_id="11:2", name="clean")]
     section = FigmaSection(node_id="10:1", name="onboarding", frames=frames)
     page = _make_page(sections=[section])
@@ -512,6 +541,7 @@ def test_build_page_frontmatter_with_raw_frames():
 def test_build_page_frontmatter_without_raw_frames_omits_field():
     """INVARIANT: raw_frames is absent from frontmatter when not provided."""
     from figmaclaw.figma_render import build_page_frontmatter
+
     page = _make_page()
     fm_str = build_page_frontmatter(page)
     assert "raw_frames" not in fm_str
@@ -519,8 +549,8 @@ def test_build_page_frontmatter_without_raw_frames_omits_field():
 
 def test_raw_frames_is_single_line_flow_style():
     """INVARIANT: raw_frames renders as single-line YAML flow style (not block-indented)."""
-    from figmaclaw.figma_render import build_page_frontmatter
     from figmaclaw.figma_frontmatter import FrameComposition
+
     frames = [FigmaFrame(node_id="11:1", name="welcome")]
     section = FigmaSection(node_id="10:1", name="onboarding", frames=frames)
     page = _make_page(sections=[section])
@@ -528,10 +558,11 @@ def test_raw_frames_is_single_line_flow_style():
     # Use scaffold_page so the closing --- is followed by a newline, making the split work cleanly
     entry = _make_entry()
     from figmaclaw.figma_render import scaffold_page
+
     md = scaffold_page(page, entry, raw_frames=rf)
     fm_block = md.split("---\n")[1]  # content between opening and closing ---
     lines = fm_block.strip().splitlines()
-    rf_lines = [l for l in lines if l.startswith("raw_frames:")]
+    rf_lines = [line for line in lines if line.startswith("raw_frames:")]
     assert len(rf_lines) == 1, "raw_frames must be on a single line"
     assert "{" in rf_lines[0], "raw_frames must use inline flow-style {}"
     data = yaml.safe_load(fm_block)
@@ -557,9 +588,11 @@ def test_old_file_without_new_fields_parses_with_empty_defaults():
 
 # --- FrameComposition model ---
 
+
 def test_frame_composition_model():
     """INVARIANT: FrameComposition stores raw count and ds component names correctly."""
     from figmaclaw.figma_frontmatter import FrameComposition
+
     fc = FrameComposition(raw=3, ds=["AvatarV2", "ButtonV2", "ButtonV2"])
     assert fc.raw == 3
     assert fc.ds == ["AvatarV2", "ButtonV2", "ButtonV2"]  # duplicates preserved
@@ -568,5 +601,6 @@ def test_frame_composition_model():
 def test_frame_composition_default_ds_is_empty():
     """INVARIANT: FrameComposition.ds defaults to empty list when not specified."""
     from figmaclaw.figma_frontmatter import FrameComposition
+
     fc = FrameComposition(raw=2)
     assert fc.ds == []

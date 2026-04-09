@@ -9,11 +9,11 @@ from pathlib import Path
 
 import click
 
+from figmaclaw.commands.pull import _git_commit_page
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_sync_state import FigmaSyncState
-from figmaclaw.pull_logic import pull_file
-from figmaclaw.commands.pull import _git_commit_page
 from figmaclaw.git_utils import git_push as _git_push
+from figmaclaw.pull_logic import pull_file
 
 
 class WebhookAuthError(Exception):
@@ -22,7 +22,14 @@ class WebhookAuthError(Exception):
 
 @click.command("apply-webhook")
 @click.option("--auto-commit", "auto_commit", is_flag=True, help="git commit after each page.")
-@click.option("--push-every", "push_every", default=10, type=int, show_default=True, help="Push every N commits when --auto-commit is set.")
+@click.option(
+    "--push-every",
+    "push_every",
+    default=10,
+    type=int,
+    show_default=True,
+    help="Push every N commits when --auto-commit is set.",
+)
 @click.pass_context
 def apply_webhook_cmd(ctx: click.Context, auto_commit: bool, push_every: int) -> None:
     """Process a Figma FILE_UPDATE webhook payload from FIGMA_WEBHOOK_PAYLOAD env var."""
@@ -38,14 +45,16 @@ def apply_webhook_cmd(ctx: click.Context, auto_commit: bool, push_every: int) ->
     webhook_secret = os.environ.get("FIGMA_WEBHOOK_SECRET") or None
 
     try:
-        asyncio.run(_run(
-            api_key=api_key,
-            repo_dir=repo_dir,
-            payload=payload,
-            webhook_secret=webhook_secret,
-            auto_commit=auto_commit,
-            push_every=push_every,
-        ))
+        asyncio.run(
+            _run(
+                api_key=api_key,
+                repo_dir=repo_dir,
+                payload=payload,
+                webhook_secret=webhook_secret,
+                auto_commit=auto_commit,
+                push_every=push_every,
+            )
+        )
     except WebhookAuthError as exc:
         raise click.ClickException(str(exc)) from exc
 
@@ -95,7 +104,10 @@ async def _run(
 
     async with FigmaClient(api_key) as client:
         result = await pull_file(
-            client, file_id, state, repo_dir,
+            client,
+            file_id,
+            state,
+            repo_dir,
             on_page_written=on_page_written,
         )
 

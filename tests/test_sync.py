@@ -74,12 +74,14 @@ def _fake_page_node() -> dict:
     }
 
 
-def _fake_file_meta() -> "FileMetaResponse":
-    return FileMetaResponse.model_validate({
-        "name": "Web App",
-        "version": "v2",
-        "lastModified": "2026-03-31T12:00:00Z",
-    })
+def _fake_file_meta() -> FileMetaResponse:
+    return FileMetaResponse.model_validate(
+        {
+            "name": "Web App",
+            "version": "v2",
+            "lastModified": "2026-03-31T12:00:00Z",
+        }
+    )
 
 
 @pytest.mark.asyncio

@@ -23,9 +23,16 @@ from figmaclaw.figma_utils import parse_since, parse_team_id_from_url
     help="Only show files modified within this window (e.g. '3m', '7d', '1y', 'all').",
 )
 @click.option("--track", is_flag=True, help="Track all listed files and run initial pull.")
-@click.option("--track-only", "track_only", is_flag=True, help="Track all listed files without pulling (pull loop handles it).")
+@click.option(
+    "--track-only",
+    "track_only",
+    is_flag=True,
+    help="Track all listed files without pulling (pull loop handles it).",
+)
 @click.pass_context
-def list_cmd(ctx: click.Context, team_id_or_url: str, since: str | None, track: bool, track_only: bool) -> None:
+def list_cmd(
+    ctx: click.Context, team_id_or_url: str, since: str | None, track: bool, track_only: bool
+) -> None:
     """List Figma files for a team, optionally filtered by last-modified date."""
     repo_dir = Path(ctx.obj["repo_dir"])
     api_key = os.environ.get("FIGMA_API_KEY", "")
@@ -94,9 +101,7 @@ async def _run(
 
                     if track:  # --track does immediate pull; --track-only defers to pull loop
                         try:
-                            result = await pull_file(
-                                client, file_key, state, repo_dir, force=True
-                            )
+                            result = await pull_file(client, file_key, state, repo_dir, force=True)
                             state.save()
                             click.echo(f"  → wrote {result.pages_written} page(s)")
                         except Exception as exc:

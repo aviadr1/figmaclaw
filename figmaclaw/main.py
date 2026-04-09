@@ -7,21 +7,22 @@ import click
 from figmaclaw.commands.apply_webhook import apply_webhook_cmd
 from figmaclaw.commands.build_context import build_context_cmd
 from figmaclaw.commands.census import census_cmd
+from figmaclaw.commands.claude_run import claude_run_cmd
 from figmaclaw.commands.diff import diff_cmd
 from figmaclaw.commands.doctor import doctor_cmd
-from figmaclaw.commands.claude_run import claude_run_cmd
-from figmaclaw.commands.stream_format import stream_format_cmd
-from figmaclaw.commands.sync import sync_cmd
+from figmaclaw.commands.image_urls import image_urls_cmd
 from figmaclaw.commands.init import init_cmd
+from figmaclaw.commands.inspect import inspect_cmd
 from figmaclaw.commands.list_files import list_cmd
 from figmaclaw.commands.mark_enriched import mark_enriched_cmd
 from figmaclaw.commands.mark_stale import mark_stale_cmd
-from figmaclaw.commands.inspect import inspect_cmd
 from figmaclaw.commands.pull import pull_cmd
-from figmaclaw.commands.self_cmd import self_group
-from figmaclaw.commands.image_urls import image_urls_cmd
 from figmaclaw.commands.screenshots import screenshots_cmd
+from figmaclaw.commands.self_cmd import self_group
 from figmaclaw.commands.set_flows import set_flows_cmd
+from figmaclaw.commands.stream_format import stream_format_cmd
+from figmaclaw.commands.suggest_tokens import suggest_tokens_cmd
+from figmaclaw.commands.sync import sync_cmd
 from figmaclaw.commands.track import track_cmd
 from figmaclaw.commands.webhooks import webhooks_group
 from figmaclaw.commands.workflows_cmd import workflows_group
@@ -33,6 +34,7 @@ def _version_callback(ctx: click.Context, _param: click.Parameter, value: bool) 
     if not value or ctx.resilient_parsing:
         return
     import figmaclaw._build_info as _bi  # lazy: keeps module-level names mockable in tests
+
     short_sha = _bi.__commit__[:8] if _bi.__commit__ else "unknown"
     pr_info = f" · PR #{_bi.__pr__}" if _bi.__pr__ else ""
     click.echo(f"figmaclaw {_bi.__version__} ({short_sha}{pr_info})")
@@ -44,8 +46,12 @@ def _version_callback(ctx: click.Context, _param: click.Parameter, value: bool) 
 
 @click.group()
 @click.option(
-    "--version", is_flag=True, is_eager=True, expose_value=False,
-    callback=_version_callback, help="Show version and exit.",
+    "--version",
+    is_flag=True,
+    is_eager=True,
+    expose_value=False,
+    callback=_version_callback,
+    help="Show version and exit.",
 )
 @click.option("--json", "json_mode", is_flag=True, help="Output strict JSON for agents.")
 @click.option("--verbose", "-v", count=True, help="Increase verbosity.")
@@ -88,5 +94,6 @@ cli.add_command(sync_cmd)
 cli.add_command(track_cmd)
 cli.add_command(webhooks_group)
 cli.add_command(workflows_group)
+cli.add_command(suggest_tokens_cmd)
 cli.add_command(write_body_cmd)
 cli.add_command(write_descriptions_cmd)

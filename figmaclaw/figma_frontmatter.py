@@ -147,12 +147,16 @@ class FigmaPageFrontmatter(BaseModel):
     frames: list[str] = Field(default_factory=list)
 
     # Each flow edge is exactly [src_node_id, dst_node_id]
-    flows: list[Annotated[list[str], Field(min_length=2, max_length=2)]] = Field(default_factory=list)
+    flows: list[Annotated[list[str], Field(min_length=2, max_length=2)]] = Field(
+        default_factory=list
+    )
 
     # Enrichment tracking — set by mark-enriched, read by inspect --needs-enrichment
     enriched_hash: str | None = None  # page_hash at time of last enrichment
     enriched_at: str | None = None  # ISO timestamp of last enrichment
-    enriched_frame_hashes: dict[str, str] = Field(default_factory=dict)  # {node_id: frame_hash} at enrichment
+    enriched_frame_hashes: dict[str, str] = Field(
+        default_factory=dict
+    )  # {node_id: frame_hash} at enrichment
     # 0 = pre-versioning or never enriched. Set to CURRENT_ENRICHMENT_SCHEMA_VERSION by mark-enriched.
     enriched_schema_version: int = 0
 
@@ -180,7 +184,7 @@ class FigmaPageFrontmatter(BaseModel):
         return data
 
     @model_validator(mode="after")
-    def _require_both_ids_or_neither(self) -> "FigmaPageFrontmatter":
+    def _require_both_ids_or_neither(self) -> FigmaPageFrontmatter:
         """file_key and page_node_id must both be set or both be absent."""
         has_key = bool(self.file_key)
         has_node = bool(self.page_node_id)

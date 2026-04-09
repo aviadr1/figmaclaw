@@ -5,14 +5,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
-from figmaclaw.figma_paths import page_path, slugify
 from figmaclaw.figma_hash import compute_page_hash
+from figmaclaw.figma_paths import page_path, slugify
 from figmaclaw.figma_sync_state import FigmaSyncState, Manifest
 
-
 # --- figma_paths ---
+
 
 def test_page_path_format():
     """INVARIANT: page_path returns figma/{file_slug}/pages/{slug}.md"""
@@ -48,6 +46,7 @@ def test_slugify_handles_unicode():
 
 # --- figma_hash ---
 
+
 def _page_node(sections: list[dict]) -> dict:
     return {"id": "0:1", "name": "Page", "type": "CANVAS", "children": sections}
 
@@ -78,24 +77,33 @@ def test_hash_changes_when_frame_name_changes():
 def test_hash_changes_when_frame_added():
     """INVARIANT: Adding a frame changes the hash."""
     page1 = _page_node([_section("10:1", "auth", [_frame("11:1", "login")])])
-    page2 = _page_node([_section("10:1", "auth", [_frame("11:1", "login"), _frame("11:2", "register")])])
+    page2 = _page_node(
+        [_section("10:1", "auth", [_frame("11:1", "login"), _frame("11:2", "register")])]
+    )
     assert compute_page_hash(page1) != compute_page_hash(page2)
 
 
 def test_hash_is_order_independent():
     """INVARIANT: Hash is stable regardless of JSON child ordering (canonical sort)."""
-    page1 = _page_node([
-        _section("10:1", "auth", [_frame("11:1", "login"), _frame("11:2", "register")])
-    ])
+    page1 = _page_node(
+        [_section("10:1", "auth", [_frame("11:1", "login"), _frame("11:2", "register")])]
+    )
     # Same content, but build the internal list in reverse order
     node = {
-        "id": "0:1", "name": "Page", "type": "CANVAS",
+        "id": "0:1",
+        "name": "Page",
+        "type": "CANVAS",
         "children": [
-            {"id": "10:1", "name": "auth", "type": "SECTION", "children": [
-                _frame("11:2", "register"),
-                _frame("11:1", "login"),
-            ]}
-        ]
+            {
+                "id": "10:1",
+                "name": "auth",
+                "type": "SECTION",
+                "children": [
+                    _frame("11:2", "register"),
+                    _frame("11:1", "login"),
+                ],
+            }
+        ],
     }
     # Both pages have same IDs/names — hash must match
     assert compute_page_hash(page1) == compute_page_hash(node)
@@ -104,8 +112,11 @@ def test_hash_is_order_independent():
 def test_hash_not_affected_by_extra_visual_fields():
     """INVARIANT: Visual-only fields (position, fills) don't affect the hash."""
     base_frame = {"id": "11:1", "name": "login", "type": "FRAME", "children": []}
-    styled_frame = {**base_frame, "absoluteBoundingBox": {"x": 100, "y": 200, "width": 375, "height": 812},
-                    "fills": [{"type": "SOLID", "color": {"r": 1, "g": 1, "b": 1}}]}
+    styled_frame = {
+        **base_frame,
+        "absoluteBoundingBox": {"x": 100, "y": 200, "width": 375, "height": 812},
+        "fills": [{"type": "SOLID", "color": {"r": 1, "g": 1, "b": 1}}],
+    }
     page1 = _page_node([_section("10:1", "auth", [base_frame])])
     page2 = _page_node([_section("10:1", "auth", [styled_frame])])
     assert compute_page_hash(page1) == compute_page_hash(page2)
@@ -121,9 +132,11 @@ def test_hash_returns_16_char_string():
 
 # --- figma_sync_state ---
 
+
 def test_manifest_is_pydantic_model():
     """INVARIANT: Manifest is a Pydantic BaseModel."""
     import pydantic
+
     assert issubclass(Manifest, pydantic.BaseModel)
 
 
@@ -141,6 +154,7 @@ def test_sync_state_save_then_load_round_trips(tmp_path: Path):
     state.load()
     state.manifest.tracked_files.append("abc123")
     from figmaclaw.figma_sync_state import FileEntry, PageEntry
+
     state.add_tracked_file("abc123", "Web App")
     state.manifest.files["abc123"] = FileEntry(
         file_name="Web App",
@@ -196,6 +210,7 @@ def test_sync_state_manifest_written_as_json(tmp_path: Path):
 
 
 # --- should_skip_page ---
+
 
 def test_should_skip_page_matches_old_prefix(tmp_path: Path):
     """INVARIANT: Pages named 'old-*' are skipped by default."""
