@@ -911,6 +911,40 @@ async def test_pull_cmd_stamps_listing_last_modified_after_failed_get_file_meta(
     assert reloaded.manifest.files["restricted_key"].last_modified == "2026-03-01T00:00:00Z"
 
 
+@pytest.mark.asyncio
+async def test_pull_cmd_forwards_prune_flag_to_pull_file(tmp_path: Path):
+    """INVARIANT: pull command forwards prune=False to pull_file when requested."""
+    from figmaclaw.commands.pull import _run
+
+    state = _make_state_with_file(tmp_path, "fileA", "")
+    state.save()
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.get_file_meta = AsyncMock(
+        return_value={
+            "version": "v2",
+            "lastModified": "2026-03-01T00:00:00Z",
+            "name": "App",
+            "document": {"children": []},
+        }
+    )
+
+    with (
+        patch.object(FigmaClient, "__new__", return_value=mock_client),
+        patch(
+            "figmaclaw.commands.pull.pull_file",
+            AsyncMock(return_value=PullResult(file_key="fileA", skipped_file=True)),
+        ) as mock_pull,
+    ):
+        await _run("key", tmp_path, None, False, None, False, 10, None, "all", prune=False)
+
+    assert mock_pull.await_count == 1
+    assert mock_pull.await_args is not None
+    assert mock_pull.await_args.kwargs["prune"] is False
+
+
 # --- _compute_raw_frames ---
 
 
@@ -1719,6 +1753,49 @@ async def test_pull_file_file_rename_moves_path_and_prunes_old(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_pull_file_page_rename_with_prune_disabled_keeps_old_path(tmp_path: Path):
+    """INVARIANT: with prune=False, rename writes new path but keeps old generated path."""
+    page_id = "100:1"
+    old_page_name = "Showcase LSN"
+    new_page_name = "Showcase V2"
+    file_name = "Web App"
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", file_name)
+    state.manifest.files["abc123"].version = "v1"
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+    mock_client.get_nodes = AsyncMock(return_value={})
+
+    mock_client.get_file_meta = AsyncMock(
+        return_value=_custom_file_meta(
+            version="v2", file_name=file_name, page_id=page_id, page_name=old_page_name
+        )
+    )
+    mock_client.get_page = AsyncMock(return_value=fake_page_node_for_id(page_id, old_page_name))
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    old_rel = page_path(slugify(file_name), f"{slugify(old_page_name)}-{page_id.replace(':', '-')}")
+    old_abs = tmp_path / old_rel
+    assert old_abs.exists()
+
+    mock_client.get_file_meta = AsyncMock(
+        return_value=_custom_file_meta(
+            version="v3", file_name=file_name, page_id=page_id, page_name=new_page_name
+        )
+    )
+    mock_client.get_page = AsyncMock(return_value=fake_page_node_for_id(page_id, new_page_name))
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False, prune=False)
+
+    new_rel = page_path(slugify(file_name), f"{slugify(new_page_name)}-{page_id.replace(':', '-')}")
+    new_abs = tmp_path / new_rel
+    assert new_abs.exists()
+    assert old_abs.exists()
+
+
+@pytest.mark.asyncio
 async def test_pull_file_unchanged_run_prunes_existing_generated_orphans(tmp_path: Path):
     """INVARIANT: unchanged file-level skip still prunes generated orphan md/tokens files."""
     state = FigmaSyncState(tmp_path)
@@ -1754,6 +1831,59 @@ async def test_pull_file_unchanged_run_prunes_existing_generated_orphans(tmp_pat
     assert current_md.exists()
     assert not orphan_md.exists()
     assert not orphan_tok.exists()
+
+
+@pytest.mark.asyncio
+async def test_pull_file_screen_to_component_only_prunes_old_screen_md_and_sidecar(tmp_path: Path):
+    """INVARIANT: screen->component-only transition removes old page md + tokens sidecar."""
+    page_id = "100:1"
+    file_name = "Web App"
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", file_name)
+    state.manifest.files["abc123"].version = "v1"
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+    mock_client.get_nodes = AsyncMock(return_value={})
+
+    # First run: screen page exists
+    mock_client.get_file_meta = AsyncMock(
+        return_value=_custom_file_meta(
+            version="v2",
+            file_name=file_name,
+            page_id=page_id,
+            page_name="Catalog",
+        )
+    )
+    mock_client.get_page = AsyncMock(return_value=fake_page_node_for_id(page_id, "Catalog"))
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    old_rel = page_path(slugify(file_name), f"catalog-{page_id.replace(':', '-')}")
+    old_abs = tmp_path / old_rel
+    assert old_abs.exists()
+    old_sidecar = old_abs.with_suffix(".tokens.json")
+    old_sidecar.write_text("{}")
+
+    # Second run: same page id becomes component-only
+    mock_client.get_file_meta = AsyncMock(
+        return_value=_custom_file_meta(
+            version="v3",
+            file_name=file_name,
+            page_id=page_id,
+            page_name="Catalog",
+        )
+    )
+    mock_client.get_page = AsyncMock(return_value=fake_component_page_node(page_id))
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    assert not old_abs.exists()
+    assert not old_sidecar.exists()
+
+    entry = state.manifest.files["abc123"].pages[page_id]
+    assert entry.md_path is None
+    assert entry.component_md_paths
 
 
 @pytest.mark.asyncio

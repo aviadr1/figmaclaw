@@ -453,6 +453,7 @@ async def pull_file(
     *,
     force: bool = False,
     max_pages: int | None = None,
+    prune: bool = True,
     progress: Callable[[str], None] | None = None,
     on_page_written: Callable[[str, list[str]], None] | None = None,
 ) -> PullResult:
@@ -466,6 +467,9 @@ async def pull_file(
 
     max_pages: stop after writing this many Figma pages (pages whose hash changed).
                Skipped pages don't count. Set result.has_more=True if more remain.
+
+    prune: whether to remove stale generated artifacts when lifecycle drifts
+           (renames, removals, orphan files). Disable only for debugging/forensics.
 
     on_page_written: called after each page is successfully written to disk with
                (page_name, [paths_written]). Use this to trigger git commits from
@@ -513,18 +517,19 @@ async def pull_file(
         and stored.version == api_version
         and stored.last_modified == api_last_modified
     ):
-        # Even on file-level skip, prune generated orphans under the current file slug.
-        expected_paths = {rel for page in stored.pages.values() for rel in entry_paths(page)}
-        candidate_dirs = {
-            repo_root / f"figma/{slugify(file_name, fallback=file_key)}/pages",
-            repo_root / f"figma/{slugify(file_name, fallback=file_key)}/components",
-        }
-        for rel in expected_paths:
-            candidate_dirs.add((repo_root / rel).parent)
-        for orphan_rel in find_generated_orphans(
-            repo_root, candidate_dirs=candidate_dirs, expected_paths=expected_paths
-        ):
-            remove_generated_relpath(repo_root, orphan_rel)
+        # Even on file-level skip, optionally prune generated orphans under file slug.
+        if prune:
+            expected_paths = {rel for page in stored.pages.values() for rel in entry_paths(page)}
+            candidate_dirs = {
+                repo_root / f"figma/{slugify(file_name, fallback=file_key)}/pages",
+                repo_root / f"figma/{slugify(file_name, fallback=file_key)}/components",
+            }
+            for rel in expected_paths:
+                candidate_dirs.add((repo_root / rel).parent)
+            for orphan_rel in find_generated_orphans(
+                repo_root, candidate_dirs=candidate_dirs, expected_paths=expected_paths
+            ):
+                remove_generated_relpath(repo_root, orphan_rel)
         _progress(f"{file_name}: unchanged (version {api_version}), skipping all pages")
         result.skipped_file = True
         return result
@@ -735,6 +740,7 @@ async def pull_file(
                 previous_entry
                 and previous_entry.md_path
                 and previous_entry.md_path != screen_md_rel
+                and prune
             ):
                 _migrate_generated_path(
                     repo_root,
@@ -872,7 +878,7 @@ async def pull_file(
                 sect_slug = f"{slugify(section.name)}-{sect_suffix}"
                 comp_rel = component_path(file_slug, sect_slug)
                 old_comp_rel = previous_component_by_suffix.get(sect_suffix)
-                if old_comp_rel and old_comp_rel != comp_rel:
+                if old_comp_rel and old_comp_rel != comp_rel and prune:
                     _migrate_generated_path(
                         repo_root,
                         old_comp_rel,
@@ -930,9 +936,10 @@ async def pull_file(
     # - page renames (old path removed once new path is written)
     # - file renames (old file-slug directory entries pruned)
     # - removed pages (manifest entry + files deleted)
+    # Guarded by prune so operators can opt out for forensic/debug pulls.
     manifest_changed = False
     file_entry = state.manifest.files.get(file_key)
-    if file_entry is not None:
+    if file_entry is not None and prune:
         # 1) Pages removed from Figma file: drop manifest entries + paths.
         for previous_page_id, previous_entry in previous_pages.items():
             if previous_page_id in current_page_ids:
