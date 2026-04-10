@@ -495,13 +495,11 @@ async def pull_file(
     except Exception as exc:
         if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in {400, 404}:
             code = exc.response.status_code
-            log.warning(
-                "No access to %r (HTTP %d) — will be moved to skipped_files", file_key, code
-            )
+            log.warning("No access to Figma file (HTTP %d) — will be moved to skipped_files", code)
             result.skipped_file = True
             result.no_access = True
         else:
-            log.error("Failed to fetch file meta for %r: %s — skipping file", file_key, exc)
+            log.error("Failed to fetch file meta (%s) — skipping file", type(exc).__name__)
             result.skipped_file = True
         return result
     api_version = meta.version
@@ -556,9 +554,8 @@ async def pull_file(
         component_sets = await client.get_component_sets(file_key)
     except Exception as exc:
         log.warning(
-            "Failed to fetch component sets for %r: %s — component_set_keys will be empty",
-            file_key,
-            exc,
+            "Failed to fetch component sets (%s) — component_set_keys will be empty",
+            type(exc).__name__,
         )
         component_sets = []
 
@@ -626,9 +623,7 @@ async def pull_file(
                         )
                         continue
                     all_frame_docs.update(chunk_docs)
-                log.debug(
-                    "Batch-fetched %d frame nodes for file %r", len(all_screen_frame_ids), file_key
-                )
+                log.debug("Batch-fetched %d frame nodes", len(all_screen_frame_ids))
             except Exception as exc:
                 log.warning(
                     "Failed to batch-fetch frame children (%s) — raw_frames will be omitted",

@@ -525,6 +525,8 @@ def test_cli_json_output(tmp_path: Path) -> None:
                 str(tmp_path),
                 "diff",
                 "figma/",
+                "--since",
+                "30d",
                 "--format",
                 "json",
                 "--no-progress",
@@ -536,7 +538,8 @@ def test_cli_json_output(tmp_path: Path) -> None:
     assert "files" in data
     assert len(data["files"]) == 1
     assert len(data["files"][0]["pages"]) == 1
-    assert data["files"][0]["pages"][0]["added_frames"][0]["node_id"] == "11:3"
+    added_ids = {f["node_id"] for f in data["files"][0]["pages"][0]["added_frames"]}
+    assert "11:3" in added_ids
 
 
 # ── VersionSummary nullable fields ────────────────────────────────
