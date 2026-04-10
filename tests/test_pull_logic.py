@@ -1719,6 +1719,44 @@ async def test_pull_file_file_rename_moves_path_and_prunes_old(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_pull_file_unchanged_run_prunes_existing_generated_orphans(tmp_path: Path):
+    """INVARIANT: unchanged file-level skip still prunes generated orphan md/tokens files."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v2"
+    state.manifest.files["abc123"].last_modified = "2026-03-31T12:00:00Z"
+    state.manifest.files["abc123"].pull_schema_version = CURRENT_PULL_SCHEMA_VERSION
+    state.manifest.files["abc123"].pages["100:1"] = PageEntry(
+        page_name="Current",
+        page_slug="current-100-1",
+        md_path="figma/web-app/pages/current-100-1.md",
+        page_hash="hash",
+        last_refreshed_at="now",
+    )
+    state.save()
+
+    current_md = tmp_path / "figma/web-app/pages/current-100-1.md"
+    current_md.parent.mkdir(parents=True, exist_ok=True)
+    current_md.write_text("current")
+
+    orphan_md = tmp_path / "figma/web-app/pages/legacy-100-99.md"
+    orphan_md.write_text("orphan")
+    orphan_tok = orphan_md.with_suffix(".tokens.json")
+    orphan_tok.write_text("{}")
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2", "2026-03-31T12:00:00Z"))
+
+    result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    assert result.skipped_file is True
+    assert current_md.exists()
+    assert not orphan_md.exists()
+    assert not orphan_tok.exists()
+
+
+@pytest.mark.asyncio
 async def test_pull_file_removed_page_prunes_manifest_and_files(tmp_path: Path):
     """INVARIANT: pages removed from file metadata are pruned from manifest and disk."""
     state = FigmaSyncState(tmp_path)
@@ -1810,3 +1848,55 @@ async def test_has_more_only_set_when_content_changes_exhaust_budget(tmp_path: P
     assert result.pages_written == 0
     assert result.pages_schema_upgraded >= 1
     assert result.skipped_file is False  # schema_stale=True bypasses file-level skip
+
+
+@pytest.mark.asyncio
+async def test_pull_cmd_no_access_prunes_artifacts_and_untracks(tmp_path: Path):
+    """INVARIANT: pull command prunes known artifacts and untracks file on no_access."""
+    from figmaclaw.commands.pull import _run
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("restricted_key", "Restricted")
+    state.manifest.files["restricted_key"].pages["11:1"] = PageEntry(
+        page_name="Legacy",
+        page_slug="legacy-11-1",
+        md_path="figma/restricted/pages/legacy-11-1.md",
+        page_hash="hash",
+        last_refreshed_at="now",
+        component_md_paths=["figma/restricted/components/legacy-components-11-2.md"],
+    )
+    state.save()
+
+    page_md = tmp_path / "figma/restricted/pages/legacy-11-1.md"
+    page_md.parent.mkdir(parents=True, exist_ok=True)
+    page_md.write_text("legacy")
+    sidecar = page_md.with_suffix(".tokens.json")
+    sidecar.write_text("{}")
+    comp_md = tmp_path / "figma/restricted/components/legacy-components-11-2.md"
+    comp_md.parent.mkdir(parents=True, exist_ok=True)
+    comp_md.write_text("legacy-comp")
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    no_access_result = PullResult(file_key="restricted_key", no_access=True, skipped_file=True)
+    with (
+        patch.object(FigmaClient, "__new__", return_value=mock_client),
+        patch("figmaclaw.commands.pull.pull_file", AsyncMock(return_value=no_access_result)),
+    ):
+        await _run("key", tmp_path, None, False, None, False, 10, None, "all")
+
+    assert not page_md.exists()
+    assert not sidecar.exists()
+    assert not comp_md.exists()
+
+    reloaded = FigmaSyncState(tmp_path)
+    reloaded.load()
+    assert "restricted_key" not in reloaded.manifest.tracked_files
+    assert "restricted_key" not in reloaded.manifest.files
+    assert (
+        reloaded.manifest.skipped_files["restricted_key"]
+        == "no access — get_file_meta returns 400/404"
+    )

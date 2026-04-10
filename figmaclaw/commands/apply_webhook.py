@@ -13,38 +13,12 @@ from figmaclaw.commands.pull import _git_commit_page
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_sync_state import FigmaSyncState
 from figmaclaw.git_utils import git_push as _git_push
+from figmaclaw.prune_utils import prune_file_artifacts_from_manifest
 from figmaclaw.pull_logic import pull_file
 
 
 class WebhookAuthError(Exception):
     """Raised when the webhook passcode does not match FIGMA_WEBHOOK_SECRET."""
-
-
-def _prune_file_artifacts(state: FigmaSyncState, repo_dir: Path, file_key: str) -> int:
-    """Delete generated files for one tracked file key and remove it from manifest."""
-    removed_paths = 0
-    file_entry = state.manifest.files.get(file_key)
-    if file_entry is not None:
-        for page in file_entry.pages.values():
-            paths = list(page.component_md_paths)
-            if page.md_path:
-                paths.append(page.md_path)
-            for rel in paths:
-                path = repo_dir / rel
-                if path.exists():
-                    path.unlink()
-                    removed_paths += 1
-                if path.suffix == ".md":
-                    sidecar = path.with_suffix(".tokens.json")
-                    if sidecar.exists():
-                        sidecar.unlink()
-                        removed_paths += 1
-        state.manifest.files.pop(file_key, None)
-
-    if file_key in state.manifest.tracked_files:
-        state.manifest.tracked_files.remove(file_key)
-
-    return removed_paths
 
 
 @click.command("apply-webhook")
@@ -114,7 +88,13 @@ async def _run(
 
     if event_type == "FILE_DELETE":
         had_file = file_key in state.manifest.files or file_key in state.manifest.tracked_files
-        removed_paths = _prune_file_artifacts(state, repo_dir, file_key)
+        removed_paths = prune_file_artifacts_from_manifest(
+            state,
+            repo_dir,
+            file_key,
+            drop_manifest_entry=True,
+            drop_tracked=True,
+        )
         if had_file:
             state.manifest.skipped_files[file_key] = "deleted via FILE_DELETE webhook"
             state.save()

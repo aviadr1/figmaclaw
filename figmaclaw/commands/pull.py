@@ -14,6 +14,7 @@ from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_sync_state import FigmaSyncState
 from figmaclaw.figma_utils import parse_since
 from figmaclaw.git_utils import git_commit, git_push
+from figmaclaw.prune_utils import prune_file_artifacts_from_manifest
 from figmaclaw.pull_logic import PullResult, pull_file
 
 
@@ -251,10 +252,18 @@ async def _run(
             if result.no_access:
                 # Permanently inaccessible (restricted/deleted) — move out of tracked_files.
                 reason = "no access — get_file_meta returns 400/404"
+                pruned = prune_file_artifacts_from_manifest(
+                    state,
+                    repo_dir,
+                    key,
+                    drop_manifest_entry=True,
+                    drop_tracked=True,
+                )
                 state.manifest.skipped_files[key] = reason
-                if key in state.manifest.tracked_files:
-                    state.manifest.tracked_files.remove(key)
-                click.echo(f"{key}: skipped — {reason} — removed from tracked_files")
+                click.echo(
+                    f"{key}: skipped — {reason} — removed from tracked_files "
+                    f"(pruned {pruned} path(s))"
+                )
             elif result.skipped_file:
                 # If pull failed (e.g. 400 on get_file_meta) and we know the listing
                 # last_modified, stamp it into the manifest so future runs pre-filter

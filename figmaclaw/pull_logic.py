@@ -58,6 +58,11 @@ from figmaclaw.figma_paths import component_path, page_path, slugify
 from figmaclaw.figma_render import build_page_frontmatter, render_component_section, scaffold_page
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
 from figmaclaw.figma_utils import write_json_if_changed
+from figmaclaw.prune_utils import (
+    entry_paths,
+    find_generated_orphans,
+    remove_generated_relpath,
+)
 from figmaclaw.token_catalog import load_catalog, merge_bindings, save_catalog
 from figmaclaw.token_scan import PageTokenScan, scan_page
 
@@ -270,14 +275,6 @@ def _write_token_sidecar(
     write_json_if_changed(sidecar_path, sidecar, ignore_keys=frozenset({"generated_at"}))
 
 
-def _entry_paths(entry: PageEntry) -> set[str]:
-    """Return all generated markdown paths referenced by a manifest page entry."""
-    paths: set[str] = set(entry.component_md_paths)
-    if entry.md_path:
-        paths.add(entry.md_path)
-    return paths
-
-
 def _node_suffix_from_relpath(rel_path: str) -> str | None:
     """Extract '<nodeA>-<nodeB>' suffix from generated path stem, if present."""
     stem = Path(rel_path).stem
@@ -288,17 +285,6 @@ def _node_suffix_from_relpath(rel_path: str) -> str | None:
     if not (a.isdigit() and b.isdigit()):
         return None
     return f"{a}-{b}"
-
-
-def _remove_generated_path(repo_root: Path, rel_path: str) -> None:
-    """Remove a generated markdown path and its token sidecar (for page markdown)."""
-    path = repo_root / rel_path
-    if path.exists():
-        path.unlink()
-    if path.suffix == ".md":
-        sidecar = path.with_suffix(".tokens.json")
-        if sidecar.exists():
-            sidecar.unlink()
 
 
 def _migrate_generated_path(
@@ -527,6 +513,18 @@ async def pull_file(
         and stored.version == api_version
         and stored.last_modified == api_last_modified
     ):
+        # Even on file-level skip, prune generated orphans under the current file slug.
+        expected_paths = {rel for page in stored.pages.values() for rel in entry_paths(page)}
+        candidate_dirs = {
+            repo_root / f"figma/{slugify(file_name, fallback=file_key)}/pages",
+            repo_root / f"figma/{slugify(file_name, fallback=file_key)}/components",
+        }
+        for rel in expected_paths:
+            candidate_dirs.add((repo_root / rel).parent)
+        for orphan_rel in find_generated_orphans(
+            repo_root, candidate_dirs=candidate_dirs, expected_paths=expected_paths
+        ):
+            remove_generated_relpath(repo_root, orphan_rel)
         _progress(f"{file_name}: unchanged (version {api_version}), skipping all pages")
         result.skipped_file = True
         return result
@@ -939,8 +937,8 @@ async def pull_file(
         for previous_page_id, previous_entry in previous_pages.items():
             if previous_page_id in current_page_ids:
                 continue
-            for stale_rel in sorted(_entry_paths(previous_entry)):
-                _remove_generated_path(repo_root, stale_rel)
+            for stale_rel in sorted(entry_paths(previous_entry)):
+                remove_generated_relpath(repo_root, stale_rel)
             if previous_page_id in file_entry.pages:
                 file_entry.pages.pop(previous_page_id)
                 manifest_changed = True
@@ -951,9 +949,25 @@ async def pull_file(
             current_entry = file_entry.pages.get(page_id)
             if previous_entry is None or current_entry is None:
                 continue
-            stale_paths = _entry_paths(previous_entry) - _entry_paths(current_entry)
+            stale_paths = entry_paths(previous_entry) - entry_paths(current_entry)
             for stale_rel in sorted(stale_paths):
-                _remove_generated_path(repo_root, stale_rel)
+                remove_generated_relpath(repo_root, stale_rel)
+
+        # 3) Existing on-disk generated artifacts not referenced by manifest (legacy orphans).
+        expected_paths = {rel for page in file_entry.pages.values() for rel in entry_paths(page)}
+        candidate_dirs = {
+            repo_root / f"figma/{file_slug}/pages",
+            repo_root / f"figma/{file_slug}/components",
+        }
+        for rel in expected_paths:
+            candidate_dirs.add((repo_root / rel).parent)
+        for previous_entry in previous_pages.values():
+            for rel in entry_paths(previous_entry):
+                candidate_dirs.add((repo_root / rel).parent)
+        for orphan_rel in find_generated_orphans(
+            repo_root, candidate_dirs=candidate_dirs, expected_paths=expected_paths
+        ):
+            remove_generated_relpath(repo_root, orphan_rel)
 
     if manifest_changed:
         state.save()
