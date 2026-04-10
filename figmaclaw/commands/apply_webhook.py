@@ -1,4 +1,4 @@
-"""figmaclaw apply-webhook — process a Figma FILE_UPDATE webhook payload."""
+"""figmaclaw apply-webhook — process Figma FILE_UPDATE / FILE_DELETE webhooks."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from figmaclaw.commands.pull import _git_commit_page
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_sync_state import FigmaSyncState
 from figmaclaw.git_utils import git_push as _git_push
+from figmaclaw.prune_utils import prune_file_artifacts_from_manifest
 from figmaclaw.pull_logic import pull_file
 
 
@@ -32,7 +33,7 @@ class WebhookAuthError(Exception):
 )
 @click.pass_context
 def apply_webhook_cmd(ctx: click.Context, auto_commit: bool, push_every: int) -> None:
-    """Process a Figma FILE_UPDATE webhook payload from FIGMA_WEBHOOK_PAYLOAD env var."""
+    """Process a Figma webhook payload from FIGMA_WEBHOOK_PAYLOAD env var."""
     repo_dir = Path(ctx.obj["repo_dir"])
     api_key = os.environ.get("FIGMA_API_KEY", "")
     if not api_key:
@@ -76,16 +77,35 @@ async def _run(
         if passcode != webhook_secret:
             raise WebhookAuthError("Webhook passcode mismatch — rejecting payload.")
 
-    file_id: str = data.get("file_id", "")
-    if not file_id:
-        click.echo("Webhook payload missing file_id — skipping.")
+    event_type = str(data.get("event_type", "")).upper()
+    file_key: str = data.get("file_key") or data.get("file_id") or ""
+    if not file_key:
+        click.echo("Webhook payload missing file_key/file_id — skipping.")
         return
 
     state = FigmaSyncState(repo_dir)
     state.load()
 
-    if file_id not in state.manifest.tracked_files:
-        click.echo(f"File {file_id!r} is not tracked — skipping.")
+    if event_type == "FILE_DELETE":
+        had_file = file_key in state.manifest.files or file_key in state.manifest.tracked_files
+        removed_paths = prune_file_artifacts_from_manifest(
+            state,
+            repo_dir,
+            file_key,
+            drop_manifest_entry=True,
+            drop_tracked=True,
+        )
+        if had_file:
+            state.manifest.skipped_files[file_key] = "deleted via FILE_DELETE webhook"
+            state.save()
+            click.echo(f"COMMIT_MSG:sync: figmaclaw apply-webhook — file deleted [{file_key}]")
+            click.echo(f"{file_key}: pruned {removed_paths} generated path(s) after FILE_DELETE.")
+        else:
+            click.echo(f"File {file_key!r} is not tracked — skipping.")
+        return
+
+    if file_key not in state.manifest.tracked_files:
+        click.echo(f"File {file_key!r} is not tracked — skipping.")
         return
 
     commit_count = 0
@@ -105,7 +125,7 @@ async def _run(
     async with FigmaClient(api_key) as client:
         result = await pull_file(
             client,
-            file_id,
+            file_key,
             state,
             repo_dir,
             on_page_written=on_page_written,
@@ -115,6 +135,6 @@ async def _run(
 
     if result.pages_written > 0:
         n = result.pages_written
-        click.echo(f"COMMIT_MSG:sync: figmaclaw apply-webhook — {n} page(s) updated [{file_id}]")
+        click.echo(f"COMMIT_MSG:sync: figmaclaw apply-webhook — {n} page(s) updated [{file_key}]")
     else:
-        click.echo(f"{file_id}: no pages changed.")
+        click.echo(f"{file_key}: no pages changed.")

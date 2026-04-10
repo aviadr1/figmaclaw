@@ -14,6 +14,7 @@ from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_sync_state import FigmaSyncState
 from figmaclaw.figma_utils import parse_since
 from figmaclaw.git_utils import git_commit, git_push
+from figmaclaw.prune_utils import prune_file_artifacts_from_manifest
 from figmaclaw.pull_logic import PullResult, pull_file
 
 
@@ -55,6 +56,13 @@ from figmaclaw.pull_logic import PullResult, pull_file
     show_default=True,
     help="When --team-id is set, only track files modified within this window (e.g. 3m, 7d, all).",
 )
+@click.option(
+    "--prune/--no-prune",
+    "prune",
+    default=True,
+    show_default=True,
+    help="Prune stale generated figma artifacts (orphans, old rename paths, removed pages).",
+)
 @click.pass_context
 def pull_cmd(
     ctx: click.Context,
@@ -65,6 +73,7 @@ def pull_cmd(
     push_every: int,
     team_id: str | None,
     since: str,
+    prune: bool,
 ) -> None:
     """Pull all tracked Figma files and write changed pages to disk."""
     repo_dir = Path(ctx.obj["repo_dir"])
@@ -73,7 +82,18 @@ def pull_cmd(
         raise click.UsageError("FIGMA_API_KEY environment variable is not set.")
 
     asyncio.run(
-        _run(api_key, repo_dir, file_key, force, max_pages, auto_commit, push_every, team_id, since)
+        _run(
+            api_key,
+            repo_dir,
+            file_key,
+            force,
+            max_pages,
+            auto_commit,
+            push_every,
+            team_id,
+            since,
+            prune=prune,
+        )
     )
 
 
@@ -161,6 +181,7 @@ async def _run(
     push_every: int,
     team_id: str | None,
     since: str,
+    prune: bool = True,
 ) -> None:
     state = FigmaSyncState(repo_dir)
     state.load()
@@ -234,6 +255,7 @@ async def _run(
                     repo_dir,
                     force=force,
                     max_pages=pages_budget,
+                    prune=prune,
                     on_page_written=on_page_written,
                 )
             except Exception as exc:
@@ -249,12 +271,20 @@ async def _run(
                 has_more_global = True
 
             if result.no_access:
-                # Permanently inaccessible — move out of tracked_files into skipped_files.
-                reason = "no access — get_file_meta returns 400 (restricted file)"
+                # Permanently inaccessible (restricted/deleted) — move out of tracked_files.
+                reason = "no access — get_file_meta returns 400/404"
+                pruned = prune_file_artifacts_from_manifest(
+                    state,
+                    repo_dir,
+                    key,
+                    drop_manifest_entry=True,
+                    drop_tracked=True,
+                )
                 state.manifest.skipped_files[key] = reason
-                if key in state.manifest.tracked_files:
-                    state.manifest.tracked_files.remove(key)
-                click.echo(f"{key}: skipped — {reason} — removed from tracked_files")
+                click.echo(
+                    f"{key}: skipped — {reason} — removed from tracked_files "
+                    f"(pruned {pruned} path(s))"
+                )
             elif result.skipped_file:
                 # If pull failed (e.g. 400 on get_file_meta) and we know the listing
                 # last_modified, stamp it into the manifest so future runs pre-filter

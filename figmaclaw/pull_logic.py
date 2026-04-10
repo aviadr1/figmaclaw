@@ -58,6 +58,11 @@ from figmaclaw.figma_paths import component_path, page_path, slugify
 from figmaclaw.figma_render import build_page_frontmatter, render_component_section, scaffold_page
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
 from figmaclaw.figma_utils import write_json_if_changed
+from figmaclaw.prune_utils import (
+    entry_paths,
+    find_generated_orphans,
+    remove_generated_relpath,
+)
 from figmaclaw.token_catalog import load_catalog, merge_bindings, save_catalog
 from figmaclaw.token_scan import PageTokenScan, scan_page
 
@@ -270,6 +275,48 @@ def _write_token_sidecar(
     write_json_if_changed(sidecar_path, sidecar, ignore_keys=frozenset({"generated_at"}))
 
 
+def _node_suffix_from_relpath(rel_path: str) -> str | None:
+    """Extract '<nodeA>-<nodeB>' suffix from generated path stem, if present."""
+    stem = Path(rel_path).stem
+    parts = stem.rsplit("-", 2)
+    if len(parts) != 3:
+        return None
+    a, b = parts[1], parts[2]
+    if not (a.isdigit() and b.isdigit()):
+        return None
+    return f"{a}-{b}"
+
+
+def _migrate_generated_path(
+    repo_root: Path,
+    old_rel_path: str,
+    new_rel_path: str,
+    *,
+    move_sidecar: bool,
+) -> None:
+    """Move old generated path to a new path, or prune old if the new path already exists."""
+    if old_rel_path == new_rel_path:
+        return
+
+    old_path = repo_root / old_rel_path
+    new_path = repo_root / new_rel_path
+
+    if old_path.exists() and not new_path.exists():
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+        old_path.rename(new_path)
+    elif old_path.exists() and new_path.exists():
+        old_path.unlink()
+
+    if move_sidecar and old_path.suffix == ".md":
+        old_sidecar = old_path.with_suffix(".tokens.json")
+        new_sidecar = new_path.with_suffix(".tokens.json")
+        if old_sidecar.exists() and not new_sidecar.exists():
+            new_sidecar.parent.mkdir(parents=True, exist_ok=True)
+            old_sidecar.rename(new_sidecar)
+        elif old_sidecar.exists() and new_sidecar.exists():
+            old_sidecar.unlink()
+
+
 def _compute_raw_frames(
     frame_docs: dict[str, dict],
 ) -> tuple[dict[str, FrameComposition], dict[str, list[SectionNode]]]:
@@ -406,6 +453,7 @@ async def pull_file(
     *,
     force: bool = False,
     max_pages: int | None = None,
+    prune: bool = True,
     progress: Callable[[str], None] | None = None,
     on_page_written: Callable[[str, list[str]], None] | None = None,
 ) -> PullResult:
@@ -419,6 +467,9 @@ async def pull_file(
 
     max_pages: stop after writing this many Figma pages (pages whose hash changed).
                Skipped pages don't count. Set result.has_more=True if more remain.
+
+    prune: whether to remove stale generated artifacts when lifecycle drifts
+           (renames, removals, orphan files). Disable only for debugging/forensics.
 
     on_page_written: called after each page is successfully written to disk with
                (page_name, [paths_written]). Use this to trigger git commits from
@@ -442,12 +493,13 @@ async def pull_file(
     try:
         meta = await client.get_file_meta(file_key)
     except Exception as exc:
-        if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 400:
-            log.warning("No access to %r (HTTP 400) — will be moved to skipped_files", file_key)
+        if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in {400, 404}:
+            code = exc.response.status_code
+            log.warning("No access to Figma file (HTTP %d) — will be moved to skipped_files", code)
             result.skipped_file = True
             result.no_access = True
         else:
-            log.error("Failed to fetch file meta for %r: %s — skipping file", file_key, exc)
+            log.error("Failed to fetch file meta (%s) — skipping file", type(exc).__name__)
             result.skipped_file = True
         return result
     api_version = meta.version
@@ -463,6 +515,19 @@ async def pull_file(
         and stored.version == api_version
         and stored.last_modified == api_last_modified
     ):
+        # Even on file-level skip, optionally prune generated orphans under file slug.
+        if prune:
+            expected_paths = {rel for page in stored.pages.values() for rel in entry_paths(page)}
+            candidate_dirs = {
+                repo_root / f"figma/{slugify(file_name, fallback=file_key)}/pages",
+                repo_root / f"figma/{slugify(file_name, fallback=file_key)}/components",
+            }
+            for rel in expected_paths:
+                candidate_dirs.add((repo_root / rel).parent)
+            for orphan_rel in find_generated_orphans(
+                repo_root, candidate_dirs=candidate_dirs, expected_paths=expected_paths
+            ):
+                remove_generated_relpath(repo_root, orphan_rel)
         _progress(f"{file_name}: unchanged (version {api_version}), skipping all pages")
         result.skipped_file = True
         return result
@@ -470,6 +535,10 @@ async def pull_file(
         _progress(
             f"{file_name}: pull schema stale (v{stored.pull_schema_version} → v{CURRENT_PULL_SCHEMA_VERSION}), refreshing frontmatter"
         )
+
+    previous_pages: dict[str, PageEntry] = {}
+    if stored is not None:
+        previous_pages = {pid: p.model_copy(deep=True) for pid, p in stored.pages.items()}
 
     now = datetime.datetime.now(datetime.UTC).isoformat()
     state.set_file_meta(
@@ -485,13 +554,13 @@ async def pull_file(
         component_sets = await client.get_component_sets(file_key)
     except Exception as exc:
         log.warning(
-            "Failed to fetch component sets for %r: %s — component_set_keys will be empty",
-            file_key,
-            exc,
+            "Failed to fetch component sets (%s) — component_set_keys will be empty",
+            type(exc).__name__,
         )
         component_sets = []
 
     page_stubs = meta.canvas_pages
+    current_page_ids = {stub.id for stub in page_stubs}
     file_slug = slugify(file_name, fallback=file_key)
     total_pages = len(page_stubs)
     pages_written_this_call = 0
@@ -554,9 +623,7 @@ async def pull_file(
                         )
                         continue
                     all_frame_docs.update(chunk_docs)
-                log.debug(
-                    "Batch-fetched %d frame nodes for file %r", len(all_screen_frame_ids), file_key
-                )
+                log.debug("Batch-fetched %d frame nodes", len(all_screen_frame_ids))
             except Exception as exc:
                 log.warning(
                     "Failed to batch-fetch frame children (%s) — raw_frames will be omitted",
@@ -611,6 +678,15 @@ async def pull_file(
 
         new_hash = compute_page_hash(page_node)
         stored_hash = state.get_page_hash(file_key, page_node_id)
+        node_suffix = page_node_id.replace(":", "-")
+        expected_page_slug = f"{slugify(page_name)}-{node_suffix}"
+        expected_screen_md_rel = page_path(file_slug, expected_page_slug)
+        previous_entry = previous_pages.get(page_node_id)
+        needs_path_reconcile = bool(
+            previous_entry
+            and previous_entry.md_path
+            and previous_entry.md_path != expected_screen_md_rel
+        )
 
         content_unchanged = not force and stored_hash is not None and stored_hash == new_hash
 
@@ -619,7 +695,7 @@ async def pull_file(
         # These don't consume the max_pages budget so the whole file upgrades in one pass.
         schema_only = content_unchanged and schema_stale
 
-        if content_unchanged and not schema_stale:
+        if content_unchanged and not schema_stale and not needs_path_reconcile:
             _progress(f"  [{page_idx}/{total_pages}] {page_name} — unchanged (skip)")
             result.pages_skipped += 1
             continue
@@ -641,7 +717,6 @@ async def pull_file(
             _progress(f"  [{page_idx}/{total_pages}] {page_name} — processing...")
 
         try:
-            node_suffix = page_node_id.replace(":", "-")
             page_slug = f"{slugify(page_name)}-{node_suffix}"
             page = from_page_node(page_node, file_key=file_key, file_name=file_name)
             page = page.model_copy(
@@ -656,6 +731,18 @@ async def pull_file(
             existing_flows: list[tuple[str, str]] = []
 
             screen_md_rel = page_path(file_slug, page_slug)
+            if (
+                previous_entry
+                and previous_entry.md_path
+                and previous_entry.md_path != screen_md_rel
+                and prune
+            ):
+                _migrate_generated_path(
+                    repo_root,
+                    previous_entry.md_path,
+                    screen_md_rel,
+                    move_sidecar=True,
+                )
             screen_md = repo_root / screen_md_rel
             if screen_md.exists():
                 md_text = screen_md.read_text()
@@ -707,7 +794,7 @@ async def pull_file(
             # Skipped for schema-only upgrades: content is unchanged so token data can't have changed.
             token_scan: PageTokenScan | None = None
             raw_tokens: dict[str, RawTokenCounts] | None = None
-            if screen_frame_ids and not schema_only:
+            if screen_frame_ids and not schema_only and not content_unchanged:
                 try:
                     token_scan = scan_page(page_node, set(screen_frame_ids))
                     # Sparse frontmatter summary — only frames with at least one issue
@@ -773,12 +860,26 @@ async def pull_file(
                     result.pages_written += 1
 
             written_component_rels: list[str] = []
+            previous_component_by_suffix: dict[str, str] = {}
+            if previous_entry:
+                for comp_path in previous_entry.component_md_paths:
+                    suffix = _node_suffix_from_relpath(comp_path)
+                    if suffix:
+                        previous_component_by_suffix[suffix] = comp_path
             for section in component_sections:
                 if not section.frames:
                     continue
                 sect_suffix = section.node_id.replace(":", "-")
                 sect_slug = f"{slugify(section.name)}-{sect_suffix}"
                 comp_rel = component_path(file_slug, sect_slug)
+                old_comp_rel = previous_component_by_suffix.get(sect_suffix)
+                if old_comp_rel and old_comp_rel != comp_rel and prune:
+                    _migrate_generated_path(
+                        repo_root,
+                        old_comp_rel,
+                        comp_rel,
+                        move_sidecar=False,
+                    )
                 sect_keys = _build_component_set_keys(page.page_node_id, component_sets)
                 written = write_component_section(
                     repo_root,
@@ -824,6 +925,54 @@ async def pull_file(
                 [written_screen_rel] if written_screen_rel else []
             ) + written_component_rels
             on_page_written(f"{file_name} / {page_name}", all_written)
+
+    # Reconcile and prune stale generated paths from previous runs.
+    # This handles:
+    # - page renames (old path removed once new path is written)
+    # - file renames (old file-slug directory entries pruned)
+    # - removed pages (manifest entry + files deleted)
+    # Guarded by prune so operators can opt out for forensic/debug pulls.
+    manifest_changed = False
+    file_entry = state.manifest.files.get(file_key)
+    if file_entry is not None and prune:
+        # 1) Pages removed from Figma file: drop manifest entries + paths.
+        for previous_page_id, previous_entry in previous_pages.items():
+            if previous_page_id in current_page_ids:
+                continue
+            for stale_rel in sorted(entry_paths(previous_entry)):
+                remove_generated_relpath(repo_root, stale_rel)
+            if previous_page_id in file_entry.pages:
+                file_entry.pages.pop(previous_page_id)
+                manifest_changed = True
+
+        # 2) Existing pages: drop stale old paths no longer referenced by current manifest entry.
+        for page_id in current_page_ids:
+            previous_entry = previous_pages.get(page_id)
+            current_entry = file_entry.pages.get(page_id)
+            if previous_entry is None or current_entry is None:
+                continue
+            stale_paths = entry_paths(previous_entry) - entry_paths(current_entry)
+            for stale_rel in sorted(stale_paths):
+                remove_generated_relpath(repo_root, stale_rel)
+
+        # 3) Existing on-disk generated artifacts not referenced by manifest (legacy orphans).
+        expected_paths = {rel for page in file_entry.pages.values() for rel in entry_paths(page)}
+        candidate_dirs = {
+            repo_root / f"figma/{file_slug}/pages",
+            repo_root / f"figma/{file_slug}/components",
+        }
+        for rel in expected_paths:
+            candidate_dirs.add((repo_root / rel).parent)
+        for previous_entry in previous_pages.values():
+            for rel in entry_paths(previous_entry):
+                candidate_dirs.add((repo_root / rel).parent)
+        for orphan_rel in find_generated_orphans(
+            repo_root, candidate_dirs=candidate_dirs, expected_paths=expected_paths
+        ):
+            remove_generated_relpath(repo_root, orphan_rel)
+
+    if manifest_changed:
+        state.save()
 
     # Record that all pages in this file are now at the current pull schema version.
     # Only written after the full page loop completes — if interrupted mid-file,
