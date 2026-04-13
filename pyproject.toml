@@ -38,7 +38,7 @@ dev = [
     "basedpyright>=1.14",
     "ruff>=0.4",
     "pre-commit>=3.7",
-    "respx>=0.22.0",
+    "respx>=0.23.1",
     "pytest-cov>=7.1.0",
 ]
 
