@@ -105,6 +105,30 @@ class TestEnrichmentInfo:
         assert needs is False
         assert count == 0
 
+    def test_enriched_hash_with_placeholders_still_needs_enrichment(self, tmp_path: Path) -> None:
+        """Placeholder rows must override enriched_hash and force re-enrichment."""
+        md = tmp_path / "page.md"
+        md.write_text(
+            textwrap.dedent("""\
+            ---
+            file_key: abc123
+            page_node_id: "0:1"
+            enriched_hash: "sha256:abcdef1234567890"
+            enriched_at: "2026-04-01T00:00:00Z"
+            ---
+
+            # Page Title
+
+            | Screen | Node ID | Description |
+            |--------|---------|-------------|
+            | Login  | `1:1`   | (no description yet) |
+            | Home   | `1:2`   | (no description yet) |
+        """)
+        )
+        needs, count = enrichment_info(md)
+        assert needs is True
+        assert count == 2
+
     def test_counts_frame_rows_correctly(self, tmp_path: Path) -> None:
         """Frame count = table rows with backtick node IDs, excluding header/separator."""
         md = tmp_path / "page.md"
@@ -237,6 +261,23 @@ class TestCollectFiles:
         )
         assert len(result) == 1
         assert result[0].name == "pending.md"
+
+    def test_needs_enrichment_keeps_enriched_file_when_placeholders_exist(
+        self, tmp_path: Path
+    ) -> None:
+        """Enriched files with placeholders must remain in the enrichment queue."""
+        pages = tmp_path / "figma" / "pages"
+        self._make_page(pages / "enriched.md", enriched=True)
+        self._make_page(pages / "pending.md", enriched=False)
+        text = (pages / "enriched.md").read_text()
+        (pages / "enriched.md").write_text(
+            text.replace("| Screen0 | `1:0` | desc |", "| Screen0 | `1:0` | (no description yet) |")
+        )
+
+        result = collect_files(
+            tmp_path / "figma", "**/*.md", changed_only=False, needs_enrichment=True
+        )
+        assert sorted(p.name for p in result) == ["enriched.md", "pending.md"]
 
     def test_needs_enrichment_skips_files_above_max_frames(self, tmp_path: Path) -> None:
         """Files with more than max_frames are filtered out."""

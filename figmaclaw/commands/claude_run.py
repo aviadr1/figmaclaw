@@ -119,7 +119,8 @@ def enrichment_info(md_path: Path) -> tuple[bool, int]:
 
     Reads the file directly — no subprocess, no Figma API.  Checks:
 
-    * Has ``enriched_hash`` in frontmatter?  → already enriched → skip.
+    * Body still has placeholder rows?       → needs enrichment.
+    * Else has ``enriched_hash`` in fm?      → already enriched → skip.
     * Counts body table rows for a frame-size estimate.
     """
     try:
@@ -131,15 +132,23 @@ def enrichment_info(md_path: Path) -> tuple[bool, int]:
     if "file_key:" not in text:
         return False, 0
 
-    # Fast frontmatter check — enriched files have this field
-    if "enriched_hash:" in (text.split("\n---")[0] if "\n---" in text else ""):
-        return False, 0
-
     # Count frames from body table rows (| name | `node_id` | desc |)
     frame_count = 0
+    has_placeholder = False
     for line in text.splitlines():
         if line.startswith("| ") and "`" in line and "Node ID" not in line and "---" not in line:
             frame_count += 1
+        if is_placeholder_row(line):
+            has_placeholder = True
+
+    # Placeholder rows are a hard signal that this page still needs enrichment,
+    # even if frontmatter was previously marked enriched.
+    if has_placeholder:
+        return True, frame_count
+
+    # Fast frontmatter check — enriched files without placeholders can be skipped.
+    if "enriched_hash:" in (text.split("\n---")[0] if "\n---" in text else ""):
+        return False, 0
 
     return True, frame_count
 
