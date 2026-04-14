@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import json
 import logging
 from collections.abc import Callable
 from pathlib import Path
@@ -67,6 +68,7 @@ from figmaclaw.token_catalog import load_catalog, merge_bindings, save_catalog
 from figmaclaw.token_scan import PageTokenScan, scan_page
 
 log = logging.getLogger(__name__)
+TOKEN_SIDECAR_SCHEMA_VERSION = 2
 
 
 def _all_manifest_generated_paths(state: FigmaSyncState) -> set[str]:
@@ -279,7 +281,7 @@ def _write_token_sidecar(
         }
 
     sidecar = {
-        "schema_version": 2,
+        "schema_version": TOKEN_SIDECAR_SCHEMA_VERSION,
         "file_key": file_key,
         "page_node_id": page_node_id,
         "generated_at": now,
@@ -292,6 +294,28 @@ def _write_token_sidecar(
     }
 
     write_json_if_changed(sidecar_path, sidecar, ignore_keys=frozenset({"generated_at"}))
+
+
+def _sidecar_needs_backfill(sidecar_path: Path) -> bool:
+    """Return True when a sidecar is missing or uses a legacy schema."""
+    if not sidecar_path.exists():
+        return True
+    try:
+        payload = json.loads(sidecar_path.read_text())
+    except Exception:
+        # Corrupt sidecars should be repaired by the next pull.
+        return True
+    schema_version = payload.get("schema_version")
+    if not isinstance(schema_version, int):
+        return True
+    return schema_version < TOKEN_SIDECAR_SCHEMA_VERSION
+
+
+def _screen_artifacts_need_reconcile(md_abs: Path) -> bool:
+    """Return True when screen markdown/sidecar artifacts are missing or stale."""
+    if not md_abs.exists():
+        return True
+    return _sidecar_needs_backfill(md_abs.with_suffix(".tokens.json"))
 
 
 def _node_suffix_from_relpath(rel_path: str) -> str | None:
@@ -538,7 +562,7 @@ async def pull_file(
                     local_reconcile_needed = True
                     break
                 md_abs = repo_root / page.md_path
-                if not md_abs.exists() or not md_abs.with_suffix(".tokens.json").exists():
+                if _screen_artifacts_need_reconcile(md_abs):
                     local_reconcile_needed = True
                     break
             for comp_rel in page.component_md_paths:
@@ -737,9 +761,7 @@ async def pull_file(
         needs_sidecar_backfill = False
         if content_unchanged and previous_entry and previous_entry.md_path:
             md_abs = repo_root / previous_entry.md_path
-            needs_sidecar_backfill = (
-                md_abs.exists() and not md_abs.with_suffix(".tokens.json").exists()
-            )
+            needs_sidecar_backfill = _screen_artifacts_need_reconcile(md_abs)
 
         if (
             content_unchanged
