@@ -177,7 +177,7 @@ jobs:
 
       - name: Upload raw stream-json artifact
         if: always()  # success, failure, cancelled, or timeout
-        uses: actions/upload-artifact@v7.0.0
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: claude-run-raw-${{ github.run_id }}-${{ inputs.section_mode && 'large' || 'bulk' }}
           path: .figma-sync/claude-stream.jsonl
