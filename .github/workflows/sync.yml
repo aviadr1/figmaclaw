@@ -74,14 +74,27 @@ jobs:
           FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
           INPUT_FORCE: ${{ inputs.force }}
         run: |
+          set -euo pipefail
+
           FORCE_FLAG=""
           if [ "$INPUT_FORCE" = "true" ]; then
             FORCE_FLAG="--force"
           fi
 
+          # Guardrails to prevent a single sync job from monopolizing the workflow and
+          # starving downstream enrich jobs indefinitely.
+          MAX_BATCHES=180
+          MAX_IDLE_HAS_MORE_BATCHES=3
+          idle_has_more=0
+
           BATCH=0
           while true; do
             BATCH=$((BATCH + 1))
+            if [ "$BATCH" -gt "$MAX_BATCHES" ]; then
+              echo "Reached MAX_BATCHES=$MAX_BATCHES; stopping checkpoint loop early."
+              break
+            fi
+
             echo "--- batch $BATCH ---"
 
             if [ -n "$FORCE_FLAG" ]; then
@@ -92,13 +105,29 @@ jobs:
 
             git pull --no-rebase --ff-only origin main
             git add figma/ .figma-sync/
+            committed=false
             if ! git diff --cached --quiet; then
               COMMIT_MSG="$(grep '^COMMIT_MSG:' /tmp/figmaclaw-out.txt | head -1 | sed 's/^COMMIT_MSG://' | tr -d '\n\r')"
               COMMIT_MSG="${COMMIT_MSG:-sync: figmaclaw — checkpoint batch $BATCH}"
               git commit -m "${COMMIT_MSG}"
               git push
+              committed=true
             fi
 
-            grep -q '^HAS_MORE:true' /tmp/figmaclaw-out.txt || break
+            if grep -q '^HAS_MORE:true' /tmp/figmaclaw-out.txt; then
+              if [ "$committed" = false ]; then
+                idle_has_more=$((idle_has_more + 1))
+                echo "HAS_MORE:true with no commit (idle_has_more=$idle_has_more/$MAX_IDLE_HAS_MORE_BATCHES)"
+                if [ "$idle_has_more" -ge "$MAX_IDLE_HAS_MORE_BATCHES" ]; then
+                  echo "Stopping loop after repeated HAS_MORE:true without progress."
+                  break
+                fi
+              else
+                idle_has_more=0
+              fi
+            else
+              break
+            fi
+
             [ -n "$FORCE_FLAG" ] && break
           done
