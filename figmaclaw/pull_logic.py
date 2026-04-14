@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import json
 import logging
 from collections.abc import Callable
 from pathlib import Path
@@ -67,6 +68,26 @@ from figmaclaw.token_catalog import load_catalog, merge_bindings, save_catalog
 from figmaclaw.token_scan import PageTokenScan, scan_page
 
 log = logging.getLogger(__name__)
+TOKEN_SIDECAR_SCHEMA_VERSION = 2
+
+
+def _all_manifest_generated_paths(state: FigmaSyncState) -> set[str]:
+    """Return all generated paths currently referenced by the manifest."""
+    return {
+        rel
+        for file_entry in state.manifest.files.values()
+        for page_entry in file_entry.pages.values()
+        for rel in entry_paths(page_entry)
+    }
+
+
+def _file_slug_for_state(state: FigmaSyncState, file_key: str, file_name: str) -> str:
+    """Return a collision-safe file slug for the current manifest state."""
+    from figmaclaw.figma_paths import file_slug_for_key
+
+    tracked_names = {key: entry.file_name for key, entry in state.manifest.files.items()}
+    tracked_names[file_key] = file_name
+    return file_slug_for_key(file_name, file_key, tracked_file_names=tracked_names)
 
 
 class PullResult(BaseModel):
@@ -260,7 +281,7 @@ def _write_token_sidecar(
         }
 
     sidecar = {
-        "schema_version": 2,
+        "schema_version": TOKEN_SIDECAR_SCHEMA_VERSION,
         "file_key": file_key,
         "page_node_id": page_node_id,
         "generated_at": now,
@@ -273,6 +294,28 @@ def _write_token_sidecar(
     }
 
     write_json_if_changed(sidecar_path, sidecar, ignore_keys=frozenset({"generated_at"}))
+
+
+def _sidecar_needs_backfill(sidecar_path: Path) -> bool:
+    """Return True when a sidecar is missing or uses a legacy schema."""
+    if not sidecar_path.exists():
+        return True
+    try:
+        payload = json.loads(sidecar_path.read_text())
+    except Exception:
+        # Corrupt sidecars should be repaired by the next pull.
+        return True
+    schema_version = payload.get("schema_version")
+    if not isinstance(schema_version, int):
+        return True
+    return schema_version < TOKEN_SIDECAR_SCHEMA_VERSION
+
+
+def _screen_artifacts_need_reconcile(md_abs: Path) -> bool:
+    """Return True when screen markdown/sidecar artifacts are missing or stale."""
+    if not md_abs.exists():
+        return True
+    return _sidecar_needs_backfill(md_abs.with_suffix(".tokens.json"))
 
 
 def _node_suffix_from_relpath(rel_path: str) -> str | None:
@@ -508,21 +551,42 @@ async def pull_file(
 
     stored = state.manifest.files.get(file_key)
     schema_stale = (stored.pull_schema_version if stored else 0) < CURRENT_PULL_SCHEMA_VERSION
+    file_slug = _file_slug_for_state(state, file_key, file_name)
+
+    local_reconcile_needed = False
+    if stored is not None:
+        for page in stored.pages.values():
+            if page.md_path:
+                expected_md = page_path(file_slug, page.page_slug)
+                if page.md_path != expected_md:
+                    local_reconcile_needed = True
+                    break
+                md_abs = repo_root / page.md_path
+                if _screen_artifacts_need_reconcile(md_abs):
+                    local_reconcile_needed = True
+                    break
+            for comp_rel in page.component_md_paths:
+                if not comp_rel.startswith(f"figma/{file_slug}/components/"):
+                    local_reconcile_needed = True
+                    break
+            if local_reconcile_needed:
+                break
     if (
         not force
         and not schema_stale
         and stored
         and stored.version == api_version
         and stored.last_modified == api_last_modified
+        and not local_reconcile_needed
     ):
         # Even on file-level skip, optionally prune generated orphans under file slug.
         if prune:
-            expected_paths = {rel for page in stored.pages.values() for rel in entry_paths(page)}
+            expected_paths = _all_manifest_generated_paths(state)
             candidate_dirs = {
-                repo_root / f"figma/{slugify(file_name, fallback=file_key)}/pages",
-                repo_root / f"figma/{slugify(file_name, fallback=file_key)}/components",
+                repo_root / f"figma/{file_slug}/pages",
+                repo_root / f"figma/{file_slug}/components",
             }
-            for rel in expected_paths:
+            for rel in {rel for page in stored.pages.values() for rel in entry_paths(page)}:
                 candidate_dirs.add((repo_root / rel).parent)
             for orphan_rel in find_generated_orphans(
                 repo_root, candidate_dirs=candidate_dirs, expected_paths=expected_paths
@@ -561,7 +625,6 @@ async def pull_file(
 
     page_stubs = meta.canvas_pages
     current_page_ids = {stub.id for stub in page_stubs}
-    file_slug = slugify(file_name, fallback=file_key)
     total_pages = len(page_stubs)
     pages_written_this_call = 0
 
@@ -695,7 +758,17 @@ async def pull_file(
         # These don't consume the max_pages budget so the whole file upgrades in one pass.
         schema_only = content_unchanged and schema_stale
 
-        if content_unchanged and not schema_stale and not needs_path_reconcile:
+        needs_sidecar_backfill = False
+        if content_unchanged and previous_entry and previous_entry.md_path:
+            md_abs = repo_root / previous_entry.md_path
+            needs_sidecar_backfill = _screen_artifacts_need_reconcile(md_abs)
+
+        if (
+            content_unchanged
+            and not schema_stale
+            and not needs_path_reconcile
+            and not needs_sidecar_backfill
+        ):
             _progress(f"  [{page_idx}/{total_pages}] {page_name} — unchanged (skip)")
             result.pages_skipped += 1
             continue
@@ -794,7 +867,12 @@ async def pull_file(
             # Skipped for schema-only upgrades: content is unchanged so token data can't have changed.
             token_scan: PageTokenScan | None = None
             raw_tokens: dict[str, RawTokenCounts] | None = None
-            if screen_frame_ids and not schema_only and not content_unchanged:
+            should_scan_tokens = (
+                screen_frame_ids
+                and not schema_only
+                and (not content_unchanged or needs_sidecar_backfill)
+            )
+            if should_scan_tokens:
                 try:
                     token_scan = scan_page(page_node, set(screen_frame_ids))
                     # Sparse frontmatter summary — only frames with at least one issue
@@ -956,7 +1034,7 @@ async def pull_file(
                 remove_generated_relpath(repo_root, stale_rel)
 
         # 3) Existing on-disk generated artifacts not referenced by manifest (legacy orphans).
-        expected_paths = {rel for page in file_entry.pages.values() for rel in entry_paths(page)}
+        expected_paths = _all_manifest_generated_paths(state)
         candidate_dirs = {
             repo_root / f"figma/{file_slug}/pages",
             repo_root / f"figma/{file_slug}/components",

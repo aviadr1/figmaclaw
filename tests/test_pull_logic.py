@@ -22,6 +22,7 @@ Current: see test_schema_upgrade_does_not_cause_infinite_loop_with_max_pages (v2
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -91,7 +92,7 @@ def _make_entry(page_hash: str = "aaaa1111bbbb2222") -> PageEntry:
     return PageEntry(
         page_name="Onboarding",
         page_slug="onboarding",
-        md_path="figma/abc123/pages/onboarding.md",
+        md_path="figma/web-app-abc123/pages/onboarding.md",
         page_hash=page_hash,
         last_refreshed_at="2026-03-31T00:00:00Z",
     )
@@ -105,7 +106,7 @@ def test_write_new_page_creates_file(tmp_path: Path):
     page = _make_page()
     entry = _make_entry()
     write_new_page(tmp_path, page, entry)
-    out = tmp_path / "figma" / "abc123" / "pages" / "onboarding.md"
+    out = tmp_path / "figma" / "web-app-abc123" / "pages" / "onboarding.md"
     assert out.exists()
     assert "# Web App / Onboarding" in out.read_text()
 
@@ -115,7 +116,7 @@ def test_write_new_page_creates_parent_dirs(tmp_path: Path):
     page = _make_page()
     entry = _make_entry()
     write_new_page(tmp_path, page, entry)
-    assert (tmp_path / "figma" / "abc123" / "pages").is_dir()
+    assert (tmp_path / "figma" / "web-app-abc123" / "pages").is_dir()
 
 
 def test_write_new_page_returns_path(tmp_path: Path):
@@ -123,7 +124,7 @@ def test_write_new_page_returns_path(tmp_path: Path):
     page = _make_page()
     entry = _make_entry()
     result = write_new_page(tmp_path, page, entry)
-    assert result == tmp_path / "figma" / "abc123" / "pages" / "onboarding.md"
+    assert result == tmp_path / "figma" / "web-app-abc123" / "pages" / "onboarding.md"
 
 
 # --- pull_file ---
@@ -188,10 +189,14 @@ async def test_pull_file_skips_page_when_hash_unchanged(tmp_path: Path):
     state.manifest.files["abc123"].pages["7741:45837"] = PageEntry(
         page_name="Onboarding",
         page_slug="onboarding",
-        md_path="figma/web-app/pages/onboarding-7741-45837.md",
+        md_path="figma/web-app-abc123/pages/onboarding-7741-45837.md",
         page_hash=stored_hash,
         last_refreshed_at="2026-03-30T00:00:00Z",
     )
+    existing_md = tmp_path / "figma/web-app-abc123/pages/onboarding-7741-45837.md"
+    existing_md.parent.mkdir(parents=True, exist_ok=True)
+    existing_md.write_text("---\n---\n")
+    existing_md.with_suffix(".tokens.json").write_text('{"schema_version":2}')
 
     mock_client = MagicMock(spec=FigmaClient)
     mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2"))
@@ -215,7 +220,7 @@ async def test_pull_file_writes_page_when_hash_changed(tmp_path: Path):
     state.manifest.files["abc123"].pages["7741:45837"] = PageEntry(
         page_name="Onboarding",
         page_slug="onboarding",
-        md_path="figma/abc123/pages/onboarding.md",
+        md_path="figma/web-app-abc123/pages/onboarding.md",
         page_hash="0000000000000000",
         last_refreshed_at="2026-03-30T00:00:00Z",
     )
@@ -227,7 +232,7 @@ async def test_pull_file_writes_page_when_hash_changed(tmp_path: Path):
     result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
     assert result.pages_written == 1
-    out = tmp_path / "figma" / "web-app" / "pages" / "onboarding-7741-45837.md"
+    out = tmp_path / "figma" / "web-app-abc123" / "pages" / "onboarding-7741-45837.md"
     assert out.exists()
 
 
@@ -264,7 +269,7 @@ async def test_pull_file_writes_component_md_for_component_section(pull_env: Pul
 
     assert result.component_sections_written == 1
     assert result.pages_written == 0  # no screen sections
-    out = tmp_path / "figma" / "web-app" / "components" / "buttons-20-1.md"
+    out = tmp_path / "figma" / "web-app-abc123" / "components" / "buttons-20-1.md"
     assert out.exists()
     assert "## Variants" in out.read_text()
 
@@ -278,7 +283,7 @@ async def test_pull_file_skips_screen_md_when_all_sections_are_components(pull_e
     result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
     assert result.pages_written == 0
-    pages_dir = tmp_path / "figma" / "web-app" / "pages"
+    pages_dir = tmp_path / "figma" / "web-app-abc123" / "pages"
     assert not pages_dir.exists() or not any(pages_dir.iterdir())
 
 
@@ -292,7 +297,7 @@ async def test_pull_file_manifest_records_component_paths(pull_env: PullEnv):
 
     entry = state.manifest.files["abc123"].pages["7741:45837"]
     assert entry.md_path is None  # no screen sections
-    assert "figma/web-app/components/buttons-20-1.md" in entry.component_md_paths
+    assert "figma/web-app-abc123/components/buttons-20-1.md" in entry.component_md_paths
 
 
 @pytest.mark.asyncio
@@ -303,7 +308,7 @@ async def test_pull_file_writes_component_section_with_frame_ids(pull_env: PullE
 
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
-    comp_out = tmp_path / "figma" / "web-app" / "components" / "buttons-20-1.md"
+    comp_out = tmp_path / "figma" / "web-app-abc123" / "components" / "buttons-20-1.md"
     content = comp_out.read_text()
     from figmaclaw.figma_parse import parse_frontmatter
 
@@ -319,7 +324,7 @@ async def test_pull_file_preserves_existing_descriptions(tmp_path: Path):
     # Pre-write a .md with existing descriptions at the slug-based path
     existing_entry = _make_entry("0000000000000000")
     existing_entry = existing_entry.model_copy(
-        update={"md_path": "figma/web-app/pages/onboarding-7741-45837.md"}
+        update={"md_path": "figma/web-app-abc123/pages/onboarding-7741-45837.md"}
     )
     page_with_descs = _make_page()  # has descriptions
     write_new_page(tmp_path, page_with_descs, existing_entry)
@@ -331,7 +336,7 @@ async def test_pull_file_preserves_existing_descriptions(tmp_path: Path):
     state.manifest.files["abc123"].pages["7741:45837"] = PageEntry(
         page_name="Onboarding",
         page_slug="onboarding",
-        md_path="figma/abc123/pages/onboarding.md",
+        md_path="figma/web-app-abc123/pages/onboarding.md",
         page_hash="0000000000000000",
         last_refreshed_at="2026-03-30T00:00:00Z",
     )
@@ -344,7 +349,7 @@ async def test_pull_file_preserves_existing_descriptions(tmp_path: Path):
 
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
-    out = tmp_path / "figma" / "web-app" / "pages" / "onboarding-7741-45837.md"
+    out = tmp_path / "figma" / "web-app-abc123" / "pages" / "onboarding-7741-45837.md"
     content = out.read_text()
     # The existing descriptions should be preserved in the output
     assert "Welcome screen." in content
@@ -630,10 +635,14 @@ async def test_pull_file_skipped_pages_do_not_trigger_on_page_written(tmp_path: 
     state.manifest.files["abc123"].pages["7741:45837"] = PageEntry(
         page_name="Onboarding",
         page_slug="onboarding",
-        md_path="figma/web-app/pages/onboarding-7741-45837.md",
+        md_path="figma/web-app-abc123/pages/onboarding-7741-45837.md",
         page_hash=stored_hash,
         last_refreshed_at="2026-03-30T00:00:00Z",
     )
+    existing_md = tmp_path / "figma/web-app-abc123/pages/onboarding-7741-45837.md"
+    existing_md.parent.mkdir(parents=True, exist_ok=True)
+    existing_md.write_text("---\n---\n")
+    existing_md.with_suffix(".tokens.json").write_text('{"schema_version":2}')
 
     mock_client = MagicMock(spec=FigmaClient)
     mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2"))
@@ -1248,7 +1257,7 @@ async def test_pull_file_writes_raw_frames_to_new_page_frontmatter(pull_env: Pul
 
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
-    out = tmp_path / "figma" / "web-app" / "pages" / "onboarding-7741-45837.md"
+    out = tmp_path / "figma" / "web-app-abc123" / "pages" / "onboarding-7741-45837.md"
     fm = parse_frontmatter(out.read_text())
     assert fm is not None
     assert "11:1" in fm.raw_frames
@@ -1272,7 +1281,7 @@ async def test_pull_file_is_idempotent_for_frame_sections_inventory(pull_env: Pu
     mock_client.get_nodes = AsyncMock(return_value=fake_get_nodes_response())
 
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
-    out = tmp_path / "figma" / "web-app" / "pages" / "onboarding-7741-45837.md"
+    out = tmp_path / "figma" / "web-app-abc123" / "pages" / "onboarding-7741-45837.md"
     first_text = out.read_text()
     fm1 = parse_frontmatter(first_text)
     assert fm1 is not None
@@ -1314,7 +1323,7 @@ async def test_pull_file_writes_component_set_keys_to_component_frontmatter(pull
 
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
-    comp_out = tmp_path / "figma" / "web-app" / "components" / "buttons-20-1.md"
+    comp_out = tmp_path / "figma" / "web-app-abc123" / "components" / "buttons-20-1.md"
     fm = parse_frontmatter(comp_out.read_text())
     assert fm is not None
     assert fm.component_set_keys == {
@@ -1337,7 +1346,7 @@ async def test_pull_file_handles_get_component_sets_failure_gracefully(pull_env:
     result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
     assert result.component_sections_written == 1  # still wrote the file
-    comp_out = tmp_path / "figma" / "web-app" / "components" / "buttons-20-1.md"
+    comp_out = tmp_path / "figma" / "web-app-abc123" / "components" / "buttons-20-1.md"
     fm = parse_frontmatter(comp_out.read_text())
     assert fm is not None
     assert fm.component_set_keys == {}  # empty — not an error
@@ -1355,7 +1364,7 @@ async def test_pull_file_handles_get_nodes_failure_gracefully(pull_env: PullEnv)
     result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
     assert result.pages_written == 1  # still wrote the page
-    out = tmp_path / "figma" / "web-app" / "pages" / "onboarding-7741-45837.md"
+    out = tmp_path / "figma" / "web-app-abc123" / "pages" / "onboarding-7741-45837.md"
     fm = parse_frontmatter(out.read_text())
     assert fm is not None
     assert fm.raw_frames == {}  # absent from frontmatter when fetch failed
@@ -1439,7 +1448,7 @@ async def test_pull_file_processes_schema_stale_pages_even_when_page_hash_unchan
     # First pull: write the page, bump version and schema version
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
-    out = tmp_path / "figma" / "web-app" / "pages" / "onboarding-7741-45837.md"
+    out = tmp_path / "figma" / "web-app-abc123" / "pages" / "onboarding-7741-45837.md"
     body_before = out.read_text().split("---\n", 2)[-1]  # capture body
     fm_before = parse_frontmatter(out.read_text())
     assert fm_before is not None
@@ -1657,6 +1666,101 @@ async def test_pull_file_is_idempotent_second_call_changes_nothing(tmp_path: Pat
 
 
 @pytest.mark.asyncio
+async def test_pull_file_backfills_missing_sidecar_on_unchanged_page(tmp_path: Path):
+    """INVARIANT: unchanged pages with missing sidecar are re-processed to recreate sidecar."""
+    from figmaclaw.figma_hash import compute_page_hash
+
+    page_id = "7741:45837"
+    file_key = "abc123"
+    page_node = fake_page_node_with_children()
+    page_hash = compute_page_hash(page_node)
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file(file_key, "Web App")
+    state.manifest.files[file_key].version = "v2"
+    state.manifest.files[file_key].last_modified = "2026-03-31T12:00:00Z"
+    state.manifest.files[file_key].pull_schema_version = CURRENT_PULL_SCHEMA_VERSION
+    md_rel = "figma/web-app-abc123/pages/onboarding-7741-45837.md"
+    state.manifest.files[file_key].pages[page_id] = PageEntry(
+        page_name="Onboarding",
+        page_slug="onboarding-7741-45837",
+        md_path=md_rel,
+        page_hash=page_hash,
+        last_refreshed_at="2026-03-31T12:00:00Z",
+    )
+    state.save()
+
+    md_abs = tmp_path / md_rel
+    md_abs.parent.mkdir(parents=True, exist_ok=True)
+    md_abs.write_text(
+        "---\nfile_key: abc123\npage_node_id: '7741:45837'\nframes: ['11:1']\n---\n\n# body\n"
+    )
+    assert not md_abs.with_suffix(".tokens.json").exists()
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2", "2026-03-31T12:00:00Z"))
+    mock_client.get_page = AsyncMock(return_value=page_node)
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+    mock_client.get_nodes = AsyncMock(return_value=fake_get_nodes_response())
+
+    result = await pull_file(mock_client, file_key, state, tmp_path, force=False)
+
+    assert result.skipped_file is False
+    assert md_abs.with_suffix(".tokens.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_pull_file_migrates_legacy_sidecar_on_unchanged_page(tmp_path: Path):
+    """INVARIANT: unchanged pages with legacy sidecar schema are re-processed to v2."""
+    from figmaclaw.figma_hash import compute_page_hash
+
+    page_id = "7741:45837"
+    file_key = "abc123"
+    page_node = fake_page_node_with_children()
+    page_hash = compute_page_hash(page_node)
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file(file_key, "Web App")
+    state.manifest.files[file_key].version = "v2"
+    state.manifest.files[file_key].last_modified = "2026-03-31T12:00:00Z"
+    state.manifest.files[file_key].pull_schema_version = CURRENT_PULL_SCHEMA_VERSION
+    md_rel = "figma/web-app-abc123/pages/onboarding-7741-45837.md"
+    state.manifest.files[file_key].pages[page_id] = PageEntry(
+        page_name="Onboarding",
+        page_slug="onboarding-7741-45837",
+        md_path=md_rel,
+        page_hash=page_hash,
+        last_refreshed_at="2026-03-31T12:00:00Z",
+    )
+    state.save()
+
+    md_abs = tmp_path / md_rel
+    md_abs.parent.mkdir(parents=True, exist_ok=True)
+    md_abs.write_text(
+        "---\nfile_key: abc123\npage_node_id: '7741:45837'\nframes: ['11:1']\n---\n\n# body\n"
+    )
+    sidecar = md_abs.with_suffix(".tokens.json")
+    sidecar.write_text(
+        '{"file_key":"abc123","page_node_id":"7741:45837","summary":{"raw":1,"stale":0,"valid":0},"frames":{}}'
+    )
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2", "2026-03-31T12:00:00Z"))
+    mock_client.get_page = AsyncMock(return_value=page_node)
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+    mock_client.get_nodes = AsyncMock(return_value=fake_get_nodes_response())
+
+    result = await pull_file(mock_client, file_key, state, tmp_path, force=False)
+
+    assert result.skipped_file is False
+    assert sidecar.exists()
+    payload = json.loads(sidecar.read_text())
+    assert payload["schema_version"] == 2
+
+
+@pytest.mark.asyncio
 async def test_pull_file_page_rename_moves_path_and_prunes_old(tmp_path: Path):
     """INVARIANT: renaming a page keeps exactly one page file path (old path is pruned)."""
     page_id = "100:1"
@@ -1681,7 +1785,9 @@ async def test_pull_file_page_rename_moves_path_and_prunes_old(tmp_path: Path):
     mock_client.get_page = AsyncMock(return_value=fake_page_node_for_id(page_id, old_page_name))
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
-    old_rel = page_path(slugify(file_name), f"{slugify(old_page_name)}-{page_id.replace(':', '-')}")
+    old_rel = page_path(
+        f"{slugify(file_name)}-abc123", f"{slugify(old_page_name)}-{page_id.replace(':', '-')}"
+    )
     old_abs = tmp_path / old_rel
     assert old_abs.exists()
     old_abs.write_text(old_abs.read_text() + "\nMANUAL_BODY_SENTINEL\n")
@@ -1694,7 +1800,9 @@ async def test_pull_file_page_rename_moves_path_and_prunes_old(tmp_path: Path):
     mock_client.get_page = AsyncMock(return_value=fake_page_node_for_id(page_id, new_page_name))
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
-    new_rel = page_path(slugify(file_name), f"{slugify(new_page_name)}-{page_id.replace(':', '-')}")
+    new_rel = page_path(
+        f"{slugify(file_name)}-abc123", f"{slugify(new_page_name)}-{page_id.replace(':', '-')}"
+    )
     new_abs = tmp_path / new_rel
     assert new_abs.exists()
     assert not old_abs.exists()
@@ -1735,7 +1843,9 @@ async def test_pull_file_file_rename_moves_path_and_prunes_old(tmp_path: Path):
     mock_client.get_page = AsyncMock(return_value=fake_page_node_for_id(page_id, page_name))
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
-    old_rel = page_path(slugify(old_file_name), f"{slugify(page_name)}-{page_id.replace(':', '-')}")
+    old_rel = page_path(
+        f"{slugify(old_file_name)}-abc123", f"{slugify(page_name)}-{page_id.replace(':', '-')}"
+    )
     old_abs = tmp_path / old_rel
     assert old_abs.exists()
 
@@ -1746,7 +1856,9 @@ async def test_pull_file_file_rename_moves_path_and_prunes_old(tmp_path: Path):
     )
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
-    new_rel = page_path(slugify(new_file_name), f"{slugify(page_name)}-{page_id.replace(':', '-')}")
+    new_rel = page_path(
+        f"{slugify(new_file_name)}-abc123", f"{slugify(page_name)}-{page_id.replace(':', '-')}"
+    )
     new_abs = tmp_path / new_rel
     assert new_abs.exists()
     assert not old_abs.exists()
@@ -1777,7 +1889,9 @@ async def test_pull_file_page_rename_with_prune_disabled_keeps_old_path(tmp_path
     mock_client.get_page = AsyncMock(return_value=fake_page_node_for_id(page_id, old_page_name))
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
-    old_rel = page_path(slugify(file_name), f"{slugify(old_page_name)}-{page_id.replace(':', '-')}")
+    old_rel = page_path(
+        f"{slugify(file_name)}-abc123", f"{slugify(old_page_name)}-{page_id.replace(':', '-')}"
+    )
     old_abs = tmp_path / old_rel
     assert old_abs.exists()
 
@@ -1789,7 +1903,9 @@ async def test_pull_file_page_rename_with_prune_disabled_keeps_old_path(tmp_path
     mock_client.get_page = AsyncMock(return_value=fake_page_node_for_id(page_id, new_page_name))
     await pull_file(mock_client, "abc123", state, tmp_path, force=False, prune=False)
 
-    new_rel = page_path(slugify(file_name), f"{slugify(new_page_name)}-{page_id.replace(':', '-')}")
+    new_rel = page_path(
+        f"{slugify(file_name)}-abc123", f"{slugify(new_page_name)}-{page_id.replace(':', '-')}"
+    )
     new_abs = tmp_path / new_rel
     assert new_abs.exists()
     assert old_abs.exists()
@@ -1807,17 +1923,18 @@ async def test_pull_file_unchanged_run_prunes_existing_generated_orphans(tmp_pat
     state.manifest.files["abc123"].pages["100:1"] = PageEntry(
         page_name="Current",
         page_slug="current-100-1",
-        md_path="figma/web-app/pages/current-100-1.md",
+        md_path="figma/web-app-abc123/pages/current-100-1.md",
         page_hash="hash",
         last_refreshed_at="now",
     )
     state.save()
 
-    current_md = tmp_path / "figma/web-app/pages/current-100-1.md"
+    current_md = tmp_path / "figma/web-app-abc123/pages/current-100-1.md"
     current_md.parent.mkdir(parents=True, exist_ok=True)
     current_md.write_text("current")
+    current_md.with_suffix(".tokens.json").write_text('{"schema_version":2}')
 
-    orphan_md = tmp_path / "figma/web-app/pages/legacy-100-99.md"
+    orphan_md = tmp_path / "figma/web-app-abc123/pages/legacy-100-99.md"
     orphan_md.write_text("orphan")
     orphan_tok = orphan_md.with_suffix(".tokens.json")
     orphan_tok.write_text("{}")
@@ -1831,6 +1948,58 @@ async def test_pull_file_unchanged_run_prunes_existing_generated_orphans(tmp_pat
     assert current_md.exists()
     assert not orphan_md.exists()
     assert not orphan_tok.exists()
+
+
+@pytest.mark.asyncio
+async def test_pull_file_unchanged_skip_does_not_prune_other_file_paths_in_candidate_dir(
+    tmp_path: Path,
+):
+    """INVARIANT: prune on one file never deletes files referenced by another tracked file."""
+    file_a = "fileA1111111111111111111111"
+    file_b = "fileB2222222222222222222222"
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file(file_a, "Web App")
+    state.add_tracked_file(file_b, "Design System")
+
+    for key in (file_a, file_b):
+        state.manifest.files[key].version = "v2"
+        state.manifest.files[key].last_modified = "2026-03-31T12:00:00Z"
+        state.manifest.files[key].pull_schema_version = CURRENT_PULL_SCHEMA_VERSION
+
+    state.manifest.files[file_a].pages["100:1"] = PageEntry(
+        page_name="Alpha",
+        page_slug="alpha-100-1",
+        md_path="figma/web-app-fileA1111111111111111111111/pages/alpha-100-1.md",
+        page_hash="hash-a",
+        last_refreshed_at="now",
+    )
+    state.manifest.files[file_b].pages["200:1"] = PageEntry(
+        page_name="Beta",
+        page_slug="beta-200-1",
+        md_path="figma/design-system-fileB2222222222222222222222/pages/beta-200-1.md",
+        page_hash="hash-b",
+        last_refreshed_at="now",
+    )
+    state.save()
+
+    alpha = tmp_path / "figma/web-app-fileA1111111111111111111111/pages/alpha-100-1.md"
+    beta = tmp_path / "figma/design-system-fileB2222222222222222222222/pages/beta-200-1.md"
+    alpha.parent.mkdir(parents=True, exist_ok=True)
+    beta.parent.mkdir(parents=True, exist_ok=True)
+    alpha.write_text("alpha")
+    beta.write_text("beta")
+    alpha.with_suffix(".tokens.json").write_text('{"schema_version":2}')
+    beta.with_suffix(".tokens.json").write_text('{"schema_version":2}')
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2", "2026-03-31T12:00:00Z"))
+
+    result = await pull_file(mock_client, file_a, state, tmp_path, force=False)
+    assert result.skipped_file is True
+    assert alpha.exists()
+    assert beta.exists()
 
 
 @pytest.mark.asyncio
@@ -1860,7 +2029,7 @@ async def test_pull_file_screen_to_component_only_prunes_old_screen_md_and_sidec
     mock_client.get_page = AsyncMock(return_value=fake_page_node_for_id(page_id, "Catalog"))
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
-    old_rel = page_path(slugify(file_name), f"catalog-{page_id.replace(':', '-')}")
+    old_rel = page_path(f"{slugify(file_name)}-abc123", f"catalog-{page_id.replace(':', '-')}")
     old_abs = tmp_path / old_rel
     assert old_abs.exists()
     old_sidecar = old_abs.with_suffix(".tokens.json")
@@ -1896,19 +2065,19 @@ async def test_pull_file_removed_page_prunes_manifest_and_files(tmp_path: Path):
     state.manifest.files["abc123"].pages["100:1"] = PageEntry(
         page_name="Legacy",
         page_slug="legacy-100-1",
-        md_path="figma/web-app/pages/legacy-100-1.md",
+        md_path="figma/web-app-abc123/pages/legacy-100-1.md",
         page_hash="oldhash",
         last_refreshed_at="2026-03-01T00:00:00Z",
-        component_md_paths=["figma/web-app/components/legacy-components-100-2.md"],
+        component_md_paths=["figma/web-app-abc123/components/legacy-components-100-2.md"],
     )
     state.save()
 
-    page_md = tmp_path / "figma/web-app/pages/legacy-100-1.md"
+    page_md = tmp_path / "figma/web-app-abc123/pages/legacy-100-1.md"
     page_md.parent.mkdir(parents=True, exist_ok=True)
     page_md.write_text("legacy")
     page_sidecar = page_md.with_suffix(".tokens.json")
     page_sidecar.write_text("{}")
-    comp_md = tmp_path / "figma/web-app/components/legacy-components-100-2.md"
+    comp_md = tmp_path / "figma/web-app-abc123/components/legacy-components-100-2.md"
     comp_md.parent.mkdir(parents=True, exist_ok=True)
     comp_md.write_text("legacy-comp")
 
