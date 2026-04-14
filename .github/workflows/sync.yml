@@ -85,6 +85,7 @@ jobs:
           # starving downstream enrich jobs indefinitely.
           MAX_BATCHES=180
           MAX_IDLE_HAS_MORE_BATCHES=3
+          BATCH_TIMEOUT_SECONDS=900
           idle_has_more=0
 
           BATCH=0
@@ -97,10 +98,19 @@ jobs:
 
             echo "--- batch $BATCH ---"
 
+            set +e
             if [ -n "$FORCE_FLAG" ]; then
-              figmaclaw pull $FORCE_FLAG | tee /tmp/figmaclaw-out.txt || true
+              timeout "$BATCH_TIMEOUT_SECONDS" figmaclaw pull $FORCE_FLAG | tee /tmp/figmaclaw-out.txt
+              pull_status=${PIPESTATUS[0]}
             else
-              figmaclaw pull --max-pages 5 | tee /tmp/figmaclaw-out.txt || true
+              timeout "$BATCH_TIMEOUT_SECONDS" figmaclaw pull --max-pages 5 | tee /tmp/figmaclaw-out.txt
+              pull_status=${PIPESTATUS[0]}
+            fi
+            set -e
+
+            if [ "$pull_status" -eq 124 ]; then
+              echo "figmaclaw pull timed out after ${BATCH_TIMEOUT_SECONDS}s; stopping checkpoint loop early."
+              break
             fi
 
             git pull --no-rebase --ff-only origin main
