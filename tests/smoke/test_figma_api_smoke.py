@@ -8,6 +8,7 @@ These tests are skipped by default in CI.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from pathlib import Path
@@ -321,6 +322,54 @@ async def test_pull_backfills_missing_sidecar_on_unchanged_page_real_api(
 
     assert backfill.skipped_file is False
     assert target_sidecar.exists()
+
+
+@pytest.mark.smoke
+@pytest.mark.asyncio
+async def test_pull_migrates_legacy_sidecar_schema_on_unchanged_page_real_api(
+    tmp_path,
+    api_key: str,  # type: ignore[no-untyped-def]
+) -> None:
+    """Smoke: unchanged pages with legacy sidecar schema are rewritten to schema v2."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file(TEST_FILE_KEY_LSN_BRANDING, "LSN Branding")
+    state.manifest.files[TEST_FILE_KEY_LSN_BRANDING].version = "v0"
+
+    async with FigmaClient(api_key=api_key) as client:
+        first = await pull_file(
+            client, TEST_FILE_KEY_LSN_BRANDING, state, tmp_path, force=False, max_pages=2
+        )
+        assert first.pages_written + first.pages_schema_upgraded > 0
+
+        pages = state.manifest.files[TEST_FILE_KEY_LSN_BRANDING].pages
+        assert pages
+        target_sidecar: Path | None = None
+        for entry in pages.values():
+            if not entry.md_path:
+                continue
+            sidecar = (tmp_path / entry.md_path).with_suffix(".tokens.json")
+            if "cover-0-1.tokens.json" in str(sidecar):
+                continue
+            if sidecar.exists():
+                target_sidecar = sidecar
+                break
+
+        assert target_sidecar is not None, (
+            "expected a non-cover sidecar to exist after initial pull"
+        )
+
+        payload = json.loads(target_sidecar.read_text())
+        payload.pop("schema_version", None)
+        target_sidecar.write_text(json.dumps(payload, separators=(",", ":"), sort_keys=True))
+        mutated = json.loads(target_sidecar.read_text())
+        assert "schema_version" not in mutated
+
+        migrated = await pull_file(client, TEST_FILE_KEY_LSN_BRANDING, state, tmp_path, force=False)
+
+    assert migrated.skipped_file is False
+    rewritten = json.loads(target_sidecar.read_text())
+    assert rewritten.get("schema_version") == 2
 
 
 @pytest.mark.smoke
