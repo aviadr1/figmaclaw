@@ -275,10 +275,8 @@ async def test_pull_collision_safe_file_dirs_and_sidecar_backfill(
         assert entry_a.md_path is not None
         assert entry_b.md_path is not None
 
-        assert entry_a.md_path.startswith(f"figma/web-app-{TEST_FILE_KEY[:8].lower()}/pages/")
-        assert entry_b.md_path.startswith(
-            f"figma/web-app-{TEST_FILE_KEY_WEB_APP_DUP[:8].lower()}/pages/"
-        )
+        assert entry_a.md_path.startswith(f"figma/web-app-{TEST_FILE_KEY}/pages/")
+        assert entry_b.md_path.startswith(f"figma/web-app-{TEST_FILE_KEY_WEB_APP_DUP}/pages/")
         assert Path(entry_a.md_path).parts[1] != Path(entry_b.md_path).parts[1]
 
 
