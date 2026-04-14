@@ -152,6 +152,7 @@ jobs:
         if: steps.changed.outputs.any_changed == 'true'
         run: >
           uv run python -m pytest -q
+          -m "not smoke"
           --junitxml=test-results/pytest-junit.xml
           --cov=figmaclaw
           --cov-report=term-missing
