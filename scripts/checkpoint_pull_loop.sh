@@ -21,9 +21,8 @@ fi
 run_pull_batch() {
   set +e
   timeout "$BATCH_TIMEOUT_SECONDS" figmaclaw pull "${PULL_ARGS[@]}" | tee "$FIGMACLAW_OUT_PATH"
-  local status=${PIPESTATUS[0]}
+  PULL_STATUS=${PIPESTATUS[0]}
   set -e
-  echo "$status"
 }
 
 commit_if_changed() {
@@ -42,6 +41,7 @@ commit_if_changed() {
 }
 
 idle_has_more=0
+PULL_STATUS=0
 BATCH=0
 while true; do
   BATCH=$((BATCH + 1))
@@ -52,7 +52,8 @@ while true; do
 
   echo "--- batch $BATCH ---"
 
-  pull_status="$(run_pull_batch)"
+  run_pull_batch
+  pull_status="$PULL_STATUS"
 
   if [ "$pull_status" -eq 124 ]; then
     echo "figmaclaw pull timed out after ${BATCH_TIMEOUT_SECONDS}s; stopping checkpoint loop early."
