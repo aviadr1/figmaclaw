@@ -325,6 +325,69 @@ async def test_pull_backfills_missing_sidecar_on_unchanged_page_real_api(
 
 @pytest.mark.smoke
 @pytest.mark.asyncio
+async def test_pull_migrates_legacy_unkeyed_paths_to_full_key_slug_real_api(
+    tmp_path,
+    api_key: str,  # type: ignore[no-untyped-def]
+) -> None:
+    """Smoke: legacy unkeyed manifest paths are migrated to full-key slug paths."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file(TEST_FILE_KEY_LSN_BRANDING, "LSN Branding")
+    state.manifest.files[TEST_FILE_KEY_LSN_BRANDING].version = "v0"
+
+    async with FigmaClient(api_key=api_key) as client:
+        first = await pull_file(
+            client, TEST_FILE_KEY_LSN_BRANDING, state, tmp_path, force=False, max_pages=1
+        )
+        assert first.pages_written + first.pages_schema_upgraded > 0
+
+        pages = state.manifest.files[TEST_FILE_KEY_LSN_BRANDING].pages
+        assert pages
+        page_id = next(iter(pages.keys()))
+        entry = pages[page_id]
+        assert entry.md_path is not None
+
+        keyed_rel = entry.md_path
+        keyed_abs = tmp_path / keyed_rel
+        keyed_sidecar = keyed_abs.with_suffix(".tokens.json")
+        assert keyed_abs.exists()
+        had_sidecar = keyed_sidecar.exists()
+
+        keyed_dir = Path(keyed_rel).parts[1]
+        legacy_dir = keyed_dir.replace(f"-{TEST_FILE_KEY_LSN_BRANDING}", "")
+        legacy_rel = str(Path("figma") / legacy_dir / "pages" / Path(keyed_rel).name)
+        legacy_abs = tmp_path / legacy_rel
+        legacy_abs.parent.mkdir(parents=True, exist_ok=True)
+        keyed_abs.rename(legacy_abs)
+        if keyed_sidecar.exists():
+            keyed_sidecar.rename(legacy_abs.with_suffix(".tokens.json"))
+
+        state.manifest.files[TEST_FILE_KEY_LSN_BRANDING].pages[page_id] = PageEntry(
+            page_name=entry.page_name,
+            page_slug=entry.page_slug,
+            md_path=legacy_rel,
+            page_hash=entry.page_hash,
+            last_refreshed_at=entry.last_refreshed_at,
+            component_md_paths=entry.component_md_paths,
+            frame_hashes=entry.frame_hashes,
+        )
+        state.save()
+
+        migrated = await pull_file(client, TEST_FILE_KEY_LSN_BRANDING, state, tmp_path, force=False)
+
+    assert migrated.skipped_file is False
+    assert keyed_abs.exists()
+    assert not legacy_abs.exists()
+    # If a sidecar existed pre-migration, it must now live at keyed path.
+    legacy_sidecar = legacy_abs.with_suffix(".tokens.json")
+    if legacy_sidecar.exists():
+        raise AssertionError("legacy sidecar path was not pruned")
+    if had_sidecar:
+        assert keyed_sidecar.exists()
+
+
+@pytest.mark.smoke
+@pytest.mark.asyncio
 async def test_schema_upgrade_backfills_instance_component_ids_without_body_rewrite(
     tmp_path,
     api_key: str,  # type: ignore[no-untyped-def]
