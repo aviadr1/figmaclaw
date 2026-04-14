@@ -266,4 +266,4 @@ figmaclaw mark-enriched <file>               # snapshot hashes
 | Manifest | `.figma-sync/manifest.json` |
 | Screenshot cache | `.figma-cache/screenshots/{file_key}/{node_id}.png` (gitignored) |
 
-The slug portion is `slugify(name)` (lowercase, hyphens). The suffix is the node ID with `:` replaced by `-`.
+The slug portion is `slugify(name)` (lowercase, hyphens). If multiple tracked files resolve to the same slug, figmaclaw appends `-{file_key[:8]}` to keep directories unique (for example `web-app-hov4qmbn`). The page/section suffix is the node ID with `:` replaced by `-`.

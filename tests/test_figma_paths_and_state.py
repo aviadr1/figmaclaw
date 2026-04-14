@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from figmaclaw.figma_hash import compute_page_hash
-from figmaclaw.figma_paths import page_path, slugify
+from figmaclaw.figma_paths import file_slug_for_key, page_path, slugify
 from figmaclaw.figma_sync_state import FigmaSyncState, Manifest
 
 # --- figma_paths ---
@@ -42,6 +42,25 @@ def test_slugify_handles_unicode():
     result = slugify("🎨 Designs")
     assert result  # non-empty
     assert "-" not in result[:1]  # no leading hyphen
+
+
+def test_file_slug_for_key_uses_plain_slug_when_unique():
+    tracked = {
+        "abc123": "Web App",
+        "def456": "Design System",
+    }
+    assert file_slug_for_key("Web App", "abc123", tracked_file_names=tracked) == "web-app"
+
+
+def test_file_slug_for_key_adds_key_suffix_when_slug_collides():
+    tracked = {
+        "hOV4QMBnDIG5s5OYkSrX9E": "Web App",
+        "jb1bZRQUUOQKEpb5p6vt5e": "Web App",
+    }
+    assert (
+        file_slug_for_key("Web App", "hOV4QMBnDIG5s5OYkSrX9E", tracked_file_names=tracked)
+        == "web-app-hov4qmbn"
+    )
 
 
 # --- figma_hash ---

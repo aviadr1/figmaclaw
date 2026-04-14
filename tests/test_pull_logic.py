@@ -1657,6 +1657,51 @@ async def test_pull_file_is_idempotent_second_call_changes_nothing(tmp_path: Pat
 
 
 @pytest.mark.asyncio
+async def test_pull_file_backfills_missing_sidecar_on_unchanged_page(tmp_path: Path):
+    """INVARIANT: unchanged pages with missing sidecar are re-processed to recreate sidecar."""
+    from figmaclaw.figma_hash import compute_page_hash
+
+    page_id = "7741:45837"
+    file_key = "abc123"
+    page_node = fake_page_node_with_children()
+    page_hash = compute_page_hash(page_node)
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file(file_key, "Web App")
+    state.manifest.files[file_key].version = "v2"
+    state.manifest.files[file_key].last_modified = "2026-03-31T12:00:00Z"
+    state.manifest.files[file_key].pull_schema_version = CURRENT_PULL_SCHEMA_VERSION
+    md_rel = "figma/web-app/pages/onboarding-7741-45837.md"
+    state.manifest.files[file_key].pages[page_id] = PageEntry(
+        page_name="Onboarding",
+        page_slug="onboarding-7741-45837",
+        md_path=md_rel,
+        page_hash=page_hash,
+        last_refreshed_at="2026-03-31T12:00:00Z",
+    )
+    state.save()
+
+    md_abs = tmp_path / md_rel
+    md_abs.parent.mkdir(parents=True, exist_ok=True)
+    md_abs.write_text(
+        "---\nfile_key: abc123\npage_node_id: '7741:45837'\nframes: ['11:1']\n---\n\n# body\n"
+    )
+    assert not md_abs.with_suffix(".tokens.json").exists()
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2", "2026-03-31T12:00:00Z"))
+    mock_client.get_page = AsyncMock(return_value=page_node)
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+    mock_client.get_nodes = AsyncMock(return_value=fake_get_nodes_response())
+
+    result = await pull_file(mock_client, file_key, state, tmp_path, force=False)
+
+    assert result.skipped_file is False
+    assert md_abs.with_suffix(".tokens.json").exists()
+
+
+@pytest.mark.asyncio
 async def test_pull_file_page_rename_moves_path_and_prunes_old(tmp_path: Path):
     """INVARIANT: renaming a page keeps exactly one page file path (old path is pruned)."""
     page_id = "100:1"
@@ -1816,6 +1861,7 @@ async def test_pull_file_unchanged_run_prunes_existing_generated_orphans(tmp_pat
     current_md = tmp_path / "figma/web-app/pages/current-100-1.md"
     current_md.parent.mkdir(parents=True, exist_ok=True)
     current_md.write_text("current")
+    current_md.with_suffix(".tokens.json").write_text("{}")
 
     orphan_md = tmp_path / "figma/web-app/pages/legacy-100-99.md"
     orphan_md.write_text("orphan")
@@ -1831,6 +1877,57 @@ async def test_pull_file_unchanged_run_prunes_existing_generated_orphans(tmp_pat
     assert current_md.exists()
     assert not orphan_md.exists()
     assert not orphan_tok.exists()
+
+
+@pytest.mark.asyncio
+async def test_pull_file_unchanged_skip_does_not_prune_other_file_paths_in_candidate_dir(
+    tmp_path: Path,
+):
+    """INVARIANT: prune on one file never deletes files referenced by another tracked file."""
+    file_a = "fileA1111111111111111111111"
+    file_b = "fileB2222222222222222222222"
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file(file_a, "Web App")
+    state.add_tracked_file(file_b, "Design System")
+
+    for key in (file_a, file_b):
+        state.manifest.files[key].version = "v2"
+        state.manifest.files[key].last_modified = "2026-03-31T12:00:00Z"
+        state.manifest.files[key].pull_schema_version = CURRENT_PULL_SCHEMA_VERSION
+
+    state.manifest.files[file_a].pages["100:1"] = PageEntry(
+        page_name="Alpha",
+        page_slug="alpha-100-1",
+        md_path="figma/web-app/pages/alpha-100-1.md",
+        page_hash="hash-a",
+        last_refreshed_at="now",
+    )
+    state.manifest.files[file_b].pages["200:1"] = PageEntry(
+        page_name="Beta",
+        page_slug="beta-200-1",
+        md_path="figma/web-app/pages/beta-200-1.md",
+        page_hash="hash-b",
+        last_refreshed_at="now",
+    )
+    state.save()
+
+    alpha = tmp_path / "figma/web-app/pages/alpha-100-1.md"
+    beta = tmp_path / "figma/web-app/pages/beta-200-1.md"
+    alpha.parent.mkdir(parents=True, exist_ok=True)
+    alpha.write_text("alpha")
+    beta.write_text("beta")
+    alpha.with_suffix(".tokens.json").write_text("{}")
+    beta.with_suffix(".tokens.json").write_text("{}")
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2", "2026-03-31T12:00:00Z"))
+
+    result = await pull_file(mock_client, file_a, state, tmp_path, force=False)
+    assert result.skipped_file is True
+    assert alpha.exists()
+    assert beta.exists()
 
 
 @pytest.mark.asyncio

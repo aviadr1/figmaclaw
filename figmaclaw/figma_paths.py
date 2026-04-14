@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from pathlib import Path
 
 
@@ -25,6 +26,31 @@ def page_path(file_slug: str, page_slug: str) -> str:
     Example: figma/web-app/pages/onboarding-7741-45837.md
     """
     return f"figma/{file_slug}/pages/{page_slug}.md"
+
+
+def file_slug_for_key(
+    file_name: str,
+    file_key: str,
+    *,
+    tracked_file_names: Mapping[str, str] | None = None,
+) -> str:
+    """Return a collision-safe slug for one tracked file.
+
+    Base form is ``slugify(file_name)``. When more than one tracked file maps to
+    the same base slug, append a short key suffix so each file gets a unique
+    output directory (e.g. ``web-app-abc12345``).
+    """
+    base_slug = slugify(file_name, fallback=file_key)
+    if not tracked_file_names:
+        return base_slug
+
+    matching_keys = [
+        key for key, name in tracked_file_names.items() if slugify(name, fallback=key) == base_slug
+    ]
+    if len(matching_keys) <= 1:
+        return base_slug
+
+    return f"{base_slug}-{file_key[:8].lower()}"
 
 
 def screenshot_cache_path(repo_dir: str | Path, file_key: str, node_id: str) -> Path:
