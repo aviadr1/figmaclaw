@@ -25,10 +25,12 @@ def _setup_fake_bin(tmp_path: Path, *, scenario: str, git_dirty: str, timeout_mo
         """#!/usr/bin/env bash
 set -euo pipefail
 COUNT_FILE="${COUNT_FILE:?}"
+ARGS_FILE="${ARGS_FILE:?}"
 count=0
 if [ -f "$COUNT_FILE" ]; then count="$(cat "$COUNT_FILE")"; fi
 count=$((count+1))
 echo "$count" > "$COUNT_FILE"
+printf '%s\n' "$*" >> "$ARGS_FILE"
 echo "COMMIT_MSG:sync: figmaclaw — checkpoint batch $count"
 case "${SCENARIO:?}" in
   has_more_forever) echo "HAS_MORE:true" ;;
@@ -78,6 +80,7 @@ def _run_loop(
     out_path = tmp_path / "figmaclaw-out.txt"
     trace = tmp_path / "git-trace.txt"
     count = tmp_path / "count.txt"
+    args = tmp_path / "pull-args.txt"
 
     bin_dir = _setup_fake_bin(
         tmp_path, scenario=scenario, git_dirty=git_dirty, timeout_mode=timeout_mode
@@ -90,12 +93,14 @@ def _run_loop(
             "COUNT_FILE": str(count),
             "TRACE_FILE": str(trace),
             "FIGMACLAW_OUT_PATH": str(out_path),
+            "ARGS_FILE": str(args),
             "SCENARIO": scenario,
             "GIT_DIRTY": git_dirty,
             "TIMEOUT_MODE": timeout_mode,
             "MAX_BATCHES": "10",
             "MAX_IDLE_HAS_MORE_BATCHES": "3",
             "BATCH_TIMEOUT_SECONDS": "1",
+            "MAX_PAGES_PER_BATCH": "5",
             "INPUT_FORCE": "false",
         }
     )
@@ -160,3 +165,27 @@ def test_continues_when_has_more_and_commits_then_stops_on_false(tmp_path: Path)
     )
     count = int((tmp_path / "count.txt").read_text())
     assert count == 2
+
+
+def test_non_force_uses_max_pages_limit(tmp_path: Path) -> None:
+    _run_loop(
+        tmp_path,
+        scenario="single_done",
+        git_dirty="1",
+        timeout_mode="pass",
+        MAX_PAGES_PER_BATCH="7",
+    )
+    args = (tmp_path / "pull-args.txt").read_text().strip()
+    assert args == "pull --max-pages 7"
+
+
+def test_force_uses_force_flag_only(tmp_path: Path) -> None:
+    _run_loop(
+        tmp_path,
+        scenario="single_done",
+        git_dirty="1",
+        timeout_mode="pass",
+        INPUT_FORCE="true",
+    )
+    args = (tmp_path / "pull-args.txt").read_text().strip()
+    assert args == "pull --force"
