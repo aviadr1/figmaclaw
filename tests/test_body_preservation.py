@@ -212,8 +212,8 @@ async def test_bp1_sync_preserves_body_byte_for_byte(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_bp2_pull_preserves_body_byte_for_byte(tmp_path: Path) -> None:
     """BP-2: pull_file on an existing file updates only frontmatter — body is byte-for-byte identical."""
-    # pull_file constructs: figma/web-app/pages/onboarding-7741-45837.md
-    pull_md_rel = "figma/web-app/pages/onboarding-7741-45837.md"
+    # pull_file constructs: figma/web-app-abc123/pages/onboarding-7741-45837.md
+    pull_md_rel = "figma/web-app-abc123/pages/onboarding-7741-45837.md"
     md_path, original_body = _write_enriched_md(tmp_path)
     # Also write at the pull-constructed path so pull_file finds it
     pull_md_path = tmp_path / pull_md_rel
@@ -310,9 +310,9 @@ async def test_bp5_sync_does_not_call_scaffold_on_existing_file(tmp_path: Path) 
 async def test_bp5_pull_does_not_call_scaffold_on_existing_file(tmp_path: Path) -> None:
     """BP-5: pull_file must never call write_new_page when the file already exists."""
     # pull_file builds its own path: figma/{file_slug}/pages/{page_slug}.md
-    # file_slug = slugify("Web App") = "web-app"
+    # file_slug = slugify("Web App") + "-abc123" = "web-app-abc123"
     # page_slug = slugify("Onboarding") + "-7741-45837" = "onboarding-7741-45837"
-    pull_md_rel = "figma/web-app/pages/onboarding-7741-45837.md"
+    pull_md_rel = "figma/web-app-abc123/pages/onboarding-7741-45837.md"
     page = _make_page(flows=[("11:1", "11:2")])
     entry = _make_entry(md_path=pull_md_rel)
     md = scaffold_page(page, entry)
@@ -391,7 +391,7 @@ async def test_sc2_pull_writes_scaffold_for_new_file(tmp_path: Path) -> None:
     mock_client = _mock_figma_client()
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
-    out = tmp_path / "figma" / "web-app" / "pages" / "onboarding-7741-45837.md"
+    out = tmp_path / "figma" / "web-app-abc123" / "pages" / "onboarding-7741-45837.md"
     assert out.exists()
     content = out.read_text()
     # Must contain LLM placeholders since this is a new file

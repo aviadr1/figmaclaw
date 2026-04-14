@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import re
+from pathlib import Path
 
 import httpx
 import pytest
@@ -25,6 +26,10 @@ from figmaclaw.pull_logic import pull_file
 
 # The Web App file used in linear-git
 TEST_FILE_KEY = "hOV4QMBnDIG5s5OYkSrX9E"
+# A second tracked file that also has the name "Web App" in linear-git manifest.
+TEST_FILE_KEY_WEB_APP_DUP = "jb1bZRQUUOQKEpb5p6vt5e"
+# Small file with known token sidecars (`cover-0-1`, `screens-1-3`) in linear-git.
+TEST_FILE_KEY_LSN_BRANDING = "IXVzan1Xz6J1rA1moyDsk5"
 # Reach - auto content sharing page
 TEST_PAGE_NODE_ID = "7741:45837"
 # Confirmed from live API: 8 SECTION children on this page
@@ -235,6 +240,150 @@ async def test_pull_is_idempotent_for_written_page_markdown(tmp_path, api_key: s
         md_after = page_md.read_text()
 
     assert md_before == md_after
+
+
+@pytest.mark.smoke
+@pytest.mark.asyncio
+async def test_pull_collision_safe_file_dirs_and_sidecar_backfill(
+    tmp_path,
+    api_key: str,  # type: ignore[no-untyped-def]
+) -> None:
+    """Smoke: same-name files get unique output directories (collision-safe slugs)."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    # Intentionally track both as the same name to force slug collision handling.
+    state.add_tracked_file(TEST_FILE_KEY, "Web App")
+    state.add_tracked_file(TEST_FILE_KEY_WEB_APP_DUP, "Web App")
+    state.manifest.files[TEST_FILE_KEY].version = "v0"
+    state.manifest.files[TEST_FILE_KEY_WEB_APP_DUP].version = "v0"
+
+    async with FigmaClient(api_key=api_key) as client:
+        first = await pull_file(client, TEST_FILE_KEY, state, tmp_path, force=False, max_pages=1)
+        second = await pull_file(
+            client, TEST_FILE_KEY_WEB_APP_DUP, state, tmp_path, force=False, max_pages=1
+        )
+
+        assert first.pages_written + first.pages_schema_upgraded > 0
+        assert second.pages_written + second.pages_schema_upgraded > 0
+
+        pages_a = state.manifest.files[TEST_FILE_KEY].pages
+        pages_b = state.manifest.files[TEST_FILE_KEY_WEB_APP_DUP].pages
+        assert pages_a and pages_b
+
+        entry_a = next(iter(pages_a.values()))
+        entry_b = next(iter(pages_b.values()))
+        assert entry_a.md_path is not None
+        assert entry_b.md_path is not None
+
+        assert entry_a.md_path.startswith(f"figma/web-app-{TEST_FILE_KEY}/pages/")
+        assert entry_b.md_path.startswith(f"figma/web-app-{TEST_FILE_KEY_WEB_APP_DUP}/pages/")
+        assert Path(entry_a.md_path).parts[1] != Path(entry_b.md_path).parts[1]
+
+
+@pytest.mark.smoke
+@pytest.mark.asyncio
+async def test_pull_backfills_missing_sidecar_on_unchanged_page_real_api(
+    tmp_path,
+    api_key: str,  # type: ignore[no-untyped-def]
+) -> None:
+    """Smoke: deleting a real sidecar is repaired by a subsequent unchanged pull."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file(TEST_FILE_KEY_LSN_BRANDING, "LSN Branding")
+    state.manifest.files[TEST_FILE_KEY_LSN_BRANDING].version = "v0"
+
+    async with FigmaClient(api_key=api_key) as client:
+        first = await pull_file(
+            client, TEST_FILE_KEY_LSN_BRANDING, state, tmp_path, force=False, max_pages=2
+        )
+        assert first.pages_written + first.pages_schema_upgraded > 0
+
+        pages = state.manifest.files[TEST_FILE_KEY_LSN_BRANDING].pages
+        assert pages
+        target_sidecar: Path | None = None
+        for entry in pages.values():
+            if not entry.md_path:
+                continue
+            sidecar = (tmp_path / entry.md_path).with_suffix(".tokens.json")
+            if "cover-0-1.tokens.json" in str(sidecar):
+                continue
+            if sidecar.exists():
+                target_sidecar = sidecar
+                break
+
+        assert target_sidecar is not None, (
+            "expected a non-cover sidecar to exist after initial pull"
+        )
+        target_sidecar.unlink()
+        assert not target_sidecar.exists()
+
+        backfill = await pull_file(client, TEST_FILE_KEY_LSN_BRANDING, state, tmp_path, force=False)
+
+    assert backfill.skipped_file is False
+    assert target_sidecar.exists()
+
+
+@pytest.mark.smoke
+@pytest.mark.asyncio
+async def test_pull_migrates_legacy_unkeyed_paths_to_full_key_slug_real_api(
+    tmp_path,
+    api_key: str,  # type: ignore[no-untyped-def]
+) -> None:
+    """Smoke: legacy unkeyed manifest paths are migrated to full-key slug paths."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file(TEST_FILE_KEY_LSN_BRANDING, "LSN Branding")
+    state.manifest.files[TEST_FILE_KEY_LSN_BRANDING].version = "v0"
+
+    async with FigmaClient(api_key=api_key) as client:
+        first = await pull_file(
+            client, TEST_FILE_KEY_LSN_BRANDING, state, tmp_path, force=False, max_pages=1
+        )
+        assert first.pages_written + first.pages_schema_upgraded > 0
+
+        pages = state.manifest.files[TEST_FILE_KEY_LSN_BRANDING].pages
+        assert pages
+        page_id = next(iter(pages.keys()))
+        entry = pages[page_id]
+        assert entry.md_path is not None
+
+        keyed_rel = entry.md_path
+        keyed_abs = tmp_path / keyed_rel
+        keyed_sidecar = keyed_abs.with_suffix(".tokens.json")
+        assert keyed_abs.exists()
+        had_sidecar = keyed_sidecar.exists()
+
+        keyed_dir = Path(keyed_rel).parts[1]
+        legacy_dir = keyed_dir.replace(f"-{TEST_FILE_KEY_LSN_BRANDING}", "")
+        legacy_rel = str(Path("figma") / legacy_dir / "pages" / Path(keyed_rel).name)
+        legacy_abs = tmp_path / legacy_rel
+        legacy_abs.parent.mkdir(parents=True, exist_ok=True)
+        keyed_abs.rename(legacy_abs)
+        if keyed_sidecar.exists():
+            keyed_sidecar.rename(legacy_abs.with_suffix(".tokens.json"))
+
+        state.manifest.files[TEST_FILE_KEY_LSN_BRANDING].pages[page_id] = PageEntry(
+            page_name=entry.page_name,
+            page_slug=entry.page_slug,
+            md_path=legacy_rel,
+            page_hash=entry.page_hash,
+            last_refreshed_at=entry.last_refreshed_at,
+            component_md_paths=entry.component_md_paths,
+            frame_hashes=entry.frame_hashes,
+        )
+        state.save()
+
+        migrated = await pull_file(client, TEST_FILE_KEY_LSN_BRANDING, state, tmp_path, force=False)
+
+    assert migrated.skipped_file is False
+    assert keyed_abs.exists()
+    assert not legacy_abs.exists()
+    # If a sidecar existed pre-migration, it must now live at keyed path.
+    legacy_sidecar = legacy_abs.with_suffix(".tokens.json")
+    if legacy_sidecar.exists():
+        raise AssertionError("legacy sidecar path was not pruned")
+    if had_sidecar:
+        assert keyed_sidecar.exists()
 
 
 @pytest.mark.smoke

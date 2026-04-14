@@ -27,6 +27,22 @@ def page_path(file_slug: str, page_slug: str) -> str:
     return f"figma/{file_slug}/pages/{page_slug}.md"
 
 
+def file_slug_for_key(
+    file_name: str,
+    file_key: str,
+    *,
+    tracked_file_names: dict[str, str] | None = None,
+) -> str:
+    """Return a deterministic slug for one tracked file.
+
+    The full file key is always included so paths are globally unique and never
+    depend on collision detection order (e.g. ``web-app-hOV4...``).
+    """
+    _ = tracked_file_names  # backward-compatible signature; intentionally unused
+    base_slug = slugify(file_name, fallback=file_key)
+    return f"{base_slug}-{file_key}"
+
+
 def screenshot_cache_path(repo_dir: str | Path, file_key: str, node_id: str) -> Path:
     """Return the local cache path for a frame screenshot.
 
