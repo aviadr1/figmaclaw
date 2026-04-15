@@ -69,9 +69,21 @@ jobs:
             git pull --no-rebase --ff-only origin main
           fi
 
+      - name: Checkout checkpoint loop script
+        # This reusable workflow runs in the *consumer repo* workspace.
+        # Pull the tested loop script from figmaclaw repo, instead of assuming
+        # scripts/ exists in the consumer repo.
+        uses: actions/checkout@v6
+        with:
+          repository: aviadr1/figmaclaw
+          ref: main
+          path: .figmaclaw-workflow
+          sparse-checkout: |
+            scripts/checkpoint_pull_loop.sh
+
       - name: Pull Figma files (checkpointed loop)
         env:
           FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
           INPUT_FORCE: ${{ inputs.force }}
         run: |
-          scripts/checkpoint_pull_loop.sh
+          bash .figmaclaw-workflow/scripts/checkpoint_pull_loop.sh
