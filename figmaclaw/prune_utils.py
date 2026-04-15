@@ -22,9 +22,11 @@ def is_generated_md_relpath(rel_path: str) -> bool:
     """True when rel_path looks like a generated page/component markdown path."""
     path = Path(rel_path)
     parts = path.parts
-    if len(parts) < 4:
+    if len(parts) < 3 or parts[0] != "figma":
         return False
-    if parts[0] != "figma":
+    if len(parts) == 3:
+        return path.name == "_census.md"
+    if len(parts) < 4:
         return False
     if parts[-2] not in {"pages", "components"}:
         return False

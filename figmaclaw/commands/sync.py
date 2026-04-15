@@ -198,7 +198,11 @@ async def _run(
     state.set_page_entry(file_key, page_node_id, entry)
     if state.manifest.files.get(file_key):
         state.set_file_meta(
-            file_key, version=api_version, last_modified=api_last_modified, last_checked_at=now
+            file_key,
+            version=api_version,
+            last_modified=api_last_modified,
+            last_checked_at=now,
+            file_name=file_name,
         )
     state.save()
     click.echo(f"  manifest updated (hash={new_hash})")

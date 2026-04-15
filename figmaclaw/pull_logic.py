@@ -55,7 +55,7 @@ from figmaclaw.figma_frontmatter import (
 from figmaclaw.figma_hash import compute_frame_hashes, compute_page_hash
 from figmaclaw.figma_models import FigmaPage, FigmaSection, from_page_node
 from figmaclaw.figma_parse import parse_flows, parse_frontmatter
-from figmaclaw.figma_paths import component_path, page_path, slugify
+from figmaclaw.figma_paths import census_path, component_path, file_slug_for_key, page_path, slugify
 from figmaclaw.figma_render import (
     build_component_frontmatter,
     build_page_frontmatter,
@@ -78,12 +78,39 @@ TOKEN_SIDECAR_SCHEMA_VERSION = 2
 
 def _all_manifest_generated_paths(state: FigmaSyncState) -> set[str]:
     """Return all generated paths currently referenced by the manifest."""
-    return {
+    page_and_component_paths = {
         rel
         for file_entry in state.manifest.files.values()
         for page_entry in file_entry.pages.values()
         for rel in entry_paths(page_entry)
     }
+    census_paths = {
+        census_path(file_slug_for_key(file_entry.file_name, file_key))
+        for file_key, file_entry in state.manifest.files.items()
+    }
+    return page_and_component_paths | census_paths
+
+
+def _all_figma_file_dirs(repo_root: Path) -> set[Path]:
+    """Return all figma/{file-slug} directories currently on disk."""
+    figma_root = repo_root / "figma"
+    if not figma_root.exists() or not figma_root.is_dir():
+        return set()
+    return {p for p in figma_root.iterdir() if p.is_dir()}
+
+
+def _candidate_dirs_from_rel(repo_root: Path, rel: str) -> set[Path]:
+    """Return prune candidate dirs for one generated rel path.
+
+    Includes the direct parent and the file-root directory (figma/{file-slug})
+    so root artifacts like _census.md are discovered during rename/migration.
+    """
+    abs_path = repo_root / rel
+    dirs = {abs_path.parent}
+    rel_parts = Path(rel).parts
+    if len(rel_parts) >= 4 and rel_parts[0] == "figma" and rel_parts[2] in {"pages", "components"}:
+        dirs.add(repo_root / rel_parts[0] / rel_parts[1])
+    return dirs
 
 
 def _file_slug_for_state(state: FigmaSyncState, file_key: str, file_name: str) -> str:
@@ -625,11 +652,13 @@ async def pull_file(
         if prune:
             expected_paths = _all_manifest_generated_paths(state)
             candidate_dirs = {
+                repo_root / f"figma/{file_slug}",
                 repo_root / f"figma/{file_slug}/pages",
                 repo_root / f"figma/{file_slug}/components",
             }
+            candidate_dirs.update(_all_figma_file_dirs(repo_root))
             for rel in {rel for page in stored.pages.values() for rel in entry_paths(page)}:
-                candidate_dirs.add((repo_root / rel).parent)
+                candidate_dirs.update(_candidate_dirs_from_rel(repo_root, rel))
             for orphan_rel in find_generated_orphans(
                 repo_root, candidate_dirs=candidate_dirs, expected_paths=expected_paths
             ):
@@ -652,6 +681,7 @@ async def pull_file(
         version=api_version,
         last_modified=api_last_modified,
         last_checked_at=now,
+        file_name=file_name,
     )
 
     # Fetch component sets once per changed file. Used to populate component_set_keys
@@ -1086,14 +1116,16 @@ async def pull_file(
         # 3) Existing on-disk generated artifacts not referenced by manifest (legacy orphans).
         expected_paths = _all_manifest_generated_paths(state)
         candidate_dirs = {
+            repo_root / f"figma/{file_slug}",
             repo_root / f"figma/{file_slug}/pages",
             repo_root / f"figma/{file_slug}/components",
         }
+        candidate_dirs.update(_all_figma_file_dirs(repo_root))
         for rel in expected_paths:
-            candidate_dirs.add((repo_root / rel).parent)
+            candidate_dirs.update(_candidate_dirs_from_rel(repo_root, rel))
         for previous_entry in previous_pages.values():
             for rel in entry_paths(previous_entry):
-                candidate_dirs.add((repo_root / rel).parent)
+                candidate_dirs.update(_candidate_dirs_from_rel(repo_root, rel))
         for orphan_rel in find_generated_orphans(
             repo_root, candidate_dirs=candidate_dirs, expected_paths=expected_paths
         ):

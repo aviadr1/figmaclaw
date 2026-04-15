@@ -47,7 +47,7 @@ import click
 import yaml
 
 from figmaclaw.figma_client import FigmaClient
-from figmaclaw.figma_paths import census_path, slugify
+from figmaclaw.figma_paths import census_path, file_slug_for_key
 from figmaclaw.figma_sync_state import FigmaSyncState
 from figmaclaw.git_utils import git_commit
 
@@ -190,7 +190,7 @@ async def _run(
 
             file_entry = state.manifest.files.get(key)
             file_name = file_entry.file_name if file_entry else key
-            file_slug = slugify(file_name, fallback=key)
+            file_slug = file_slug_for_key(file_name, key)
 
             try:
                 component_sets = await client.get_component_sets(key)

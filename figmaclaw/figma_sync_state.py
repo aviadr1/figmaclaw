@@ -139,11 +139,19 @@ class FigmaSyncState:
         )
 
     def set_file_meta(
-        self, file_key: str, version: str, last_modified: str, last_checked_at: str
+        self,
+        file_key: str,
+        version: str,
+        last_modified: str,
+        last_checked_at: str,
+        *,
+        file_name: str | None = None,
     ) -> None:
         """Update file-level metadata after a successful check."""
         if file_key in self.manifest.files:
             entry = self.manifest.files[file_key]
+            if file_name:
+                entry.file_name = file_name
             entry.version = version
             entry.last_modified = last_modified
             entry.last_checked_at = last_checked_at

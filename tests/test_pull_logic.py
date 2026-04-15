@@ -2264,6 +2264,10 @@ async def test_pull_file_file_rename_moves_path_and_prunes_old(tmp_path: Path):
     )
     old_abs = tmp_path / old_rel
     assert old_abs.exists()
+    old_census_rel = f"figma/{slugify(old_file_name)}-abc123/_census.md"
+    old_census_abs = tmp_path / old_census_rel
+    old_census_abs.parent.mkdir(parents=True, exist_ok=True)
+    old_census_abs.write_text("legacy census", encoding="utf-8")
 
     mock_client.get_file_meta = AsyncMock(
         return_value=_custom_file_meta(
@@ -2278,6 +2282,8 @@ async def test_pull_file_file_rename_moves_path_and_prunes_old(tmp_path: Path):
     new_abs = tmp_path / new_rel
     assert new_abs.exists()
     assert not old_abs.exists()
+    assert not old_census_abs.exists()
+    assert state.manifest.files["abc123"].file_name == new_file_name
 
 
 @pytest.mark.asyncio
@@ -2349,11 +2355,16 @@ async def test_pull_file_unchanged_run_prunes_existing_generated_orphans(tmp_pat
     current_md.parent.mkdir(parents=True, exist_ok=True)
     current_md.write_text("current")
     current_md.with_suffix(".tokens.json").write_text('{"schema_version":2}')
+    current_census = tmp_path / "figma/web-app-abc123/_census.md"
+    current_census.write_text("current-census")
 
     orphan_md = tmp_path / "figma/web-app-abc123/pages/legacy-100-99.md"
     orphan_md.write_text("orphan")
     orphan_tok = orphan_md.with_suffix(".tokens.json")
     orphan_tok.write_text("{}")
+    orphan_census = tmp_path / "figma/legacy-web-app-abc123/_census.md"
+    orphan_census.parent.mkdir(parents=True, exist_ok=True)
+    orphan_census.write_text("orphan-census")
 
     mock_client = MagicMock(spec=FigmaClient)
     mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2", "2026-03-31T12:00:00Z"))
@@ -2362,8 +2373,10 @@ async def test_pull_file_unchanged_run_prunes_existing_generated_orphans(tmp_pat
 
     assert result.skipped_file is True
     assert current_md.exists()
+    assert current_census.exists()
     assert not orphan_md.exists()
     assert not orphan_tok.exists()
+    assert not orphan_census.exists()
 
 
 @pytest.mark.asyncio
@@ -2408,6 +2421,8 @@ async def test_pull_file_unchanged_skip_does_not_prune_other_file_paths_in_candi
     beta.write_text("beta")
     alpha.with_suffix(".tokens.json").write_text('{"schema_version":2}')
     beta.with_suffix(".tokens.json").write_text('{"schema_version":2}')
+    beta_census = tmp_path / "figma/design-system-fileB2222222222222222222222/_census.md"
+    beta_census.write_text("beta-census")
 
     mock_client = MagicMock(spec=FigmaClient)
     mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2", "2026-03-31T12:00:00Z"))
@@ -2416,6 +2431,7 @@ async def test_pull_file_unchanged_skip_does_not_prune_other_file_paths_in_candi
     assert result.skipped_file is True
     assert alpha.exists()
     assert beta.exists()
+    assert beta_census.exists()
 
 
 @pytest.mark.asyncio
