@@ -76,6 +76,7 @@ from figmaclaw.prune_utils import (
     find_generated_orphans,
     remove_generated_relpath,
 )
+from figmaclaw.schema_status import is_pull_schema_stale
 from figmaclaw.token_catalog import load_catalog, merge_bindings, save_catalog
 from figmaclaw.token_scan import PageTokenScan, scan_page
 
@@ -651,7 +652,7 @@ async def pull_file(
     file_name = meta.name
 
     stored = state.manifest.files.get(file_key)
-    schema_stale = (stored.pull_schema_version if stored else 0) < CURRENT_PULL_SCHEMA_VERSION
+    schema_stale = is_pull_schema_stale(stored.pull_schema_version if stored else 0)
     file_slug = _file_slug_for_state(state, file_key, file_name)
 
     local_reconcile_needed = False

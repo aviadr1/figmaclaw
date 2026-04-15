@@ -18,6 +18,7 @@ from pathlib import Path
 
 import click
 
+from figmaclaw.commands._shared import load_state
 from figmaclaw.figma_frontmatter import (
     CURRENT_ENRICHMENT_SCHEMA_VERSION,
     CURRENT_PULL_SCHEMA_VERSION,
@@ -26,6 +27,7 @@ from figmaclaw.figma_frontmatter import (
 from figmaclaw.figma_md_parse import section_line_ranges
 from figmaclaw.figma_parse import parse_frontmatter
 from figmaclaw.figma_schema import is_placeholder_row
+from figmaclaw.schema_status import enrichment_schema_status, is_pull_schema_stale
 
 SECTION_THRESHOLD = 80
 
@@ -166,20 +168,17 @@ def inspect_cmd(
 
     # Schema staleness: pull-pass frontmatter fields
     try:
-        from figmaclaw.figma_sync_state import FigmaSyncState as _FSS
-
-        _state = _FSS(repo_dir)
-        _state.load()
-        _file_entry = _state.manifest.files.get(meta.file_key)
-        file_pull_schema_version = _file_entry.pull_schema_version if _file_entry else 0
+        file_entry = load_state(repo_dir).manifest.files.get(meta.file_key)
+        file_pull_schema_version = file_entry.pull_schema_version if file_entry else 0
     except Exception:
         file_pull_schema_version = 0
-    pull_schema_stale = file_pull_schema_version < CURRENT_PULL_SCHEMA_VERSION
+    pull_schema_stale = is_pull_schema_stale(file_pull_schema_version)
 
     # Schema staleness: enrichment prompt/format
-    esv = meta.enriched_schema_version  # 0 if pre-versioning or never enriched
-    enrichment_must_update = esv < MIN_REQUIRED_ENRICHMENT_SCHEMA_VERSION
-    enrichment_should_update = esv < CURRENT_ENRICHMENT_SCHEMA_VERSION
+    enrichment = enrichment_schema_status(meta.enriched_schema_version)
+    esv = enrichment.version  # 0 if pre-versioning or never enriched
+    enrichment_must_update = enrichment.must_update
+    enrichment_should_update = enrichment.should_update
 
     needs_enrichment = (
         has_placeholders

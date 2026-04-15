@@ -45,10 +45,9 @@ from typing import Any, Protocol
 
 import click
 
-from figmaclaw.commands._shared import require_figma_api_key
+from figmaclaw.commands._shared import load_state, require_figma_api_key
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_models import ValidationReport, Webhook
-from figmaclaw.figma_sync_state import FigmaSyncState
 
 
 class WebhookClient(Protocol):
@@ -73,8 +72,7 @@ class WebhookClient(Protocol):
 
 
 def _load_tracked_files(repo_dir: Path) -> list[str]:
-    state = FigmaSyncState(repo_dir)
-    state.load()
+    state = load_state(repo_dir)
     if not state.manifest.tracked_files:
         raise click.ClickException(
             f"No tracked files found in {repo_dir}/.figma-sync/manifest.json"
