@@ -2,14 +2,17 @@
 
 Requires a valid OAuth token (FIGMA_MCP_TOKEN env var or ~/.claude/.credentials.json).
 Run with:
-    uv run pytest -m smoke tests/smoke/test_figma_mcp_smoke.py -v
+    uv run pytest -m smoke_mcp tests/smoke/test_figma_mcp_smoke.py -v
 """
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from figmaclaw.figma_mcp import FigmaMcpClient, FigmaMcpError
+from tests.smoke.live_gate import require_live_credential
 
 # Web App file used in linear-git
 TEST_FILE_KEY = "hOV4QMBnDIG5s5OYkSrX9E"
@@ -17,13 +20,18 @@ TEST_FILE_KEY = "hOV4QMBnDIG5s5OYkSrX9E"
 
 @pytest.fixture
 def mcp_client() -> FigmaMcpClient:
+    require_live_credential(
+        os.environ.get("FIGMA_MCP_TOKEN", ""),
+        name="FIGMA_MCP_TOKEN",
+        hint="Set FIGMA_MCP_TOKEN in .env or environment for MCP smoke tests.",
+    )
     try:
         return FigmaMcpClient.auto()
     except FigmaMcpError as exc:
-        pytest.skip(f"No MCP credentials available: {exc}")
+        pytest.fail(f"MCP credentials are invalid/unusable: {exc}")
 
 
-@pytest.mark.smoke
+@pytest.mark.smoke_mcp
 @pytest.mark.asyncio
 async def test_use_figma_returns_page_count(mcp_client: FigmaMcpClient) -> None:
     """Smoke: use_figma() executes JS in Figma and returns a real result."""
@@ -36,7 +44,7 @@ async def test_use_figma_returns_page_count(mcp_client: FigmaMcpClient) -> None:
     assert not result.get("isError", False), f"MCP returned isError=True: {result}"
 
 
-@pytest.mark.smoke
+@pytest.mark.smoke_mcp
 @pytest.mark.asyncio
 async def test_session_reuse_makes_two_calls(mcp_client: FigmaMcpClient) -> None:
     """Smoke: session() context manager can execute multiple tools/call requests

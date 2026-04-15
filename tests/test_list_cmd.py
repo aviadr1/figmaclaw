@@ -62,7 +62,8 @@ def mock_client():
 
 def test_list_cmd_requires_figma_api_key(runner: CliRunner, tmp_path: Path):
     """INVARIANT: list exits with an error if FIGMA_API_KEY is not set."""
-    env = {k: v for k, v in os.environ.items() if k != "FIGMA_API_KEY"}
+    env = dict(os.environ)
+    env["FIGMA_API_KEY"] = ""
     result = runner.invoke(cli, ["--repo-dir", str(tmp_path), "list", TEAM_ID], env=env)
     assert result.exit_code != 0
     assert "FIGMA_API_KEY" in result.output

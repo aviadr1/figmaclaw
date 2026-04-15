@@ -166,12 +166,7 @@ def update_page_frontmatter(
     out_path = repo_root / entry.md_path
     assert out_path.exists(), f"update_page_frontmatter requires existing file: {out_path}"
 
-    from figmaclaw.figma_parse import split_frontmatter
-
     md_text = out_path.read_text()
-    parts = split_frontmatter(md_text)
-    assert parts is not None, f"Failed to parse frontmatter from {out_path}"
-    _, body = parts
 
     # Preserve enrichment state from existing frontmatter (set by enrich pass, not pull pass)
     existing_fm = parse_frontmatter(md_text)
@@ -188,7 +183,7 @@ def update_page_frontmatter(
         raw_tokens=raw_tokens,
         frame_sections=frame_sections,
     )
-    out_path.write_text(f"{new_fm}\n{body}")
+    _rewrite_frontmatter_preserving_body(out_path, md_text, new_fm)
     return out_path
 
 
@@ -221,12 +216,7 @@ def update_component_frontmatter(
     out_path = repo_root / md_rel_path
     assert out_path.exists(), f"update_component_frontmatter requires existing file: {out_path}"
 
-    from figmaclaw.figma_parse import split_frontmatter
-
     md_text = out_path.read_text()
-    parts = split_frontmatter(md_text)
-    assert parts is not None, f"Failed to parse frontmatter from {out_path}"
-    _, body = parts
 
     # Preserve enrichment state from existing frontmatter (set by enrich pass, not pull pass)
     existing_fm = parse_frontmatter(md_text)
@@ -242,8 +232,18 @@ def update_component_frontmatter(
         enriched_at=enriched_at,
         enriched_frame_hashes=enriched_frame_hashes or None,
     )
-    out_path.write_text(f"{new_fm}\n{body}")
+    _rewrite_frontmatter_preserving_body(out_path, md_text, new_fm)
     return out_path
+
+
+def _rewrite_frontmatter_preserving_body(out_path: Path, md_text: str, new_fm: str) -> None:
+    """Rewrite frontmatter while preserving markdown body byte-for-byte."""
+    from figmaclaw.figma_parse import split_frontmatter
+
+    parts = split_frontmatter(md_text)
+    assert parts is not None, f"Failed to parse frontmatter from {out_path}"
+    _, body = parts
+    out_path.write_text(f"{new_fm}\n{body}")
 
 
 def _aggregate_issues(issues: list) -> list[dict]:
@@ -909,10 +909,8 @@ async def pull_file(
             # Skipped for schema-only upgrades: content is unchanged so token data can't have changed.
             token_scan: PageTokenScan | None = None
             raw_tokens: dict[str, RawTokenCounts] | None = None
-            should_scan_tokens = (
-                screen_frame_ids
-                and not schema_only
-                and (not content_unchanged or needs_sidecar_backfill)
+            should_scan_tokens = screen_frame_ids and (
+                needs_sidecar_backfill or (not schema_only and not content_unchanged)
             )
             if should_scan_tokens:
                 try:
