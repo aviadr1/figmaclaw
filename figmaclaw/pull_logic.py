@@ -56,7 +56,12 @@ from figmaclaw.figma_hash import compute_frame_hashes, compute_page_hash
 from figmaclaw.figma_models import FigmaPage, FigmaSection, from_page_node
 from figmaclaw.figma_parse import parse_flows, parse_frontmatter
 from figmaclaw.figma_paths import component_path, page_path, slugify
-from figmaclaw.figma_render import build_page_frontmatter, render_component_section, scaffold_page
+from figmaclaw.figma_render import (
+    build_component_frontmatter,
+    build_page_frontmatter,
+    render_component_section,
+    scaffold_page,
+)
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
 from figmaclaw.figma_utils import write_json_if_changed
 from figmaclaw.prune_utils import (
@@ -161,12 +166,7 @@ def update_page_frontmatter(
     out_path = repo_root / entry.md_path
     assert out_path.exists(), f"update_page_frontmatter requires existing file: {out_path}"
 
-    from figmaclaw.figma_parse import split_frontmatter
-
     md_text = out_path.read_text()
-    parts = split_frontmatter(md_text)
-    assert parts is not None, f"Failed to parse frontmatter from {out_path}"
-    _, body = parts
 
     # Preserve enrichment state from existing frontmatter (set by enrich pass, not pull pass)
     existing_fm = parse_frontmatter(md_text)
@@ -183,7 +183,7 @@ def update_page_frontmatter(
         raw_tokens=raw_tokens,
         frame_sections=frame_sections,
     )
-    out_path.write_text(f"{new_fm}\n{body}")
+    _rewrite_frontmatter_preserving_body(out_path, md_text, new_fm)
     return out_path
 
 
@@ -202,6 +202,48 @@ def write_component_section(
         render_component_section(section, page, component_set_keys=component_set_keys)
     )
     return out_path
+
+
+def update_component_frontmatter(
+    repo_root: Path,
+    section: FigmaSection,
+    page: FigmaPage,
+    md_rel_path: str,
+    *,
+    component_set_keys: dict[str, str] | None = None,
+) -> Path:
+    """Update ONLY frontmatter of an existing component section markdown file."""
+    out_path = repo_root / md_rel_path
+    assert out_path.exists(), f"update_component_frontmatter requires existing file: {out_path}"
+
+    md_text = out_path.read_text()
+
+    # Preserve enrichment state from existing frontmatter (set by enrich pass, not pull pass)
+    existing_fm = parse_frontmatter(md_text)
+    enriched_hash = existing_fm.enriched_hash if existing_fm else None
+    enriched_at = existing_fm.enriched_at if existing_fm else None
+    enriched_frame_hashes = existing_fm.enriched_frame_hashes if existing_fm else None
+
+    new_fm = build_component_frontmatter(
+        section,
+        page,
+        component_set_keys=component_set_keys,
+        enriched_hash=enriched_hash,
+        enriched_at=enriched_at,
+        enriched_frame_hashes=enriched_frame_hashes or None,
+    )
+    _rewrite_frontmatter_preserving_body(out_path, md_text, new_fm)
+    return out_path
+
+
+def _rewrite_frontmatter_preserving_body(out_path: Path, md_text: str, new_fm: str) -> None:
+    """Rewrite frontmatter while preserving markdown body byte-for-byte."""
+    from figmaclaw.figma_parse import split_frontmatter
+
+    parts = split_frontmatter(md_text)
+    assert parts is not None, f"Failed to parse frontmatter from {out_path}"
+    _, body = parts
+    out_path.write_text(f"{new_fm}\n{body}")
 
 
 def _aggregate_issues(issues: list) -> list[dict]:
@@ -867,10 +909,8 @@ async def pull_file(
             # Skipped for schema-only upgrades: content is unchanged so token data can't have changed.
             token_scan: PageTokenScan | None = None
             raw_tokens: dict[str, RawTokenCounts] | None = None
-            should_scan_tokens = (
-                screen_frame_ids
-                and not schema_only
-                and (not content_unchanged or needs_sidecar_backfill)
+            should_scan_tokens = screen_frame_ids and (
+                needs_sidecar_backfill or (not schema_only and not content_unchanged)
             )
             if should_scan_tokens:
                 try:
@@ -959,13 +999,23 @@ async def pull_file(
                         move_sidecar=False,
                     )
                 sect_keys = _build_component_set_keys(page.page_node_id, component_sets)
-                written = write_component_section(
-                    repo_root,
-                    section,
-                    page,
-                    comp_rel,
-                    component_set_keys=sect_keys or None,
-                )
+                comp_abs = repo_root / comp_rel
+                if comp_abs.exists():
+                    written = update_component_frontmatter(
+                        repo_root,
+                        section,
+                        page,
+                        comp_rel,
+                        component_set_keys=sect_keys or None,
+                    )
+                else:
+                    written = write_component_section(
+                        repo_root,
+                        section,
+                        page,
+                        comp_rel,
+                        component_set_keys=sect_keys or None,
+                    )
                 written_component_rels.append(str(written.relative_to(repo_root)))
 
             if written_component_rels:

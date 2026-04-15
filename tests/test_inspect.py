@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 from click.testing import CliRunner
 
 from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection
@@ -453,9 +452,27 @@ def test_inspect_reports_enrichment_should_update_when_below_current_but_above_r
         MIN_REQUIRED_ENRICHMENT_SCHEMA_VERSION,
     )
 
-    # This test is only meaningful when CURRENT > MIN_REQUIRED (SHOULD bucket exists)
+    # If CURRENT == MIN_REQUIRED, SHOULD bucket collapses and should_update must be False.
     if CURRENT_ENRICHMENT_SCHEMA_VERSION <= MIN_REQUIRED_ENRICHMENT_SCHEMA_VERSION:
-        pytest.skip("No SHOULD bucket: CURRENT == MIN_REQUIRED")
+        md_path = _write_md_with_enrichment(
+            tmp_path, enriched_schema_version=MIN_REQUIRED_ENRICHMENT_SCHEMA_VERSION
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "inspect",
+                str(md_path),
+                "--json",
+            ],
+        )
+        data = json.loads(result.output)
+        assert data["enrichment_must_update"] is False
+        assert data["enrichment_should_update"] is False
+        return
 
     # Enrich at MIN_REQUIRED — valid but not latest
     md_path = _write_md_with_enrichment(

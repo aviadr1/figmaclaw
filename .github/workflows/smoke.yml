@@ -2,13 +2,6 @@ name: Smoke
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - "figmaclaw/**/*.py"
-      - "tests/smoke/**/*.py"
-      - ".github/workflows/smoke.yml"
-      - "pyproject.toml"
-      - "uv.lock"
 
 permissions:
   contents: read
@@ -18,8 +11,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  smoke:
+  smoke-api:
+    name: smoke-api-dispatch
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -38,8 +33,18 @@ jobs:
       - name: Sync dependencies
         run: uv sync --dev
 
-      - name: Run smoke tests
+      - name: Validate FIGMA_API_KEY secret is configured
         env:
           FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+        run: |
+          if [ -z "${FIGMA_API_KEY}" ]; then
+            echo "::error::Missing required secret FIGMA_API_KEY for smoke-api workflow."
+            exit 1
+          fi
+
+      - name: Run enforced live API smoke tests
+        env:
+          FIGMACLAW_REQUIRE_LIVE_SMOKE: "1"
+          FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
           FIGMA_WEBHOOK_TEAM_ID: ${{ secrets.FIGMA_WEBHOOK_TEAM_ID }}
-        run: uv run pytest -q -m smoke
+        run: uv run pytest -q -m smoke_api -n 0 -rs

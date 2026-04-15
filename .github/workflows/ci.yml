@@ -127,32 +127,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Detect changed Python files
-        id: changed
-        uses: tj-actions/changed-files@22103cc46bda19c2b464ffe86db46df6922fd323 # v47.0.5
-        with:
-          files: |
-            **/*.py
-
       - name: Set up Python
-        if: steps.changed.outputs.any_changed == 'true'
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
 
       - name: Install uv
-        if: steps.changed.outputs.any_changed == 'true'
         run: python -m pip install --upgrade uv
 
       - name: Sync dependencies
-        if: steps.changed.outputs.any_changed == 'true'
         run: uv sync --dev
 
       - name: Run tests with coverage gate
-        if: steps.changed.outputs.any_changed == 'true'
         run: >
           uv run python -m pytest -q
-          -m "not smoke"
+          -m "not smoke_api and not smoke_webhook and not smoke_mcp"
           --junitxml=test-results/pytest-junit.xml
           --cov=figmaclaw
           --cov-report=term-missing
@@ -160,7 +149,7 @@ jobs:
           --cov-fail-under=70
 
       - name: Upload test artifacts
-        if: always() && steps.changed.outputs.any_changed == 'true'
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: test-results
@@ -182,6 +171,119 @@ jobs:
           flags: unittests
           fail_ci_if_error: false
 
-      - name: No Python-impacting changes
-        if: steps.changed.outputs.any_changed != 'true'
-        run: echo "No Python or dependency changes; skipping tests."
+  smoke-api:
+    name: smoke-api-ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: python -m pip install --upgrade uv
+
+      - name: Sync dependencies
+        run: uv sync --dev
+
+      - name: Validate FIGMA_API_KEY secret is configured
+        env:
+          FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+        run: |
+          if [ -z "${FIGMA_API_KEY}" ]; then
+            echo "::error::Missing required secret FIGMA_API_KEY for smoke-api job."
+            exit 1
+          fi
+
+      - name: Run enforced live API smoke
+        env:
+          FIGMACLAW_REQUIRE_LIVE_SMOKE: "1"
+          FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+        run: >
+          uv run python -m pytest -q
+          -m smoke_api
+          -n 0
+          -rs
+
+  smoke-webhook:
+    name: smoke-webhook-ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: python -m pip install --upgrade uv
+
+      - name: Sync dependencies
+        run: uv sync --dev
+
+      - name: Validate FIGMA_API_KEY secret is configured
+        env:
+          FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+        run: |
+          if [ -z "${FIGMA_API_KEY}" ]; then
+            echo "::error::Missing required secret FIGMA_API_KEY for smoke-webhook job."
+            exit 1
+          fi
+
+      - name: Run enforced live webhook smoke
+        env:
+          FIGMACLAW_REQUIRE_LIVE_SMOKE: "1"
+          FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+        run: >
+          uv run python -m pytest -q
+          -m smoke_webhook
+          -n 0
+          -rs
+
+  smoke-mcp:
+    name: smoke-mcp-ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: python -m pip install --upgrade uv
+
+      - name: Sync dependencies
+        run: uv sync --dev
+
+      - name: Validate FIGMA_MCP_TOKEN secret is configured
+        env:
+          FIGMA_MCP_TOKEN: ${{ secrets.FIGMA_MCP_TOKEN }}
+        run: |
+          if [ -z "${FIGMA_MCP_TOKEN}" ]; then
+            echo "::error::Missing required secret FIGMA_MCP_TOKEN for smoke-mcp job."
+            exit 1
+          fi
+
+      - name: Run enforced live MCP smoke
+        env:
+          FIGMACLAW_REQUIRE_LIVE_SMOKE: "1"
+          FIGMA_MCP_TOKEN: ${{ secrets.FIGMA_MCP_TOKEN }}
+        run: >
+          uv run python -m pytest -q
+          -m smoke_mcp
+          -n 0
+          -rs

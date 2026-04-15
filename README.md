@@ -122,6 +122,7 @@ Designer saves in Figma
 ## Documentation
 
 - Installation and CI setup: [docs/INSTALL.md](docs/INSTALL.md)
+- Token auth and rotation: [docs/token-auth-and-rotation.md](docs/token-auth-and-rotation.md)
 - Markdown schema: [docs/figmaclaw-md-format.md](docs/figmaclaw-md-format.md)
 - Body preservation design: [docs/body-preservation-design.md](docs/body-preservation-design.md)
 - Body preservation invariants: [docs/body-preservation-invariants.md](docs/body-preservation-invariants.md)

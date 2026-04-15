@@ -20,11 +20,14 @@ Upgrade: `uv tool install --force git+https://github.com/aviadr1/figmaclaw`
 | Variable | When needed | Description |
 |---|---|---|
 | `FIGMA_API_KEY` | Always | Figma personal access token. Generate at https://www.figma.com/developers/api#access-tokens (format: `figd_...`) |
+| `FIGMA_MCP_TOKEN` | MCP smoke tests | Figma MCP OAuth access token used by `smoke_mcp` and `figmaclaw/figma_mcp.py` |
 | `FIGMA_WEBHOOK_SECRET` | Webhooks | Passcode for validating webhook payloads |
 | `FIGMA_TEAM_ID` | Auto-discovery | Your Figma team ID (for `figmaclaw list`) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | CI enrichment | Claude Code CLI auth for LLM-powered description generation |
 
 Set them in your shell or as GitHub Actions secrets (see CI setup below).
+
+Token creation, lifetime, and rotation details: [docs/token-auth-and-rotation.md](token-auth-and-rotation.md)
 
 ## Quick start — local
 

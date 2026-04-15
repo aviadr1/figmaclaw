@@ -1,9 +1,7 @@
 """Smoke tests against the real Figma API.
 
-Requires FIGMA_API_KEY env var. Run with:
-    uv run pytest -m smoke
-
-These tests are skipped by default in CI.
+Requires FIGMA_API_KEY env var (loaded from repo .env when available). Run with:
+    uv run pytest -m smoke_api
 """
 
 from __future__ import annotations
@@ -13,7 +11,6 @@ import os
 import re
 from pathlib import Path
 
-import httpx
 import pytest
 
 from figmaclaw.commands.build_context import _run as build_context_run
@@ -24,6 +21,7 @@ from figmaclaw.figma_parse import parse_frontmatter
 from figmaclaw.figma_render import scaffold_page
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
 from figmaclaw.pull_logic import pull_file
+from tests.smoke.live_gate import require_live_credential
 
 # The Web App file used in linear-git
 TEST_FILE_KEY = "hOV4QMBnDIG5s5OYkSrX9E"
@@ -36,28 +34,17 @@ TEST_PAGE_NODE_ID = "7741:45837"
 # Confirmed from live API: 8 SECTION children on this page
 EXPECTED_SECTION_COUNT = 8
 
-_DEFAULT_WEBHOOK_TEAM_ID = "1314645078360119627"
-
 
 @pytest.fixture
 def api_key() -> str:
-    key = os.environ.get("FIGMA_API_KEY", "")
-    if not key:
-        pytest.skip("FIGMA_API_KEY not set")
-    return key
+    return require_live_credential(
+        os.environ.get("FIGMA_API_KEY", ""),
+        name="FIGMA_API_KEY",
+        hint="Export FIGMA_API_KEY to run real Figma API smoke tests.",
+    )
 
 
-@pytest.fixture
-def webhook_team_id() -> str:
-    """Optional team ID used for webhook-listing smoke test.
-
-    Use FIGMA_WEBHOOK_TEAM_ID in CI to point at a team where the token has webhook-read
-    permission. Falls back to a known personal team ID for local smoke runs.
-    """
-    return os.environ.get("FIGMA_WEBHOOK_TEAM_ID", _DEFAULT_WEBHOOK_TEAM_ID)
-
-
-@pytest.mark.smoke
+@pytest.mark.smoke_api
 @pytest.mark.asyncio
 async def test_get_file_meta_returns_version(api_key: str) -> None:
     """Smoke: get_file_meta hits real API and returns version + pages."""
@@ -71,7 +58,7 @@ async def test_get_file_meta_returns_version(api_key: str) -> None:
     assert all(p.type == "CANVAS" for p in pages)
 
 
-@pytest.mark.smoke
+@pytest.mark.smoke_api
 @pytest.mark.asyncio
 async def test_get_page_returns_canvas_with_sections(api_key: str) -> None:
     """Smoke: get_page returns the CANVAS document node directly with SECTION children."""
@@ -86,7 +73,7 @@ async def test_get_page_returns_canvas_with_sections(api_key: str) -> None:
     assert "SECTION" in section_types
 
 
-@pytest.mark.smoke
+@pytest.mark.smoke_api
 @pytest.mark.asyncio
 async def test_from_page_node_matches_real_api_structure(api_key: str) -> None:
     """Smoke: from_page_node builds a FigmaPage with the correct number of sections.
@@ -116,7 +103,7 @@ async def test_from_page_node_matches_real_api_structure(api_key: str) -> None:
         assert len(section.frames) > 0, f"Section {section.name!r} has no frames"
 
 
-@pytest.mark.smoke
+@pytest.mark.smoke_api
 @pytest.mark.asyncio
 async def test_render_and_parse_round_trip_against_real_page(api_key: str) -> None:
     """Smoke: scaffold_page + parse_frontmatter round-trips correctly for a real Figma page.
@@ -155,25 +142,17 @@ async def test_render_and_parse_round_trip_against_real_page(api_key: str) -> No
     assert "| Screen |" in md
 
 
-@pytest.mark.smoke
+@pytest.mark.smoke_webhook
 @pytest.mark.asyncio
-async def test_list_webhooks_returns_list(api_key: str, webhook_team_id: str) -> None:
-    """Smoke: list_webhooks returns a list (may be empty) for personal team."""
+async def test_list_file_webhooks_returns_list(api_key: str) -> None:
+    """Smoke: list_file_webhooks returns a list (may be empty) for a tracked file."""
     async with FigmaClient(api_key=api_key) as client:
-        try:
-            webhooks = await client.list_webhooks(team_id=webhook_team_id)
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code in {401, 403}:
-                pytest.skip(
-                    "Token lacks webhook-list permission for team "
-                    f"{webhook_team_id}; set FIGMA_WEBHOOK_TEAM_ID to an authorized team."
-                )
-            raise
+        webhooks = await client.list_file_webhooks(file_key=TEST_FILE_KEY)
 
     assert isinstance(webhooks, list)
 
 
-@pytest.mark.smoke
+@pytest.mark.smoke_api
 @pytest.mark.asyncio
 async def test_pull_writes_frame_sections_inventory(tmp_path, api_key: str) -> None:  # type: ignore[no-untyped-def]
     """Smoke: pull_file writes frame_sections with section-level inventory fields."""
@@ -210,7 +189,7 @@ async def test_pull_writes_frame_sections_inventory(tmp_path, api_key: str) -> N
     assert "raw_count:" in md_text
 
 
-@pytest.mark.smoke
+@pytest.mark.smoke_api
 @pytest.mark.asyncio
 async def test_pull_is_idempotent_for_written_page_markdown(tmp_path, api_key: str) -> None:  # type: ignore[no-untyped-def]
     """Smoke: two unchanged pulls produce identical markdown for an already written page."""
@@ -243,7 +222,7 @@ async def test_pull_is_idempotent_for_written_page_markdown(tmp_path, api_key: s
     assert md_before == md_after
 
 
-@pytest.mark.smoke
+@pytest.mark.smoke_api
 @pytest.mark.asyncio
 async def test_pull_collision_safe_file_dirs_and_sidecar_backfill(
     tmp_path,
@@ -281,7 +260,7 @@ async def test_pull_collision_safe_file_dirs_and_sidecar_backfill(
         assert Path(entry_a.md_path).parts[1] != Path(entry_b.md_path).parts[1]
 
 
-@pytest.mark.smoke
+@pytest.mark.smoke_api
 @pytest.mark.asyncio
 async def test_pull_backfills_missing_sidecar_on_unchanged_page_real_api(
     tmp_path,
@@ -324,7 +303,7 @@ async def test_pull_backfills_missing_sidecar_on_unchanged_page_real_api(
     assert target_sidecar.exists()
 
 
-@pytest.mark.smoke
+@pytest.mark.smoke_api
 @pytest.mark.asyncio
 async def test_pull_migrates_legacy_sidecar_schema_on_unchanged_page_real_api(
     tmp_path,
@@ -372,7 +351,7 @@ async def test_pull_migrates_legacy_sidecar_schema_on_unchanged_page_real_api(
     assert rewritten.get("schema_version") == 2
 
 
-@pytest.mark.smoke
+@pytest.mark.smoke_api
 @pytest.mark.asyncio
 async def test_pull_migrates_legacy_unkeyed_paths_to_full_key_slug_real_api(
     tmp_path,
@@ -435,7 +414,7 @@ async def test_pull_migrates_legacy_unkeyed_paths_to_full_key_slug_real_api(
         assert keyed_sidecar.exists()
 
 
-@pytest.mark.smoke
+@pytest.mark.smoke_api
 @pytest.mark.asyncio
 async def test_schema_upgrade_backfills_instance_component_ids_without_body_rewrite(
     tmp_path,
@@ -476,7 +455,7 @@ async def test_schema_upgrade_backfills_instance_component_ids_without_body_rewr
     assert "instance_component_ids:" in text_after
 
 
-@pytest.mark.smoke
+@pytest.mark.smoke_api
 @pytest.mark.asyncio
 async def test_build_context_generates_valid_call_specs_from_real_pull_data(
     tmp_path,

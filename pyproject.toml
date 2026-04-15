@@ -25,6 +25,7 @@ dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=1.3.0",
     "pytest-httpx>=0.36.2",
+    "pytest-xdist>=3.8.0",
     "basedpyright>=1.39.0",
     "ruff>=0.15.10",
     "pre-commit>=4.5.1",
@@ -35,6 +36,7 @@ dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=1.3.0",
     "pytest-httpx>=0.36.2",
+    "pytest-xdist>=3.8.0",
     "basedpyright>=1.39.0",
     "ruff>=0.15.10",
     "pre-commit>=4.5.1",
@@ -61,8 +63,12 @@ reportMissingTypeStubs = false
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+addopts = "-n auto"
 markers = [
-    "smoke: marks tests as smoke tests requiring real credentials (deselect with '-m \"not smoke\"')",
+    "smoke: local smoke/integration tests that do not require live credentials",
+    "smoke_api: live Figma REST smoke tests (requires FIGMA_API_KEY; hard-fail if missing)",
+    "smoke_webhook: live webhook smoke tests (requires webhook permission)",
+    "smoke_mcp: live Figma MCP smoke tests (requires FIGMA_MCP_TOKEN/credentials)",
 ]
 testpaths = ["tests"]
 
