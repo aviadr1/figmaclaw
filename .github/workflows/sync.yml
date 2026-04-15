@@ -85,6 +85,8 @@ jobs:
         env:
           FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
           INPUT_FORCE: ${{ inputs.force }}
+          FIGMA_TEAM_ID: ${{ inputs.figma_team_id }}
+          SINCE: ${{ inputs.since }}
           FIGMACLAW_SYNC_OBS_DIR: ${{ runner.temp }}/figmaclaw-sync-observability
         run: |
           bash .figmaclaw-workflow/scripts/checkpoint_pull_loop.sh

@@ -10,6 +10,8 @@ MAX_IDLE_HAS_MORE_BATCHES="${MAX_IDLE_HAS_MORE_BATCHES:-3}"
 BATCH_TIMEOUT_SECONDS="${BATCH_TIMEOUT_SECONDS:-900}"
 MAX_PAGES_PER_BATCH="${MAX_PAGES_PER_BATCH:-5}"
 FIGMACLAW_OUT_PATH="${FIGMACLAW_OUT_PATH:-/tmp/figmaclaw-out.txt}"
+FIGMA_TEAM_ID="${FIGMA_TEAM_ID:-}"
+SINCE="${SINCE:-3m}"
 FIGMACLAW_SYNC_OBS_DIR="${FIGMACLAW_SYNC_OBS_DIR:-}"
 
 declare -a PULL_ARGS
@@ -72,6 +74,9 @@ set_pull_args() {
     PULL_ARGS=(--force)
   else
     PULL_ARGS=(--max-pages "$CURRENT_MAX_PAGES_PER_BATCH")
+  fi
+  if [ -n "$FIGMA_TEAM_ID" ]; then
+    PULL_ARGS+=(--team-id "$FIGMA_TEAM_ID" --since "$SINCE")
   fi
 }
 

@@ -205,6 +205,20 @@ def test_force_uses_force_flag_only(tmp_path: Path) -> None:
     assert args == "pull --force"
 
 
+def test_non_force_includes_team_prefilter_args_when_present(tmp_path: Path) -> None:
+    _run_loop(
+        tmp_path,
+        scenario="single_done",
+        git_dirty="1",
+        timeout_mode="pass",
+        MAX_PAGES_PER_BATCH="7",
+        FIGMA_TEAM_ID="12345",
+        SINCE="7d",
+    )
+    args = (tmp_path / "pull-args.txt").read_text().strip()
+    assert args == "pull --max-pages 7 --team-id 12345 --since 7d"
+
+
 def test_timeout_retries_with_smaller_batch_then_succeeds(tmp_path: Path) -> None:
     out = _run_loop(
         tmp_path,
