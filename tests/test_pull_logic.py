@@ -319,6 +319,170 @@ async def test_pull_file_writes_component_section_with_frame_ids(pull_env: PullE
 
 
 @pytest.mark.asyncio
+async def test_pull_file_preserves_existing_component_descriptions_on_changed_page(tmp_path: Path):
+    """INVARIANT: pull_file must not rewrite existing component body prose on updates."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+    state.manifest.files["abc123"].pages["7741:45837"] = PageEntry(
+        page_name="Components",
+        page_slug="components-7741-45837",
+        md_path=None,
+        page_hash="0000000000000000",
+        last_refreshed_at="2026-03-30T00:00:00Z",
+        component_md_paths=["figma/web-app-abc123/components/buttons-20-1.md"],
+    )
+
+    comp_path = tmp_path / "figma/web-app-abc123/components/buttons-20-1.md"
+    comp_path.parent.mkdir(parents=True, exist_ok=True)
+    comp_path.write_text(
+        """---
+file_key: abc123
+page_node_id: '7741:45837'
+section_node_id: '20:1'
+frames: ['30:1', '30:2']
+enriched_hash: keep-me
+---
+
+# Web App / Components / buttons
+
+[Open in Figma](https://www.figma.com/design/abc123?node-id=20-1)
+
+## Variants (`20:1`)
+
+| Variant | Node ID | Description |
+|---------|---------|-------------|
+| Button / Primary | `30:1` | Keep this existing description |
+| Button / Secondary | `30:2` | Keep this too |
+"""
+    )
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2"))
+    mock_client.get_page = AsyncMock(return_value=fake_component_page_node())
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    updated = comp_path.read_text()
+    assert "Keep this existing description" in updated
+    assert "Keep this too" in updated
+    assert "(no description yet)" not in updated
+
+
+@pytest.mark.asyncio
+async def test_pull_file_migrates_legacy_component_path_without_losing_descriptions(tmp_path: Path):
+    """INVARIANT: legacy component path migration keeps existing human-written descriptions."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+    state.manifest.files["abc123"].pages["7741:45837"] = PageEntry(
+        page_name="Components",
+        page_slug="components-7741-45837",
+        md_path=None,
+        page_hash="0000000000000000",
+        last_refreshed_at="2026-03-30T00:00:00Z",
+        component_md_paths=["figma/web-app/components/buttons-20-1.md"],  # legacy path
+    )
+
+    legacy_path = tmp_path / "figma/web-app/components/buttons-20-1.md"
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text(
+        """---
+file_key: abc123
+page_node_id: '7741:45837'
+section_node_id: '20:1'
+frames: ['30:1', '30:2']
+---
+
+# Web App / Components / buttons
+
+[Open in Figma](https://www.figma.com/design/abc123?node-id=20-1)
+
+## Variants (`20:1`)
+
+| Variant | Node ID | Description |
+|---------|---------|-------------|
+| Button / Primary | `30:1` | Legacy migrated description |
+| Button / Secondary | `30:2` | Another legacy description |
+"""
+    )
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2"))
+    mock_client.get_page = AsyncMock(return_value=fake_component_page_node())
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    new_path = tmp_path / "figma/web-app-abc123/components/buttons-20-1.md"
+    assert new_path.exists()
+    migrated = new_path.read_text()
+    assert "Legacy migrated description" in migrated
+    assert "Another legacy description" in migrated
+    assert "(no description yet)" not in migrated
+
+
+@pytest.mark.asyncio
+async def test_pull_file_component_description_preservation_is_idempotent(tmp_path: Path):
+    """INVARIANT: component description preservation remains stable across repeated pulls."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+    state.manifest.files["abc123"].pages["7741:45837"] = PageEntry(
+        page_name="Components",
+        page_slug="components-7741-45837",
+        md_path=None,
+        page_hash="0000000000000000",
+        last_refreshed_at="2026-03-30T00:00:00Z",
+        component_md_paths=["figma/web-app-abc123/components/buttons-20-1.md"],
+    )
+
+    comp_path = tmp_path / "figma/web-app-abc123/components/buttons-20-1.md"
+    comp_path.parent.mkdir(parents=True, exist_ok=True)
+    comp_path.write_text(
+        """---
+file_key: abc123
+page_node_id: '7741:45837'
+section_node_id: '20:1'
+frames: ['30:1', '30:2']
+---
+
+# Web App / Components / buttons
+
+[Open in Figma](https://www.figma.com/design/abc123?node-id=20-1)
+
+## Variants (`20:1`)
+
+| Variant | Node ID | Description |
+|---------|---------|-------------|
+| Button / Primary | `30:1` | Idempotent description A |
+| Button / Secondary | `30:2` | Idempotent description B |
+"""
+    )
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+    mock_client.get_page = AsyncMock(return_value=fake_component_page_node())
+
+    # First run: content-changed path should preserve body prose.
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2"))
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+    first = comp_path.read_text()
+    assert "Idempotent description A" in first
+    assert "Idempotent description B" in first
+
+    # Second run: unchanged file-level metadata should skip with no body churn.
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2", "2026-03-31T12:00:00Z"))
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+    second = comp_path.read_text()
+    assert second == first
+
+
+@pytest.mark.asyncio
 async def test_pull_file_preserves_existing_descriptions(tmp_path: Path):
     """INVARIANT: pull_file preserves frame descriptions from existing .md for unchanged frames."""
     # Pre-write a .md with existing descriptions at the slug-based path

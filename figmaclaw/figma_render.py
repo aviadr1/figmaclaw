@@ -206,6 +206,30 @@ def build_page_frontmatter(
     )
 
 
+def build_component_frontmatter(
+    section: FigmaSection,
+    page: FigmaPage,
+    *,
+    component_set_keys: dict[str, str] | None = None,
+    enriched_hash: str | None = None,
+    enriched_at: str | None = None,
+    enriched_frame_hashes: dict[str, str] | None = None,
+) -> str:
+    """Build YAML frontmatter for a component-library section markdown file."""
+    frame_ids: list[str] = [f.node_id for f in section.frames]
+    return _build_frontmatter(
+        file_key=page.file_key,
+        page_node_id=page.page_node_id,
+        section_node_id=section.node_id,
+        frame_ids=frame_ids,
+        flows=[],
+        component_set_keys=component_set_keys,
+        enriched_hash=enriched_hash,
+        enriched_at=enriched_at,
+        enriched_frame_hashes=enriched_frame_hashes,
+    )
+
+
 def scaffold_page(
     page: FigmaPage,
     entry: PageEntry,
@@ -327,18 +351,7 @@ def render_component_section(
     """
     parts: list[str] = []
 
-    frame_ids: list[str] = [f.node_id for f in section.frames]
-
-    parts.append(
-        _build_frontmatter(
-            file_key=page.file_key,
-            page_node_id=page.page_node_id,
-            section_node_id=section.node_id,
-            frame_ids=frame_ids,
-            flows=[],
-            component_set_keys=component_set_keys,
-        )
-    )
+    parts.append(build_component_frontmatter(section, page, component_set_keys=component_set_keys))
     parts.append("")
 
     # H1: file / page / section — normalized so empty names don't leak
