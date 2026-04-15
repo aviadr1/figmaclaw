@@ -28,6 +28,7 @@ from figmaclaw.figma_md_parse import section_line_ranges
 from figmaclaw.figma_parse import parse_frontmatter
 from figmaclaw.figma_schema import is_placeholder_row
 from figmaclaw.schema_status import enrichment_schema_status, is_pull_schema_stale
+from figmaclaw.staleness import stale_frame_ids_from_manifest
 
 SECTION_THRESHOLD = 80
 
@@ -61,24 +62,13 @@ def _stale_frame_ids(
     except Exception:
         return set()  # no manifest — can't determine staleness
 
-    file_entry = state.manifest.files.get(file_key)
-    if file_entry is None:
-        return set()
-    page_entry = file_entry.pages.get(page_node_id)
-    if page_entry is None:
-        return set()
-
-    current = page_entry.frame_hashes
-    enriched = enriched_frame_hashes or {}
-    stale: set[str] = set()
-    for nid, h in current.items():
-        if nid not in enriched or enriched[nid] != h:
-            stale.add(nid)
-    # Also frames in enriched but not in current (removed frames)
-    for nid in enriched:
-        if nid not in current:
-            stale.add(nid)
-    return stale
+    stale = stale_frame_ids_from_manifest(
+        state,
+        file_key=file_key,
+        page_node_id=page_node_id,
+        enriched_frame_hashes=enriched_frame_hashes,
+    )
+    return stale or set()
 
 
 @click.command("inspect")

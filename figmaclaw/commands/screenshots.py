@@ -26,6 +26,7 @@ from figmaclaw.figma_md_parse import parse_sections
 from figmaclaw.figma_parse import parse_frontmatter
 from figmaclaw.figma_paths import screenshot_cache_path
 from figmaclaw.image_export import DEFAULT_IMAGE_BATCH_SIZE, get_image_urls_batched
+from figmaclaw.staleness import stale_frame_ids_from_manifest
 
 _MAX_CONCURRENT_DOWNLOADS = 10
 _DOWNLOAD_LOCK_FILENAME = ".figma-downloads.lock"
@@ -118,21 +119,13 @@ async def _run(
         # Compare manifest frame_hashes (current) vs frontmatter
         # enriched_frame_hashes (at last enrichment).
         state = load_state(repo_dir)
-        stale_ids: set[str] = set()
-        manifest_file = state.manifest.files.get(file_key)
-        if manifest_file:
-            page_entry = manifest_file.pages.get(fm.page_node_id)
-            if page_entry:
-                current_hashes = page_entry.frame_hashes
-                enriched_hashes = fm.enriched_frame_hashes or {}
-                for nid, h in current_hashes.items():
-                    if nid not in enriched_hashes or enriched_hashes[nid] != h:
-                        stale_ids.add(nid)
-                # Also include frames with no hash at all (new frames)
-                for nid in all_body_ids:
-                    if nid not in enriched_hashes:
-                        stale_ids.add(nid)
-        else:
+        stale_ids = stale_frame_ids_from_manifest(
+            state,
+            file_key=file_key,
+            page_node_id=fm.page_node_id,
+            enriched_frame_hashes=fm.enriched_frame_hashes,
+        )
+        if stale_ids is None:
             # No manifest entry — all frames are stale
             stale_ids = set(all_body_ids)
         node_ids = [nid for nid in all_body_ids if nid in stale_ids]

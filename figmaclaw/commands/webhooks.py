@@ -45,7 +45,11 @@ from typing import Any, Protocol
 
 import click
 
-from figmaclaw.commands._shared import load_state, require_figma_api_key
+from figmaclaw.commands._shared import (
+    FIGMA_WEBHOOK_SECRET_ENV,
+    load_state,
+    require_figma_api_key,
+)
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_models import ValidationReport, Webhook
 
@@ -85,9 +89,11 @@ def _require_api_key() -> str:
 
 
 def _require_passcode() -> str:
-    passcode = os.environ.get("FIGMA_WEBHOOK_SECRET", "")
+    passcode = os.environ.get(FIGMA_WEBHOOK_SECRET_ENV, "")
     if not passcode:
-        click.echo("Warning: FIGMA_WEBHOOK_SECRET not set — passcode will be empty", err=True)
+        click.echo(
+            f"Warning: {FIGMA_WEBHOOK_SECRET_ENV} not set — passcode will be empty", err=True
+        )
     return passcode
 
 

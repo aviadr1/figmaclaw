@@ -9,7 +9,12 @@ from pathlib import Path
 
 import click
 
-from figmaclaw.commands._shared import load_state, require_figma_api_key
+from figmaclaw.commands._shared import (
+    FIGMA_WEBHOOK_PAYLOAD_ENV,
+    FIGMA_WEBHOOK_SECRET_ENV,
+    load_state,
+    require_figma_api_key,
+)
 from figmaclaw.commands.pull import _git_commit_page
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.git_utils import git_push as _git_push
@@ -37,11 +42,11 @@ def apply_webhook_cmd(ctx: click.Context, auto_commit: bool, push_every: int) ->
     repo_dir = Path(ctx.obj["repo_dir"])
     api_key = require_figma_api_key()
 
-    payload = os.environ.get("FIGMA_WEBHOOK_PAYLOAD", "")
+    payload = os.environ.get(FIGMA_WEBHOOK_PAYLOAD_ENV, "")
     if not payload:
-        raise click.UsageError("FIGMA_WEBHOOK_PAYLOAD environment variable is not set.")
+        raise click.UsageError(f"{FIGMA_WEBHOOK_PAYLOAD_ENV} environment variable is not set.")
 
-    webhook_secret = os.environ.get("FIGMA_WEBHOOK_SECRET") or None
+    webhook_secret = os.environ.get(FIGMA_WEBHOOK_SECRET_ENV) or None
 
     try:
         asyncio.run(

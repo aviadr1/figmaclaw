@@ -9,12 +9,16 @@ import click
 
 from figmaclaw.figma_sync_state import FigmaSyncState
 
+FIGMA_API_KEY_ENV = "FIGMA_API_KEY"
+FIGMA_WEBHOOK_SECRET_ENV = "FIGMA_WEBHOOK_SECRET"
+FIGMA_WEBHOOK_PAYLOAD_ENV = "FIGMA_WEBHOOK_PAYLOAD"
+
 
 def require_figma_api_key() -> str:
     """Return FIGMA_API_KEY or raise a consistent usage error."""
-    api_key = os.environ.get("FIGMA_API_KEY", "")
+    api_key = os.environ.get(FIGMA_API_KEY_ENV, "")
     if not api_key:
-        raise click.UsageError("FIGMA_API_KEY environment variable is not set.")
+        raise click.UsageError(f"{FIGMA_API_KEY_ENV} environment variable is not set.")
     return api_key
 
 
