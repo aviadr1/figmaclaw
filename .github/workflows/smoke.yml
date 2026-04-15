@@ -19,6 +19,7 @@ concurrency:
 
 jobs:
   smoke-api:
+    name: smoke-api-dispatch
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

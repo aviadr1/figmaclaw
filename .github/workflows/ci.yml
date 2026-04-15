@@ -187,6 +187,7 @@ jobs:
         run: echo "No Python or dependency changes; skipping tests."
 
   smoke-api:
+    name: smoke-api-ci
     runs-on: ubuntu-latest
 
     steps:
