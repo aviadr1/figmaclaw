@@ -214,6 +214,16 @@ jobs:
         if: steps.changed.outputs.any_changed == 'true'
         run: uv sync --dev
 
+      - name: Validate FIGMA_API_KEY secret is configured
+        if: steps.changed.outputs.any_changed == 'true'
+        env:
+          FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+        run: |
+          if [ -z "${FIGMA_API_KEY}" ]; then
+            echo "::error::Missing required secret FIGMA_API_KEY for smoke-api job."
+            exit 1
+          fi
+
       - name: Run enforced live API smoke
         if: steps.changed.outputs.any_changed == 'true'
         env:
