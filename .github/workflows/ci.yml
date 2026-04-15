@@ -189,6 +189,7 @@ jobs:
   smoke-api:
     name: smoke-api-ci
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -234,6 +235,7 @@ jobs:
         run: >
           uv run python -m pytest -q
           -m smoke_api
+          -n 0
           -rs
 
       - name: No Python-impacting changes

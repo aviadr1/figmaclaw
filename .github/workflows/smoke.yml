@@ -21,6 +21,7 @@ jobs:
   smoke-api:
     name: smoke-api-dispatch
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -53,4 +54,4 @@ jobs:
           FIGMACLAW_REQUIRE_LIVE_SMOKE: "1"
           FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
           FIGMA_WEBHOOK_TEAM_ID: ${{ secrets.FIGMA_WEBHOOK_TEAM_ID }}
-        run: uv run pytest -q -m smoke_api -rs
+        run: uv run pytest -q -m smoke_api -n 0 -rs
