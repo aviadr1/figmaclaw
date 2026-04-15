@@ -1118,6 +1118,43 @@ async def test_pull_cmd_forwards_prune_flag_to_pull_file(tmp_path: Path):
     assert mock_pull.await_args.kwargs["prune"] is False
 
 
+@pytest.mark.asyncio
+async def test_pull_cmd_emits_observability_lines(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    """INVARIANT: pull command emits structured SYNC_OBS_PULL lines for profiling."""
+    from figmaclaw.commands.pull import _run
+
+    state = _make_state_with_file(tmp_path, "fileA", "")
+    state.save()
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.get_file_meta = AsyncMock(
+        return_value={
+            "version": "v2",
+            "lastModified": "2026-03-01T00:00:00Z",
+            "name": "App",
+            "document": {"children": []},
+        }
+    )
+
+    with (
+        patch("figmaclaw.commands.pull.FigmaClient", return_value=mock_client),
+        patch(
+            "figmaclaw.commands.pull.pull_file",
+            AsyncMock(return_value=PullResult(file_key="fileA", skipped_file=True)),
+        ),
+    ):
+        await _run("key", tmp_path, None, False, None, False, 10, None, "all")
+
+    out = capsys.readouterr().out
+    assert "SYNC_OBS_PULL event=run_start" in out
+    assert "SYNC_OBS_PULL event=file_end file_key=fileA outcome=pull_skipped" in out
+    assert "SYNC_OBS_PULL event=run_end" in out
+
+
 # --- _compute_raw_frames ---
 
 
