@@ -268,6 +268,77 @@ async def test_list_webhooks_returns_list():
 
 
 @pytest.mark.asyncio
+async def test_list_file_webhooks_returns_list():
+    """INVARIANT: list_file_webhooks uses context=file query and returns list."""
+    with respx.mock:
+        route = respx.get("https://api.figma.com/v2/webhooks").mock(
+            return_value=httpx.Response(200, json={"webhooks": [{"id": "wh1"}]})
+        )
+        async with FigmaClient(api_key="figd_test") as client:
+            webhooks = await client.list_file_webhooks(file_key=FILE_KEY)
+
+    assert isinstance(webhooks, list)
+    assert webhooks[0]["id"] == "wh1"
+    url = str(route.calls[0].request.url)
+    assert "context=file" in url
+    assert f"context_id={FILE_KEY}" in url
+
+
+@pytest.mark.asyncio
+async def test_create_file_webhook_posts_context_file_payload():
+    """INVARIANT: create_file_webhook posts v2 payload with context=file + context_id."""
+    with respx.mock:
+        route = respx.post("https://api.figma.com/v2/webhooks").mock(
+            return_value=httpx.Response(200, json={"id": "wh_file"})
+        )
+        async with FigmaClient(api_key="figd_test") as client:
+            payload = await client.create_file_webhook(
+                file_key=FILE_KEY,
+                endpoint="https://example.com/hook",
+                passcode="secret",
+                description="desc",
+            )
+
+    assert payload["id"] == "wh_file"
+    body = route.calls[0].request.content.decode()
+    assert '"context":"file"' in body
+    assert f'"context_id":"{FILE_KEY}"' in body
+
+
+@pytest.mark.asyncio
+async def test_create_webhook_posts_team_payload():
+    """INVARIANT: create_webhook posts v2 payload with team_id field."""
+    with respx.mock:
+        route = respx.post("https://api.figma.com/v2/webhooks").mock(
+            return_value=httpx.Response(200, json={"id": "wh_team"})
+        )
+        async with FigmaClient(api_key="figd_test") as client:
+            payload = await client.create_webhook(
+                team_id="team123",
+                endpoint="https://example.com/hook",
+                passcode="secret",
+            )
+
+    assert payload["id"] == "wh_team"
+    body = route.calls[0].request.content.decode()
+    assert '"team_id":"team123"' in body
+
+
+@pytest.mark.asyncio
+async def test_delete_webhook_calls_delete_endpoint():
+    """INVARIANT: delete_webhook hits /v2/webhooks/{id}."""
+    webhook_id = "wh_to_delete"
+    with respx.mock:
+        route = respx.delete(f"https://api.figma.com/v2/webhooks/{webhook_id}").mock(
+            return_value=httpx.Response(200, json={})
+        )
+        async with FigmaClient(api_key="figd_test") as client:
+            await client.delete_webhook(webhook_id)
+
+    assert len(route.calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_list_team_projects_returns_projects():
     """INVARIANT: list_team_projects returns the projects list from the API."""
     team_id = "1314617533998771588"

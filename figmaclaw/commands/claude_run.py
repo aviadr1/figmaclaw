@@ -37,6 +37,8 @@ from figmaclaw.budget import BudgetDecision, decide_next_batch, load_per_frame_h
 from figmaclaw.figma_md_parse import section_line_ranges
 from figmaclaw.figma_schema import PLACEHOLDER_DESCRIPTION, is_placeholder_row
 from figmaclaw.verdict import (
+    EXIT_RED,
+    RunVerdict,
     compute_verdict,
     count_commits_since,
     format_step_summary,
@@ -571,6 +573,7 @@ def claude_run_cmd(
     budget_exhausted = False
     budget_stop_reason: str | None = None
     phantom_files: list[str] = []
+    dispatch_crashed = False
 
     # Sha snapshot before any work — used to count commits that actually
     # landed, which is the only honest signal that useful work was done.
@@ -885,6 +888,7 @@ def claude_run_cmd(
             err=True,
         )
         traceback.print_exc(file=sys.stderr)
+        dispatch_crashed = True
         errors += 1
 
     # ---- Compute verdict and exit ----
@@ -897,6 +901,12 @@ def claude_run_cmd(
         budget_exhausted=budget_exhausted,
         skipped_no_work=skipped_no_work,
     )
+    if dispatch_crashed:
+        verdict = RunVerdict(
+            label="RED (dispatch crash)",
+            exit_code=EXIT_RED,
+            row="row 8",
+        )
 
     click.echo(
         f"[claude-run] Done: files_selected={files_selected} "

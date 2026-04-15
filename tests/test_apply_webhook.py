@@ -236,3 +236,39 @@ async def test_apply_webhook_file_delete_prunes_artifacts(tmp_path: Path, capsys
     state2.load()
     assert "abc123" not in state2.manifest.tracked_files
     assert "abc123" not in state2.manifest.files
+
+
+@pytest.mark.asyncio
+async def test_apply_webhook_missing_file_key_and_file_id_skips(tmp_path: Path, capsys):
+    """INVARIANT: payloads without file_key/file_id are ignored safely."""
+    payload = json.dumps({"event_type": "FILE_UPDATE", "passcode": "secret"})
+
+    from figmaclaw.commands.apply_webhook import _run
+
+    await _run(
+        api_key="fake_key",
+        repo_dir=tmp_path,
+        payload=payload,
+        webhook_secret=None,
+    )
+
+    out = capsys.readouterr().out
+    assert "missing file_key/file_id" in out.lower()
+    assert "COMMIT_MSG:" not in out
+
+
+@pytest.mark.asyncio
+async def test_apply_webhook_file_delete_untracked_is_noop(tmp_path: Path, capsys):
+    """INVARIANT: FILE_DELETE on an untracked file is reported as a skip, no commit message."""
+    from figmaclaw.commands.apply_webhook import _run
+
+    await _run(
+        api_key="fake_key",
+        repo_dir=tmp_path,
+        payload=_make_payload("not-tracked", event_type="FILE_DELETE"),
+        webhook_secret=None,
+    )
+
+    out = capsys.readouterr().out
+    assert "is not tracked — skipping." in out
+    assert "COMMIT_MSG:" not in out

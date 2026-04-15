@@ -14,9 +14,11 @@ from __future__ import annotations
 import py_compile
 import textwrap
 from pathlib import Path
+from unittest.mock import Mock
 
 from click.testing import CliRunner
 
+from figmaclaw.commands import claude_run as claude_run_mod
 from figmaclaw.commands.claude_run import (
     build_prompt,
     collect_files,
@@ -632,3 +634,185 @@ class TestBuildPromptSectionPlaceholders:
         assert "10:1" in result
         assert "Auth" in result
         assert str(md) in result
+
+
+class TestClaudeRunExecutionBranches:
+    """Execution-path regressions not covered by selection-only tests."""
+
+    @staticmethod
+    def _write_placeholder_page(path: Path) -> None:
+        path.write_text(
+            textwrap.dedent("""\
+            ---
+            file_key: abc123
+            page_node_id: "0:1"
+            ---
+
+            | Screen | Node ID | Description |
+            |--------|---------|-------------|
+            | Login  | `1:1`   | (no description yet) |
+        """)
+        )
+
+    @staticmethod
+    def _budget_decision(should_start: bool, reason: str) -> claude_run_mod.BudgetDecision:
+        return claude_run_mod.BudgetDecision(
+            should_start=should_start,
+            reason=reason,
+            predicted_seconds=1.0,
+            remaining_seconds=1000.0,
+            per_frame_estimate=1.0,
+            history_used=0,
+        )
+
+    def test_budget_exhaustion_stops_before_claude_call(self, tmp_path: Path, monkeypatch) -> None:
+        md = tmp_path / "page.md"
+        self._write_placeholder_page(md)
+
+        monkeypatch.setattr(
+            claude_run_mod,
+            "decide_next_batch",
+            lambda **_: self._budget_decision(False, "[budget] stop before first batch"),
+        )
+        run_mock = Mock(side_effect=AssertionError("claude should not run when budget stops"))
+        monkeypatch.setattr(claude_run_mod, "_run_claude", run_mock)
+        monkeypatch.setattr(claude_run_mod, "count_commits_since", lambda *_args, **_kwargs: 0)
+        monkeypatch.setattr(
+            claude_run_mod.subprocess,
+            "run",
+            lambda *args, **kwargs: Mock(stdout="", returncode=0),
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "claude-run",
+                str(md),
+                "--prompt",
+                "noop {file_path}",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "[budget] stop before first batch" in result.output
+        assert run_mock.call_count == 0
+
+    def test_section_mode_phantom_selection_is_red(self, tmp_path: Path, monkeypatch) -> None:
+        md = tmp_path / "page.md"
+        self._write_placeholder_page(md)
+
+        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p: (True, 120))
+        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p: [])
+        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p: False)
+        monkeypatch.setattr(
+            claude_run_mod.subprocess,
+            "run",
+            lambda *args, **kwargs: Mock(stdout="", returncode=0),
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "claude-run",
+                str(md),
+                "--prompt",
+                "noop {file_path}",
+                "--section-mode",
+            ],
+        )
+
+        assert result.exit_code == 2
+        assert "PHANTOM SELECTION" in result.output
+        assert "Verdict (row 5)" in result.output
+
+    def test_section_mode_stuck_detection_breaks_after_retries(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        md = tmp_path / "page.md"
+        self._write_placeholder_page(md)
+
+        sections = [{"node_id": "10:1", "name": "Auth", "pending_frames": 2}]
+        # Initial load + two post-batch refreshes; third loop detects "stuck" and exits.
+        pending = [sections, sections, sections]
+
+        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p: (True, 120))
+        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p: pending.pop(0))
+        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p: False)
+        monkeypatch.setattr(
+            claude_run_mod,
+            "decide_next_batch",
+            lambda **_: self._budget_decision(True, "[budget] go"),
+        )
+        monkeypatch.setattr(
+            claude_run_mod,
+            "_run_claude",
+            lambda **_: claude_run_mod.ClaudeResult(exit_code=0),
+        )
+        monkeypatch.setattr(claude_run_mod, "count_commits_since", lambda *_args, **_kwargs: 1)
+        monkeypatch.setattr(
+            claude_run_mod.subprocess,
+            "run",
+            lambda *args, **kwargs: Mock(stdout="", returncode=0),
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "claude-run",
+                str(md),
+                "--prompt",
+                "noop {file_path}",
+                "--section-mode",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "STUCK:" in result.output
+        assert "Verdict (row 2)" in result.output
+
+    def test_dispatch_crash_is_always_red(self, tmp_path: Path, monkeypatch) -> None:
+        md = tmp_path / "page.md"
+        self._write_placeholder_page(md)
+
+        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p: (True, 1))
+        monkeypatch.setattr(
+            claude_run_mod,
+            "decide_next_batch",
+            lambda **_: self._budget_decision(True, "[budget] go"),
+        )
+        monkeypatch.setattr(
+            claude_run_mod,
+            "_run_claude",
+            lambda **_: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        monkeypatch.setattr(claude_run_mod, "count_commits_since", lambda *_args, **_kwargs: 0)
+        monkeypatch.setattr(
+            claude_run_mod.subprocess,
+            "run",
+            lambda *args, **kwargs: Mock(stdout="", returncode=0),
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "claude-run",
+                str(md),
+                "--prompt",
+                "noop {file_path}",
+            ],
+        )
+
+        assert "CRASH in dispatch loop: RuntimeError: boom" in result.output
+        assert result.exit_code == 2

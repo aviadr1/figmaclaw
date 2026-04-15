@@ -986,7 +986,7 @@ async def test_pull_cmd_skips_unchanged_files_via_listing(tmp_path: Path):
     )
     mock_client.get_file_meta = AsyncMock()
 
-    with patch.object(FigmaClient, "__new__", return_value=mock_client):
+    with patch("figmaclaw.commands.pull.FigmaClient", return_value=mock_client):
         await _run("key", tmp_path, None, False, None, False, 10, "team123", "all")
 
     mock_client.get_file_meta.assert_not_called()
@@ -1018,7 +1018,7 @@ async def test_pull_cmd_pulls_files_whose_listing_last_modified_changed(tmp_path
         }
     )
 
-    with patch.object(FigmaClient, "__new__", return_value=mock_client):
+    with patch("figmaclaw.commands.pull.FigmaClient", return_value=mock_client):
         await _run("key", tmp_path, None, False, None, False, 10, "team123", "all")
 
     mock_client.get_file_meta.assert_called_once_with("fileA")
@@ -1040,7 +1040,7 @@ async def test_pull_cmd_skips_figjam_files_not_in_listing(tmp_path: Path):
     mock_client.list_project_files = AsyncMock(return_value=[])  # FigJam not in listing
     mock_client.get_file_meta = AsyncMock()
 
-    with patch.object(FigmaClient, "__new__", return_value=mock_client):
+    with patch("figmaclaw.commands.pull.FigmaClient", return_value=mock_client):
         await _run("key", tmp_path, None, False, None, False, 10, "team123", "all")
 
     mock_client.get_file_meta.assert_not_called()
@@ -1073,7 +1073,7 @@ async def test_pull_cmd_stamps_listing_last_modified_after_failed_get_file_meta(
     mock_pull = AsyncMock(return_value=failed_result)
 
     with (
-        patch.object(FigmaClient, "__new__", return_value=mock_client),
+        patch("figmaclaw.commands.pull.FigmaClient", return_value=mock_client),
         patch("figmaclaw.commands.pull.pull_file", mock_pull),
     ):
         await _run("key", tmp_path, None, False, None, False, 10, "team123", "all")
@@ -1105,7 +1105,7 @@ async def test_pull_cmd_forwards_prune_flag_to_pull_file(tmp_path: Path):
     )
 
     with (
-        patch.object(FigmaClient, "__new__", return_value=mock_client),
+        patch("figmaclaw.commands.pull.FigmaClient", return_value=mock_client),
         patch(
             "figmaclaw.commands.pull.pull_file",
             AsyncMock(return_value=PullResult(file_key="fileA", skipped_file=True)),
@@ -2025,6 +2025,158 @@ async def test_pull_file_migrates_legacy_sidecar_on_unchanged_page_when_schema_s
 
 
 @pytest.mark.asyncio
+async def test_pull_file_repairs_corrupt_sidecar_on_unchanged_page(tmp_path: Path):
+    """INVARIANT: unreadable sidecar JSON is treated as stale and repaired on next pull."""
+    from figmaclaw.figma_hash import compute_page_hash
+
+    page_id = "7741:45837"
+    file_key = "abc123"
+    page_node = fake_page_node_with_children()
+    page_hash = compute_page_hash(page_node)
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file(file_key, "Web App")
+    state.manifest.files[file_key].version = "v2"
+    state.manifest.files[file_key].last_modified = "2026-03-31T12:00:00Z"
+    state.manifest.files[file_key].pull_schema_version = CURRENT_PULL_SCHEMA_VERSION
+    md_rel = "figma/web-app-abc123/pages/onboarding-7741-45837.md"
+    state.manifest.files[file_key].pages[page_id] = PageEntry(
+        page_name="Onboarding",
+        page_slug="onboarding-7741-45837",
+        md_path=md_rel,
+        page_hash=page_hash,
+        last_refreshed_at="2026-03-31T12:00:00Z",
+    )
+    state.save()
+
+    md_abs = tmp_path / md_rel
+    md_abs.parent.mkdir(parents=True, exist_ok=True)
+    md_abs.write_text(
+        "---\nfile_key: abc123\npage_node_id: '7741:45837'\nframes: ['11:1']\n---\n\n# body\n"
+    )
+    sidecar = md_abs.with_suffix(".tokens.json")
+    sidecar.write_text("{not json")
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2", "2026-03-31T12:00:00Z"))
+    mock_client.get_page = AsyncMock(return_value=page_node)
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+    mock_client.get_nodes = AsyncMock(return_value=fake_get_nodes_response())
+
+    result = await pull_file(mock_client, file_key, state, tmp_path, force=False)
+
+    assert result.skipped_file is False
+    payload = json.loads(sidecar.read_text())
+    assert payload["schema_version"] == 2
+
+
+@pytest.mark.asyncio
+async def test_pull_file_migration_prunes_old_when_new_screen_path_already_exists(tmp_path: Path):
+    """INVARIANT: if old/new generated screen paths both exist, old md+sidecar are deleted."""
+    page_id = "100:1"
+    old_page_name = "Showcase LSN"
+    new_page_name = "Showcase V2"
+    file_name = "Web App"
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", file_name)
+    state.manifest.files["abc123"].version = "v1"
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+    mock_client.get_nodes = AsyncMock(return_value={})
+
+    mock_client.get_file_meta = AsyncMock(
+        return_value=_custom_file_meta(
+            version="v2", file_name=file_name, page_id=page_id, page_name=old_page_name
+        )
+    )
+    mock_client.get_page = AsyncMock(return_value=fake_page_node_for_id(page_id, old_page_name))
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    old_rel = page_path(
+        f"{slugify(file_name)}-abc123", f"{slugify(old_page_name)}-{page_id.replace(':', '-')}"
+    )
+    new_rel = page_path(
+        f"{slugify(file_name)}-abc123", f"{slugify(new_page_name)}-{page_id.replace(':', '-')}"
+    )
+    old_abs = tmp_path / old_rel
+    new_abs = tmp_path / new_rel
+    old_sidecar = old_abs.with_suffix(".tokens.json")
+    new_sidecar = new_abs.with_suffix(".tokens.json")
+    old_sidecar.write_text("{}")
+    new_abs.parent.mkdir(parents=True, exist_ok=True)
+    new_abs.write_text(old_abs.read_text())
+    new_sidecar.write_text("{}")
+
+    mock_client.get_file_meta = AsyncMock(
+        return_value=_custom_file_meta(
+            version="v3", file_name=file_name, page_id=page_id, page_name=new_page_name
+        )
+    )
+    mock_client.get_page = AsyncMock(return_value=fake_page_node_for_id(page_id, new_page_name))
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    assert new_abs.exists()
+    assert new_sidecar.exists()
+    assert not old_abs.exists()
+    assert not old_sidecar.exists()
+
+
+@pytest.mark.asyncio
+async def test_pull_file_continues_when_token_scan_raises(tmp_path: Path):
+    """INVARIANT: token scan failures don't abort pull/page frontmatter writes."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2", "2026-03-31T12:00:00Z"))
+    mock_client.get_page = AsyncMock(return_value=fake_page_node_with_children())
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+    mock_client.get_nodes = AsyncMock(return_value=fake_get_nodes_response())
+
+    with patch("figmaclaw.pull_logic.scan_page", side_effect=RuntimeError("scan boom")):
+        result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    assert result.pages_written == 1
+    page_rel = next(iter(state.manifest.files["abc123"].pages.values())).md_path
+    assert page_rel is not None
+    page_md = tmp_path / page_rel
+    assert page_md.exists()
+    # token_scan failed, so sidecar write should be skipped for this pull.
+    assert not page_md.with_suffix(".tokens.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_pull_file_continues_when_sidecar_write_raises(tmp_path: Path):
+    """INVARIANT: sidecar write failures are logged but do not abort pull."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2", "2026-03-31T12:00:00Z"))
+    mock_client.get_page = AsyncMock(return_value=fake_page_node_with_children())
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+    mock_client.get_nodes = AsyncMock(return_value=fake_get_nodes_response())
+
+    with patch("figmaclaw.pull_logic._write_token_sidecar", side_effect=RuntimeError("write boom")):
+        result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    assert result.pages_written == 1
+    page_rel = next(iter(state.manifest.files["abc123"].pages.values())).md_path
+    assert page_rel is not None
+    page_md = tmp_path / page_rel
+    assert page_md.exists()
+    assert not page_md.with_suffix(".tokens.json").exists()
+
+
+@pytest.mark.asyncio
 async def test_pull_file_page_rename_moves_path_and_prunes_old(tmp_path: Path):
     """INVARIANT: renaming a page keeps exactly one page file path (old path is pruned)."""
     page_id = "100:1"
@@ -2446,7 +2598,7 @@ async def test_pull_cmd_no_access_prunes_artifacts_and_untracks(tmp_path: Path):
 
     no_access_result = PullResult(file_key="restricted_key", no_access=True, skipped_file=True)
     with (
-        patch.object(FigmaClient, "__new__", return_value=mock_client),
+        patch("figmaclaw.commands.pull.FigmaClient", return_value=mock_client),
         patch("figmaclaw.commands.pull.pull_file", AsyncMock(return_value=no_access_result)),
     ):
         await _run("key", tmp_path, None, False, None, False, 10, None, "all")
