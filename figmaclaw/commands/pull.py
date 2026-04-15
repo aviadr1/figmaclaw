@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import os
 from pathlib import Path
 
 import click
 
+from figmaclaw.commands._shared import load_state, require_figma_api_key, require_tracked_files
 from figmaclaw.figma_api_models import FileSummary, ProjectSummary
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_sync_state import FigmaSyncState
@@ -16,6 +16,7 @@ from figmaclaw.figma_utils import parse_since
 from figmaclaw.git_utils import git_commit, git_push
 from figmaclaw.prune_utils import prune_file_artifacts_from_manifest
 from figmaclaw.pull_logic import PullResult, pull_file
+from figmaclaw.status_markers import COMMIT_MSG_PREFIX, HAS_MORE_TRUE
 
 
 @click.command("pull")
@@ -77,9 +78,7 @@ def pull_cmd(
 ) -> None:
     """Pull all tracked Figma files and write changed pages to disk."""
     repo_dir = Path(ctx.obj["repo_dir"])
-    api_key = os.environ.get("FIGMA_API_KEY", "")
-    if not api_key:
-        raise click.UsageError("FIGMA_API_KEY environment variable is not set.")
+    api_key = require_figma_api_key()
 
     asyncio.run(
         _run(
@@ -183,8 +182,7 @@ async def _run(
     since: str,
     prune: bool = True,
 ) -> None:
-    state = FigmaSyncState(repo_dir)
-    state.load()
+    state = load_state(repo_dir)
 
     commit_count = 0
 
@@ -214,8 +212,7 @@ async def _run(
             listing_last_modified = await _listing_prefilter(client, team_id, state, since)
             state.save()  # persist any newly tracked files before pulling
 
-        if not state.manifest.tracked_files:
-            click.echo("No tracked files. Run 'figmaclaw track <file-key>' first.")
+        if not require_tracked_files(state):
             return
 
         keys = [file_key] if file_key else list(state.manifest.tracked_files)
@@ -325,7 +322,7 @@ async def _run(
         if total_schema_upgraded and not total_written:
             # Schema-only run: use a different verb so it's recognizable in git log
             parts.append(f"{total_schema_upgraded} page(s) schema-upgraded")
-        click.echo(f"COMMIT_MSG:sync: figmaclaw pull — {', '.join(parts)} updated")
+        click.echo(f"{COMMIT_MSG_PREFIX}sync: figmaclaw pull — {', '.join(parts)} updated")
 
     if has_more_global:
-        click.echo("HAS_MORE:true")
+        click.echo(HAS_MORE_TRUE)

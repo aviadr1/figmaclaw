@@ -18,6 +18,7 @@ import pytest
 
 import figmaclaw.commands.census as census_module
 from figmaclaw.commands.census import _compute_hash, _existing_hash, _render, _run
+from figmaclaw.figma_paths import file_slug_for_key
 from figmaclaw.figma_sync_state import FigmaSyncState
 
 
@@ -139,7 +140,7 @@ class TestCensusSkipBehavior:
         cs = [_make_component_set("Button", "aabb1122")]
         await self._run_census(tmp_path, cs)
 
-        out = tmp_path / "figma" / "web-app" / "_census.md"
+        out = tmp_path / "figma" / file_slug_for_key("Web App", "key1") / "_census.md"
         assert out.exists()
         mtime_first = out.stat().st_mtime_ns
 
@@ -156,7 +157,7 @@ class TestCensusSkipBehavior:
         cs_before = [_make_component_set("Button", "aabb1122")]
         await self._run_census(tmp_path, cs_before)
 
-        out = tmp_path / "figma" / "web-app" / "_census.md"
+        out = tmp_path / "figma" / file_slug_for_key("Web App", "key1") / "_census.md"
         content_before = out.read_text()
 
         cs_after = [
@@ -166,3 +167,27 @@ class TestCensusSkipBehavior:
         await self._run_census(tmp_path, cs_after)
 
         assert out.read_text() != content_before
+
+    @pytest.mark.asyncio
+    async def test_census_uses_latest_file_name_slug_from_manifest(self, tmp_path: Path):
+        """INVARIANT: census path follows latest manifest file_name for this file key."""
+        state = FigmaSyncState(tmp_path)
+        state.load()
+        state.add_tracked_file("key1", "Old Name")
+        state.manifest.files["key1"].file_name = "New Name"
+        state.save()
+
+        cs = [_make_component_set("Button", "aabb1122")]
+        mock_client = AsyncMock()
+        mock_client.get_component_sets = AsyncMock(return_value=cs)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client_class = MagicMock(return_value=mock_client)
+
+        with patch.object(census_module, "FigmaClient", mock_client_class):
+            await _run("fake-api-key", tmp_path, None, auto_commit=False, force=False)
+
+        assert not (
+            tmp_path / "figma" / file_slug_for_key("Old Name", "key1") / "_census.md"
+        ).exists()
+        assert (tmp_path / "figma" / file_slug_for_key("New Name", "key1") / "_census.md").exists()

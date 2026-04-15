@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -22,6 +21,7 @@ from typing import Any
 
 import click
 
+from figmaclaw.commands._shared import require_figma_api_key
 from figmaclaw.figma_api_models import VersionSummary
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_models import FigmaFrame, from_page_node
@@ -579,9 +579,7 @@ def diff_cmd(
 
     TARGET is the directory with tracked .md files (default: figma/).
     """
-    api_key = os.environ.get("FIGMA_API_KEY", "")
-    if not api_key:
-        raise click.ClickException("FIGMA_API_KEY environment variable is not set.")
+    api_key = require_figma_api_key()
 
     repo_dir = Path(ctx.obj["repo_dir"])
     resolved = repo_dir / target

@@ -9,12 +9,18 @@ from pathlib import Path
 
 import click
 
+from figmaclaw.commands._shared import (
+    FIGMA_WEBHOOK_PAYLOAD_ENV,
+    FIGMA_WEBHOOK_SECRET_ENV,
+    load_state,
+    require_figma_api_key,
+)
 from figmaclaw.commands.pull import _git_commit_page
 from figmaclaw.figma_client import FigmaClient
-from figmaclaw.figma_sync_state import FigmaSyncState
 from figmaclaw.git_utils import git_push as _git_push
 from figmaclaw.prune_utils import prune_file_artifacts_from_manifest
 from figmaclaw.pull_logic import pull_file
+from figmaclaw.status_markers import COMMIT_MSG_PREFIX
 
 
 class WebhookAuthError(Exception):
@@ -35,15 +41,13 @@ class WebhookAuthError(Exception):
 def apply_webhook_cmd(ctx: click.Context, auto_commit: bool, push_every: int) -> None:
     """Process a Figma webhook payload from FIGMA_WEBHOOK_PAYLOAD env var."""
     repo_dir = Path(ctx.obj["repo_dir"])
-    api_key = os.environ.get("FIGMA_API_KEY", "")
-    if not api_key:
-        raise click.UsageError("FIGMA_API_KEY environment variable is not set.")
+    api_key = require_figma_api_key()
 
-    payload = os.environ.get("FIGMA_WEBHOOK_PAYLOAD", "")
+    payload = os.environ.get(FIGMA_WEBHOOK_PAYLOAD_ENV, "")
     if not payload:
-        raise click.UsageError("FIGMA_WEBHOOK_PAYLOAD environment variable is not set.")
+        raise click.UsageError(f"{FIGMA_WEBHOOK_PAYLOAD_ENV} environment variable is not set.")
 
-    webhook_secret = os.environ.get("FIGMA_WEBHOOK_SECRET") or None
+    webhook_secret = os.environ.get(FIGMA_WEBHOOK_SECRET_ENV) or None
 
     try:
         asyncio.run(
@@ -83,8 +87,7 @@ async def _run(
         click.echo("Webhook payload missing file_key/file_id — skipping.")
         return
 
-    state = FigmaSyncState(repo_dir)
-    state.load()
+    state = load_state(repo_dir)
 
     if event_type == "FILE_DELETE":
         had_file = file_key in state.manifest.files or file_key in state.manifest.tracked_files
@@ -98,7 +101,9 @@ async def _run(
         if had_file:
             state.manifest.skipped_files[file_key] = "deleted via FILE_DELETE webhook"
             state.save()
-            click.echo(f"COMMIT_MSG:sync: figmaclaw apply-webhook — file deleted [{file_key}]")
+            click.echo(
+                f"{COMMIT_MSG_PREFIX}sync: figmaclaw apply-webhook — file deleted [{file_key}]"
+            )
             click.echo(f"{file_key}: pruned {removed_paths} generated path(s) after FILE_DELETE.")
         else:
             click.echo(f"File {file_key!r} is not tracked — skipping.")
@@ -135,6 +140,8 @@ async def _run(
 
     if result.pages_written > 0:
         n = result.pages_written
-        click.echo(f"COMMIT_MSG:sync: figmaclaw apply-webhook — {n} page(s) updated [{file_key}]")
+        click.echo(
+            f"{COMMIT_MSG_PREFIX}sync: figmaclaw apply-webhook — {n} page(s) updated [{file_key}]"
+        )
     else:
         click.echo(f"{file_key}: no pages changed.")

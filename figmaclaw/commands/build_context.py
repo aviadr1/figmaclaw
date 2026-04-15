@@ -25,11 +25,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from pathlib import Path
 
 import click
 
+from figmaclaw.commands._shared import require_figma_api_key
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_mcp import FigmaMcpError
 from figmaclaw.figma_parse import parse_frontmatter
@@ -113,9 +113,7 @@ def build_context_cmd(
     Fetches SVG or PNG for each section via the Figma REST API.
     Outputs JSON call specs by default; executes them with --execute.
     """
-    api_key = os.environ.get("FIGMA_API_KEY", "")
-    if not api_key:
-        raise click.UsageError("FIGMA_API_KEY environment variable is not set.")
+    api_key = require_figma_api_key()
     if not execute_calls and (resume_from != 0 or continue_on_error):
         raise click.UsageError("--resume-from/--continue-on-error require --execute")
 
