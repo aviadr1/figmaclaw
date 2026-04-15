@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from pathlib import Path
 
 import click
@@ -105,6 +106,17 @@ def _git_push(repo_dir: Path) -> None:
     git_push(repo_dir)
 
 
+def _obs_s(value: object) -> str:
+    return str(value).replace("\n", " ").replace("\r", " ").replace(" ", "_")
+
+
+def _emit_pull_obs(event: str, **fields: object) -> None:
+    parts = [f"event={_obs_s(event)}"]
+    for key, value in fields.items():
+        parts.append(f"{key}={_obs_s(value)}")
+    click.echo("SYNC_OBS_PULL " + " ".join(parts))
+
+
 async def _listing_prefilter(
     client: FigmaClient,
     team_id: str,
@@ -182,9 +194,26 @@ async def _run(
     since: str,
     prune: bool = True,
 ) -> None:
+    run_start = time.monotonic()
     state = load_state(repo_dir)
 
     commit_count = 0
+    files_seen = 0
+    files_attempted_pull = 0
+    files_skipped_prefilter = 0
+    files_errors = 0
+    files_no_access = 0
+    files_updated = 0
+    files_skipped = 0
+
+    _emit_pull_obs(
+        "run_start",
+        force=force,
+        max_pages=max_pages if max_pages is not None else "none",
+        team_id=team_id if team_id is not None else "none",
+        since=since,
+        prune=prune,
+    )
 
     def on_page_written(page_label: str, paths: list[str]) -> None:
         nonlocal commit_count
@@ -209,26 +238,64 @@ async def _run(
         # returned no files" — both are handled correctly by the is not None check below.
         listing_last_modified: dict[str, str] | None = None
         if team_id and not file_key:
+            listing_t0 = time.monotonic()
+            tracked_before = len(state.manifest.tracked_files)
             listing_last_modified = await _listing_prefilter(client, team_id, state, since)
             state.save()  # persist any newly tracked files before pulling
+            listing_duration_s = round(time.monotonic() - listing_t0, 3)
+            tracked_after = len(state.manifest.tracked_files)
+            _emit_pull_obs(
+                "listing_prefilter",
+                duration_s=listing_duration_s,
+                listed_files=len(listing_last_modified),
+                tracked_before=tracked_before,
+                tracked_after=tracked_after,
+            )
 
         if not require_tracked_files(state):
+            _emit_pull_obs(
+                "run_end",
+                duration_s=round(time.monotonic() - run_start, 3),
+                reason="no_tracked_files",
+            )
             return
 
         keys = [file_key] if file_key else list(state.manifest.tracked_files)
+        files_seen = len(keys)
 
         for key in keys:
+            file_start = time.monotonic()
             if key not in state.manifest.tracked_files:
                 click.echo(f"File key {key!r} is not tracked. Run 'figmaclaw track {key}' first.")
+                files_skipped += 1
+                _emit_pull_obs(
+                    "file_end",
+                    file_key=key,
+                    outcome="not_tracked",
+                    duration_s=round(time.monotonic() - file_start, 3),
+                )
                 continue
 
             skip_reason = state.manifest.skipped_files.get(key)
             if skip_reason:
                 click.echo(f"{key}: skipped — {skip_reason}")
+                files_skipped += 1
+                _emit_pull_obs(
+                    "file_end",
+                    file_key=key,
+                    outcome="manifest_skipped",
+                    duration_s=round(time.monotonic() - file_start, 3),
+                )
                 continue
 
             if max_pages is not None and pages_budget is not None and pages_budget <= 0:
                 has_more_global = True
+                _emit_pull_obs(
+                    "file_end",
+                    file_key=key,
+                    outcome="budget_exhausted",
+                    duration_s=round(time.monotonic() - file_start, 3),
+                )
                 break
 
             # Listing pre-filter: skip get_file_meta entirely when the listing tells us
@@ -242,9 +309,17 @@ async def _run(
                 stored_entry = state.manifest.files.get(key)
                 stored_lm = stored_entry.last_modified if stored_entry else ""
                 if listing_lm is None or stored_lm == listing_lm:
+                    files_skipped_prefilter += 1
+                    _emit_pull_obs(
+                        "file_end",
+                        file_key=key,
+                        outcome="listing_prefilter_skip",
+                        duration_s=round(time.monotonic() - file_start, 3),
+                    )
                     continue
 
             try:
+                files_attempted_pull += 1
                 result = await pull_file(
                     client,
                     key,
@@ -257,6 +332,13 @@ async def _run(
                 )
             except Exception as exc:
                 click.echo(f"{key}: error — {exc} (skipping)")
+                files_errors += 1
+                _emit_pull_obs(
+                    "file_end",
+                    file_key=key,
+                    outcome="error",
+                    duration_s=round(time.monotonic() - file_start, 3),
+                )
                 continue
             all_results.append(result)
 
@@ -268,6 +350,7 @@ async def _run(
                 has_more_global = True
 
             if result.no_access:
+                files_no_access += 1
                 # Permanently inaccessible (restricted/deleted) — move out of tracked_files.
                 reason = "no access — get_file_meta returns 400/404"
                 pruned = prune_file_artifacts_from_manifest(
@@ -282,7 +365,15 @@ async def _run(
                     f"{key}: skipped — {reason} — removed from tracked_files "
                     f"(pruned {pruned} path(s))"
                 )
+                _emit_pull_obs(
+                    "file_end",
+                    file_key=key,
+                    outcome="no_access_pruned",
+                    duration_s=round(time.monotonic() - file_start, 3),
+                    pruned_paths=pruned,
+                )
             elif result.skipped_file:
+                files_skipped += 1
                 # If pull failed (e.g. 400 on get_file_meta) and we know the listing
                 # last_modified, stamp it into the manifest so future runs pre-filter
                 # this file without making a wasted API call.
@@ -292,7 +383,14 @@ async def _run(
                     if listing_lm and stored_entry and not stored_entry.last_modified:
                         stored_entry.last_modified = listing_lm
                 click.echo(f"{key}: unchanged (skipped)")
+                _emit_pull_obs(
+                    "file_end",
+                    file_key=key,
+                    outcome="pull_skipped",
+                    duration_s=round(time.monotonic() - file_start, 3),
+                )
             else:
+                files_updated += 1
                 errored = f", {result.pages_errored} error(s)" if result.pages_errored else ""
                 upgraded = (
                     f", {result.pages_schema_upgraded} schema-upgraded"
@@ -306,6 +404,18 @@ async def _run(
                     click.echo(f"  → {path}")
                 for path in result.component_paths:
                     click.echo(f"  ❖ {path}")
+                _emit_pull_obs(
+                    "file_end",
+                    file_key=key,
+                    outcome="updated",
+                    duration_s=round(time.monotonic() - file_start, 3),
+                    pages_written=result.pages_written,
+                    components_written=result.component_sections_written,
+                    pages_skipped=result.pages_skipped,
+                    pages_errors=result.pages_errored,
+                    schema_upgraded=result.pages_schema_upgraded,
+                    has_more=result.has_more,
+                )
 
     state.save()
 
@@ -326,3 +436,16 @@ async def _run(
 
     if has_more_global:
         click.echo(HAS_MORE_TRUE)
+
+    _emit_pull_obs(
+        "run_end",
+        duration_s=round(time.monotonic() - run_start, 3),
+        files_seen=files_seen,
+        files_attempted_pull=files_attempted_pull,
+        files_skipped_prefilter=files_skipped_prefilter,
+        files_errors=files_errors,
+        files_no_access=files_no_access,
+        files_updated=files_updated,
+        files_skipped=files_skipped,
+        has_more_global=has_more_global,
+    )

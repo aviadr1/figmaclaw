@@ -2,6 +2,7 @@
 
 This document defines the structured telemetry emitted by
 `scripts/checkpoint_pull_loop.sh` in reusable sync workflow runs.
+It also documents per-file pull telemetry emitted by `figmaclaw pull`.
 
 ## Goals
 
@@ -16,6 +17,16 @@ Every loop phase prints a single-line log prefix:
 `SYNC_OBS event=<event> batch=<n> elapsed_s=<sec> max_pages=<n> pull_status=<code> committed=<bool|na> has_more=<bool> idle_has_more=<n> reason="<text>"`
 
 This is intended for real-time log tailing while a run is active.
+
+`figmaclaw pull` now emits per-run and per-file lines with prefix:
+
+`SYNC_OBS_PULL event=<event> ...`
+
+Key events:
+
+- `run_start` / `run_end`
+- `listing_prefilter` (when `--team-id` is used)
+- `file_end` (one line per considered file with outcome + duration)
 
 ## Artifact files
 
@@ -61,3 +72,14 @@ Notes:
 
 GitHub artifact upload occurs after step completion (`if: always()`), so artifacts
 are post-run. During execution, use `SYNC_OBS` lines in live logs.
+
+## Correlating loop + pull telemetry
+
+- `SYNC_OBS` gives checkpoint-batch level timing and git checkpoint stages.
+- `SYNC_OBS_PULL` gives per-file timing/outcomes inside each `figmaclaw pull` call.
+
+Together they isolate whether slowness is primarily:
+
+- in pull internals (API/render/write),
+- or in checkpoint git stages (pull/add/diff/commit/push),
+- or in repeated timeout/backoff patterns.
