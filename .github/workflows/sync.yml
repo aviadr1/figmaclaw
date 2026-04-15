@@ -71,12 +71,12 @@ jobs:
 
       - name: Checkout checkpoint loop script
         # This reusable workflow runs in the *consumer repo* workspace.
-        # Pull the tested loop script from this repo at the exact workflow SHA,
-        # instead of assuming scripts/ exists in the consumer repo.
+        # Pull the tested loop script from figmaclaw repo, instead of assuming
+        # scripts/ exists in the consumer repo.
         uses: actions/checkout@v6
         with:
           repository: aviadr1/figmaclaw
-          ref: ${{ github.workflow_sha }}
+          ref: main
           path: .figmaclaw-workflow
           sparse-checkout: |
             scripts/checkpoint_pull_loop.sh
