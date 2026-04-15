@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import os
 from pathlib import Path
 
 import click
 
+from figmaclaw.commands._shared import load_state, require_figma_api_key, require_tracked_files
 from figmaclaw.figma_api_models import FileSummary, ProjectSummary
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_sync_state import FigmaSyncState
@@ -77,9 +77,7 @@ def pull_cmd(
 ) -> None:
     """Pull all tracked Figma files and write changed pages to disk."""
     repo_dir = Path(ctx.obj["repo_dir"])
-    api_key = os.environ.get("FIGMA_API_KEY", "")
-    if not api_key:
-        raise click.UsageError("FIGMA_API_KEY environment variable is not set.")
+    api_key = require_figma_api_key()
 
     asyncio.run(
         _run(
@@ -183,8 +181,7 @@ async def _run(
     since: str,
     prune: bool = True,
 ) -> None:
-    state = FigmaSyncState(repo_dir)
-    state.load()
+    state = load_state(repo_dir)
 
     commit_count = 0
 
@@ -214,8 +211,7 @@ async def _run(
             listing_last_modified = await _listing_prefilter(client, team_id, state, since)
             state.save()  # persist any newly tracked files before pulling
 
-        if not state.manifest.tracked_files:
-            click.echo("No tracked files. Run 'figmaclaw track <file-key>' first.")
+        if not require_tracked_files(state):
             return
 
         keys = [file_key] if file_key else list(state.manifest.tracked_files)

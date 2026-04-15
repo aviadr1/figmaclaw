@@ -38,7 +38,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -46,9 +45,9 @@ from typing import Any
 import click
 import yaml
 
+from figmaclaw.commands._shared import load_state, require_figma_api_key, require_tracked_files
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_paths import census_path, file_slug_for_key
-from figmaclaw.figma_sync_state import FigmaSyncState
 from figmaclaw.git_utils import git_commit
 
 # ── Hash ─────────────────────────────────────────────────────────────────────
@@ -153,9 +152,7 @@ def census_cmd(
     component sets. Only updates the file when the component registry changes.
     """
     repo_dir = Path(ctx.obj["repo_dir"])
-    api_key = os.environ.get("FIGMA_API_KEY", "")
-    if not api_key:
-        raise click.UsageError("FIGMA_API_KEY environment variable is not set.")
+    api_key = require_figma_api_key()
 
     asyncio.run(_run(api_key, repo_dir, file_key, auto_commit, force))
 
@@ -167,11 +164,8 @@ async def _run(
     auto_commit: bool,
     force: bool,
 ) -> None:
-    state = FigmaSyncState(repo_dir)
-    state.load()
-
-    if not state.manifest.tracked_files:
-        click.echo("No tracked files. Run 'figmaclaw track <file-key>' first.")
+    state = load_state(repo_dir)
+    if not require_tracked_files(state):
         return
 
     keys = [file_key] if file_key else list(state.manifest.tracked_files)

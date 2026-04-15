@@ -132,6 +132,12 @@ def _build_prune_candidate_dirs(
     return candidate_dirs
 
 
+def _remove_generated_paths(repo_root: Path, rel_paths: set[str]) -> None:
+    """Delete generated artifact rel paths in stable order."""
+    for rel in sorted(rel_paths):
+        remove_generated_relpath(repo_root, rel)
+
+
 def _file_slug_for_state(state: FigmaSyncState, file_key: str, file_name: str) -> str:
     """Return a collision-safe file slug for the current manifest state."""
     from figmaclaw.figma_paths import file_slug_for_key
@@ -679,10 +685,12 @@ async def pull_file(
                 expected_paths=expected_paths,
                 previous_entry_paths=previous_entry_paths,
             )
-            for orphan_rel in find_generated_orphans(
-                repo_root, candidate_dirs=candidate_dirs, expected_paths=expected_paths
-            ):
-                remove_generated_relpath(repo_root, orphan_rel)
+            orphan_rels = set(
+                find_generated_orphans(
+                    repo_root, candidate_dirs=candidate_dirs, expected_paths=expected_paths
+                )
+            )
+            _remove_generated_paths(repo_root, orphan_rels)
         _progress(f"{file_name}: unchanged (version {api_version}), skipping all pages")
         result.skipped_file = True
         return result
@@ -1117,8 +1125,7 @@ async def pull_file(
         for previous_page_id, previous_entry in previous_pages.items():
             if previous_page_id in current_page_ids:
                 continue
-            for stale_rel in sorted(entry_paths(previous_entry)):
-                remove_generated_relpath(repo_root, stale_rel)
+            _remove_generated_paths(repo_root, entry_paths(previous_entry))
             if previous_page_id in file_entry.pages:
                 file_entry.pages.pop(previous_page_id)
                 manifest_changed = True
@@ -1130,8 +1137,7 @@ async def pull_file(
             if previous_entry is None or current_entry is None:
                 continue
             stale_paths = entry_paths(previous_entry) - entry_paths(current_entry)
-            for stale_rel in sorted(stale_paths):
-                remove_generated_relpath(repo_root, stale_rel)
+            _remove_generated_paths(repo_root, stale_paths)
 
         # 3) Existing on-disk generated artifacts not referenced by manifest (legacy orphans).
         expected_paths = _all_manifest_generated_paths(state)
@@ -1144,10 +1150,12 @@ async def pull_file(
             expected_paths=expected_paths,
             previous_entry_paths=previous_entry_paths,
         )
-        for orphan_rel in find_generated_orphans(
-            repo_root, candidate_dirs=candidate_dirs, expected_paths=expected_paths
-        ):
-            remove_generated_relpath(repo_root, orphan_rel)
+        orphan_rels = set(
+            find_generated_orphans(
+                repo_root, candidate_dirs=candidate_dirs, expected_paths=expected_paths
+            )
+        )
+        _remove_generated_paths(repo_root, orphan_rels)
 
     if manifest_changed:
         state.save()
