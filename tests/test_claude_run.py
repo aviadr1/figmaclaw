@@ -214,6 +214,24 @@ class TestEnrichmentInfo:
         assert needs is True
         assert count == 1
 
+    def test_census_file_is_never_enrichable(self, tmp_path: Path) -> None:
+        """_census.md is an inventory artifact and must never enter enrichment."""
+        md = tmp_path / "_census.md"
+        md.write_text(
+            textwrap.dedent("""\
+            ---
+            file_key: abc123
+            ---
+
+            | Component set | Key | Page | Updated |
+            |---|---|---|---|
+            | `Button` | `k1` | Components | 2026-04-15 |
+        """)
+        )
+        needs, count = enrichment_info(md)
+        assert needs is False
+        assert count == 0
+
 
 # ---------------------------------------------------------------------------
 # collect_files — file discovery and filtering
@@ -321,6 +339,27 @@ class TestCollectFiles:
             tmp_path / "figma", "**/*.md", changed_only=False, needs_enrichment=True
         )
         assert [r.name for r in result] == ["small.md", "medium.md", "big.md"]
+
+    def test_needs_enrichment_skips_census_files(self, tmp_path: Path) -> None:
+        """Census markdown files must never be selected for enrichment."""
+        figma_dir = tmp_path / "figma" / "design-system-abc123"
+        pages = figma_dir / "pages"
+        self._make_page(pages / "pending.md", enriched=False, frames=3)
+        (figma_dir / "_census.md").write_text(
+            textwrap.dedent("""\
+            ---
+            file_key: abc123
+            ---
+
+            | Component set | Key | Page | Updated |
+            |---|---|---|---|
+            | `Button` | `k1` | Components | 2026-04-15 |
+        """)
+        )
+        result = collect_files(
+            tmp_path / "figma", "**/*.md", changed_only=False, needs_enrichment=True
+        )
+        assert [r.name for r in result] == ["pending.md"]
 
     def test_empty_directory(self, tmp_path: Path) -> None:
         """Empty directory → empty list, no crash."""
