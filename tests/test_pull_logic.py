@@ -22,6 +22,7 @@ Current: see test_schema_upgrade_does_not_cause_infinite_loop_with_max_pages (v2
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1153,6 +1154,87 @@ async def test_pull_cmd_emits_observability_lines(
     assert "SYNC_OBS_PULL event=run_start" in out
     assert "SYNC_OBS_PULL event=file_end file_key=fileA outcome=pull_skipped" in out
     assert "SYNC_OBS_PULL event=run_end" in out
+
+
+@pytest.mark.asyncio
+async def test_pull_cmd_observability_uses_processed_no_writes_outcome(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """INVARIANT: non-skipped pulls with zero writes are labeled processed_no_writes."""
+    from figmaclaw.commands.pull import _run
+
+    state = _make_state_with_file(tmp_path, "fileA", "")
+    state.save()
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.get_file_meta = AsyncMock(
+        return_value={
+            "version": "v2",
+            "lastModified": "2026-03-01T00:00:00Z",
+            "name": "App",
+            "document": {"children": []},
+        }
+    )
+
+    with (
+        patch("figmaclaw.commands.pull.FigmaClient", return_value=mock_client),
+        patch(
+            "figmaclaw.commands.pull.pull_file",
+            AsyncMock(
+                return_value=PullResult(
+                    file_key="fileA",
+                    skipped_file=False,
+                    pages_written=0,
+                    component_sections_written=0,
+                    pages_schema_upgraded=0,
+                    pages_skipped=3,
+                )
+            ),
+        ),
+    ):
+        await _run("key", tmp_path, None, False, None, False, 10, None, "all")
+
+    out = capsys.readouterr().out
+    assert "SYNC_OBS_PULL event=file_end file_key=fileA outcome=processed_no_writes" in out
+
+
+@pytest.mark.asyncio
+async def test_pull_cmd_emits_file_heartbeat_for_long_pull(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """INVARIANT: long pull_file calls emit periodic file_heartbeat observability."""
+    from figmaclaw.commands.pull import _run
+
+    state = _make_state_with_file(tmp_path, "fileA", "")
+    state.save()
+    monkeypatch.setenv("FIGMACLAW_PULL_HEARTBEAT_SECONDS", "1")
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.get_file_meta = AsyncMock(
+        return_value={
+            "version": "v2",
+            "lastModified": "2026-03-01T00:00:00Z",
+            "name": "App",
+            "document": {"children": []},
+        }
+    )
+
+    async def _slow_pull_file(*_args, **_kwargs) -> PullResult:
+        await asyncio.sleep(1.2)
+        return PullResult(file_key="fileA", skipped_file=True)
+
+    with (
+        patch("figmaclaw.commands.pull.FigmaClient", return_value=mock_client),
+        patch("figmaclaw.commands.pull.pull_file", side_effect=_slow_pull_file),
+    ):
+        await _run("key", tmp_path, None, False, None, False, 10, None, "all")
+
+    out = capsys.readouterr().out
+    assert "SYNC_OBS_PULL event=file_heartbeat file_key=fileA" in out
 
 
 # --- _compute_raw_frames ---
