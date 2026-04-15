@@ -125,6 +125,10 @@ def enrichment_info(md_path: Path) -> tuple[bool, int]:
     * Else has ``enriched_hash`` in fm?      → already enriched → skip.
     * Counts body table rows for a frame-size estimate.
     """
+    # Census files are inventories, not page docs; never send them to enrichment.
+    if md_path.name == "_census.md":
+        return False, 0
+
     try:
         text = md_path.read_text()
     except OSError:
@@ -174,8 +178,8 @@ def collect_files(
       gets the full CI timeout.
     """
     if target.is_file():
-        return [target]
-    if changed_only:
+        files = [target]
+    elif changed_only:
         files = _changed_files(target, glob_pattern)
     else:
         files = sorted(target.glob(glob_pattern))
