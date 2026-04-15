@@ -85,5 +85,26 @@ jobs:
         env:
           FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
           INPUT_FORCE: ${{ inputs.force }}
+          FIGMACLAW_SYNC_OBS_DIR: ${{ runner.temp }}/figmaclaw-sync-observability
         run: |
           bash .figmaclaw-workflow/scripts/checkpoint_pull_loop.sh
+
+      - name: Print sync observability summary
+        if: always()
+        run: |
+          OBS_DIR="${{ runner.temp }}/figmaclaw-sync-observability"
+          if [ -f "${OBS_DIR}/checkpoint_summary.txt" ]; then
+            echo "----- checkpoint_summary.txt -----"
+            cat "${OBS_DIR}/checkpoint_summary.txt"
+          else
+            echo "No checkpoint_summary.txt produced."
+          fi
+
+      - name: Upload sync observability artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: figmaclaw-sync-observability-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/figmaclaw-sync-observability/
+          if-no-files-found: warn
+          retention-days: 14

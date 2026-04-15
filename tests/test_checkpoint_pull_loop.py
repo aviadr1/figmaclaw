@@ -229,3 +229,31 @@ def test_timeout_does_not_retry_in_force_mode(tmp_path: Path) -> None:
     count = int((tmp_path / "count.txt").read_text())
     assert count == 1
     assert "stopping checkpoint loop early." in out
+
+
+def test_emits_sync_observability_logs_and_files(tmp_path: Path) -> None:
+    obs_dir = tmp_path / "obs"
+    out = _run_loop(
+        tmp_path,
+        scenario="single_done",
+        git_dirty="1",
+        timeout_mode="pass",
+        FIGMACLAW_SYNC_OBS_DIR=str(obs_dir),
+    )
+
+    events = obs_dir / "checkpoint_events.csv"
+    summary = obs_dir / "checkpoint_summary.txt"
+    assert events.exists()
+    assert summary.exists()
+
+    events_text = events.read_text()
+    assert "event" in events_text.splitlines()[0]
+    assert "batch_start" in events_text
+    assert "loop_end" in events_text
+
+    summary_text = summary.read_text()
+    assert "batches_started=" in summary_text
+    assert "total_commits=1" in summary_text
+
+    assert "SYNC_OBS event=batch_start" in out
+    assert "SYNC_OBS summary_file=" in out
