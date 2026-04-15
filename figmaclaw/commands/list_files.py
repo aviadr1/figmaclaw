@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from datetime import datetime
 from pathlib import Path
 
 import click
 
+from figmaclaw.commands._shared import load_state, require_figma_api_key
 from figmaclaw.figma_client import FigmaClient
-from figmaclaw.figma_sync_state import FigmaSyncState
 from figmaclaw.figma_utils import parse_since, parse_team_id_from_url
 
 
@@ -35,9 +34,7 @@ def list_cmd(
 ) -> None:
     """List Figma files for a team, optionally filtered by last-modified date."""
     repo_dir = Path(ctx.obj["repo_dir"])
-    api_key = os.environ.get("FIGMA_API_KEY", "")
-    if not api_key:
-        raise click.UsageError("FIGMA_API_KEY environment variable is not set.")
+    api_key = require_figma_api_key()
 
     team_id = parse_team_id_from_url(team_id_or_url)
     since_dt: datetime | None = None
@@ -60,8 +57,7 @@ async def _run(
 ) -> None:
     from figmaclaw.pull_logic import pull_file
 
-    state = FigmaSyncState(repo_dir)
-    state.load()
+    state = load_state(repo_dir)
     tracked = set(state.manifest.tracked_files)
 
     async with FigmaClient(api_key) as client:

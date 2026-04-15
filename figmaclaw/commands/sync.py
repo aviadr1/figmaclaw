@@ -30,17 +30,17 @@ from __future__ import annotations
 
 import asyncio
 import datetime
-import os
 from pathlib import Path
 
 import click
 
+from figmaclaw.commands._shared import load_state, require_figma_api_key
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_hash import compute_frame_hashes, compute_page_hash
 from figmaclaw.figma_models import from_page_node
 from figmaclaw.figma_parse import parse_flows, parse_frontmatter, split_frontmatter
 from figmaclaw.figma_render import scaffold_page
-from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
+from figmaclaw.figma_sync_state import PageEntry
 from figmaclaw.git_utils import git_commit
 from figmaclaw.pull_logic import _merge_existing, update_page_frontmatter, write_new_page
 
@@ -74,9 +74,7 @@ def sync_cmd(
     To also generate descriptions, use:  figmaclaw inspect + figma-enrich-page skill
     """
     repo_dir = Path(ctx.obj["repo_dir"])
-    api_key = os.environ.get("FIGMA_API_KEY", "")
-    if not api_key:
-        raise click.UsageError("FIGMA_API_KEY environment variable is not set.")
+    api_key = require_figma_api_key()
 
     asyncio.run(_run(api_key, repo_dir, md_path, auto_commit, show_scaffold, show_body))
 
@@ -106,8 +104,7 @@ async def _run(
     click.echo(f"sync: {md_rel}")
     click.echo(f"  file_key={file_key}  page_node_id={page_node_id}")
 
-    state = FigmaSyncState(repo_dir)
-    state.load()
+    state = load_state(repo_dir)
 
     async with FigmaClient(api_key) as client:
         try:
@@ -198,7 +195,11 @@ async def _run(
     state.set_page_entry(file_key, page_node_id, entry)
     if state.manifest.files.get(file_key):
         state.set_file_meta(
-            file_key, version=api_version, last_modified=api_last_modified, last_checked_at=now
+            file_key,
+            version=api_version,
+            last_modified=api_last_modified,
+            last_checked_at=now,
+            file_name=file_name,
         )
     state.save()
     click.echo(f"  manifest updated (hash={new_hash})")

@@ -55,7 +55,14 @@ from figmaclaw.figma_frontmatter import (
 from figmaclaw.figma_hash import compute_frame_hashes, compute_page_hash
 from figmaclaw.figma_models import FigmaPage, FigmaSection, from_page_node
 from figmaclaw.figma_parse import parse_flows, parse_frontmatter
-from figmaclaw.figma_paths import component_path, page_path, slugify
+from figmaclaw.figma_paths import (
+    census_path,
+    component_path,
+    file_slug_for_key,
+    page_path,
+    slugify,
+    token_sidecar_path,
+)
 from figmaclaw.figma_render import (
     build_component_frontmatter,
     build_page_frontmatter,
@@ -69,6 +76,7 @@ from figmaclaw.prune_utils import (
     find_generated_orphans,
     remove_generated_relpath,
 )
+from figmaclaw.schema_status import is_pull_schema_stale
 from figmaclaw.token_catalog import load_catalog, merge_bindings, save_catalog
 from figmaclaw.token_scan import PageTokenScan, scan_page
 
@@ -78,12 +86,64 @@ TOKEN_SIDECAR_SCHEMA_VERSION = 2
 
 def _all_manifest_generated_paths(state: FigmaSyncState) -> set[str]:
     """Return all generated paths currently referenced by the manifest."""
-    return {
+    page_and_component_paths = {
         rel
         for file_entry in state.manifest.files.values()
         for page_entry in file_entry.pages.values()
         for rel in entry_paths(page_entry)
     }
+    census_paths = {
+        census_path(file_slug_for_key(file_entry.file_name, file_key))
+        for file_key, file_entry in state.manifest.files.items()
+    }
+    return page_and_component_paths | census_paths
+
+
+def _all_figma_file_dirs(repo_root: Path) -> set[Path]:
+    """Return all figma/{file-slug} directories currently on disk."""
+    figma_root = repo_root / "figma"
+    if not figma_root.exists() or not figma_root.is_dir():
+        return set()
+    return {p for p in figma_root.iterdir() if p.is_dir()}
+
+
+def _candidate_dirs_from_rel(repo_root: Path, rel: str) -> set[Path]:
+    """Return prune candidate dirs for one generated rel path.
+
+    Includes the direct parent and the file-root directory (figma/{file-slug})
+    so root artifacts like _census.md are discovered during rename/migration.
+    """
+    abs_path = repo_root / rel
+    dirs = {abs_path.parent}
+    rel_parts = Path(rel).parts
+    if len(rel_parts) >= 4 and rel_parts[0] == "figma" and rel_parts[2] in {"pages", "components"}:
+        dirs.add(repo_root / rel_parts[0] / rel_parts[1])
+    return dirs
+
+
+def _build_prune_candidate_dirs(
+    repo_root: Path,
+    file_slug: str,
+    *,
+    expected_paths: set[str],
+    previous_entry_paths: set[str],
+) -> set[Path]:
+    """Build the candidate directory set used by generated-orphan pruning."""
+    candidate_dirs = {
+        repo_root / f"figma/{file_slug}",
+        repo_root / f"figma/{file_slug}/pages",
+        repo_root / f"figma/{file_slug}/components",
+    }
+    candidate_dirs.update(_all_figma_file_dirs(repo_root))
+    for rel in expected_paths | previous_entry_paths:
+        candidate_dirs.update(_candidate_dirs_from_rel(repo_root, rel))
+    return candidate_dirs
+
+
+def _remove_generated_paths(repo_root: Path, rel_paths: set[str]) -> None:
+    """Delete generated artifact rel paths in stable order."""
+    for rel in sorted(rel_paths):
+        remove_generated_relpath(repo_root, rel)
 
 
 def _file_slug_for_state(state: FigmaSyncState, file_key: str, file_name: str) -> str:
@@ -311,7 +371,7 @@ def _write_token_sidecar(
     size by ~100x on complex pages while preserving all data needed by
     suggest-tokens.
     """
-    sidecar_path = screen_md.with_suffix(".tokens.json")
+    sidecar_path = token_sidecar_path(screen_md)
     now = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     frames_data: dict = {}
@@ -357,7 +417,7 @@ def _screen_artifacts_need_reconcile(md_abs: Path) -> bool:
     """Return True when screen markdown/sidecar artifacts are missing or stale."""
     if not md_abs.exists():
         return True
-    return _sidecar_needs_backfill(md_abs.with_suffix(".tokens.json"))
+    return _sidecar_needs_backfill(token_sidecar_path(md_abs))
 
 
 def _node_suffix_from_relpath(rel_path: str) -> str | None:
@@ -393,8 +453,8 @@ def _migrate_generated_path(
         old_path.unlink()
 
     if move_sidecar and old_path.suffix == ".md":
-        old_sidecar = old_path.with_suffix(".tokens.json")
-        new_sidecar = new_path.with_suffix(".tokens.json")
+        old_sidecar = token_sidecar_path(old_path)
+        new_sidecar = token_sidecar_path(new_path)
         if old_sidecar.exists() and not new_sidecar.exists():
             new_sidecar.parent.mkdir(parents=True, exist_ok=True)
             old_sidecar.rename(new_sidecar)
@@ -592,7 +652,7 @@ async def pull_file(
     file_name = meta.name
 
     stored = state.manifest.files.get(file_key)
-    schema_stale = (stored.pull_schema_version if stored else 0) < CURRENT_PULL_SCHEMA_VERSION
+    schema_stale = is_pull_schema_stale(stored.pull_schema_version if stored else 0)
     file_slug = _file_slug_for_state(state, file_key, file_name)
 
     local_reconcile_needed = False
@@ -624,16 +684,21 @@ async def pull_file(
         # Even on file-level skip, optionally prune generated orphans under file slug.
         if prune:
             expected_paths = _all_manifest_generated_paths(state)
-            candidate_dirs = {
-                repo_root / f"figma/{file_slug}/pages",
-                repo_root / f"figma/{file_slug}/components",
+            previous_entry_paths = {
+                rel for page in stored.pages.values() for rel in entry_paths(page)
             }
-            for rel in {rel for page in stored.pages.values() for rel in entry_paths(page)}:
-                candidate_dirs.add((repo_root / rel).parent)
-            for orphan_rel in find_generated_orphans(
-                repo_root, candidate_dirs=candidate_dirs, expected_paths=expected_paths
-            ):
-                remove_generated_relpath(repo_root, orphan_rel)
+            candidate_dirs = _build_prune_candidate_dirs(
+                repo_root,
+                file_slug,
+                expected_paths=expected_paths,
+                previous_entry_paths=previous_entry_paths,
+            )
+            orphan_rels = set(
+                find_generated_orphans(
+                    repo_root, candidate_dirs=candidate_dirs, expected_paths=expected_paths
+                )
+            )
+            _remove_generated_paths(repo_root, orphan_rels)
         _progress(f"{file_name}: unchanged (version {api_version}), skipping all pages")
         result.skipped_file = True
         return result
@@ -652,6 +717,7 @@ async def pull_file(
         version=api_version,
         last_modified=api_last_modified,
         last_checked_at=now,
+        file_name=file_name,
     )
 
     # Fetch component sets once per changed file. Used to populate component_set_keys
@@ -1067,8 +1133,7 @@ async def pull_file(
         for previous_page_id, previous_entry in previous_pages.items():
             if previous_page_id in current_page_ids:
                 continue
-            for stale_rel in sorted(entry_paths(previous_entry)):
-                remove_generated_relpath(repo_root, stale_rel)
+            _remove_generated_paths(repo_root, entry_paths(previous_entry))
             if previous_page_id in file_entry.pages:
                 file_entry.pages.pop(previous_page_id)
                 manifest_changed = True
@@ -1080,24 +1145,25 @@ async def pull_file(
             if previous_entry is None or current_entry is None:
                 continue
             stale_paths = entry_paths(previous_entry) - entry_paths(current_entry)
-            for stale_rel in sorted(stale_paths):
-                remove_generated_relpath(repo_root, stale_rel)
+            _remove_generated_paths(repo_root, stale_paths)
 
         # 3) Existing on-disk generated artifacts not referenced by manifest (legacy orphans).
         expected_paths = _all_manifest_generated_paths(state)
-        candidate_dirs = {
-            repo_root / f"figma/{file_slug}/pages",
-            repo_root / f"figma/{file_slug}/components",
+        previous_entry_paths = {
+            rel for previous_entry in previous_pages.values() for rel in entry_paths(previous_entry)
         }
-        for rel in expected_paths:
-            candidate_dirs.add((repo_root / rel).parent)
-        for previous_entry in previous_pages.values():
-            for rel in entry_paths(previous_entry):
-                candidate_dirs.add((repo_root / rel).parent)
-        for orphan_rel in find_generated_orphans(
-            repo_root, candidate_dirs=candidate_dirs, expected_paths=expected_paths
-        ):
-            remove_generated_relpath(repo_root, orphan_rel)
+        candidate_dirs = _build_prune_candidate_dirs(
+            repo_root,
+            file_slug,
+            expected_paths=expected_paths,
+            previous_entry_paths=previous_entry_paths,
+        )
+        orphan_rels = set(
+            find_generated_orphans(
+                repo_root, candidate_dirs=candidate_dirs, expected_paths=expected_paths
+            )
+        )
+        _remove_generated_paths(repo_root, orphan_rels)
 
     if manifest_changed:
         state.save()

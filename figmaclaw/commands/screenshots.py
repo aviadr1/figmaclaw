@@ -15,18 +15,19 @@ from __future__ import annotations
 import asyncio
 import fcntl
 import json
-import os
 from pathlib import Path
 from typing import Any
 
 import click
 
+from figmaclaw.commands._shared import load_state, require_figma_api_key
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_md_parse import parse_sections
 from figmaclaw.figma_parse import parse_frontmatter
 from figmaclaw.figma_paths import screenshot_cache_path
+from figmaclaw.image_export import DEFAULT_IMAGE_BATCH_SIZE, get_image_urls_batched
+from figmaclaw.staleness import stale_frame_ids_from_manifest
 
-_FIGMA_IMAGE_BATCH = 50
 _MAX_CONCURRENT_DOWNLOADS = 10
 _DOWNLOAD_LOCK_FILENAME = ".figma-downloads.lock"
 
@@ -71,9 +72,7 @@ def screenshots_cmd(
     MCP plugins are unavailable.
     """
     repo_dir = Path(ctx.obj["repo_dir"])
-    api_key = os.environ.get("FIGMA_API_KEY", "")
-    if not api_key:
-        raise click.UsageError("FIGMA_API_KEY environment variable is not set.")
+    api_key = require_figma_api_key()
 
     result = asyncio.run(
         _run(api_key, repo_dir, md_path, pending_only, stale_only, section_node_id)
@@ -100,15 +99,16 @@ async def _run(
         )
 
     file_key = fm.file_key
+    sections = parse_sections(md_text)
 
     # Node IDs come from the body (parse_sections) — covers pages where fm.frames
     # is empty because no descriptions have been written yet.
-    all_body_ids = [f.node_id for s in parse_sections(md_text) for f in s.frames]
+    all_body_ids = [f.node_id for s in sections for f in s.frames]
 
     # Section filter: restrict to frames in one section
     if section_node_id:
         section_frames: set[str] = set()
-        for s in parse_sections(md_text):
+        for s in sections:
             if s.node_id == section_node_id:
                 section_frames = {f.node_id for f in s.frames}
                 break
@@ -118,25 +118,14 @@ async def _run(
         # Stale = frames whose content hash changed since last enrichment.
         # Compare manifest frame_hashes (current) vs frontmatter
         # enriched_frame_hashes (at last enrichment).
-        from figmaclaw.figma_sync_state import FigmaSyncState
-
-        state = FigmaSyncState(repo_dir)
-        state.load()
-        stale_ids: set[str] = set()
-        manifest_file = state.manifest.files.get(file_key)
-        if manifest_file:
-            page_entry = manifest_file.pages.get(fm.page_node_id)
-            if page_entry:
-                current_hashes = page_entry.frame_hashes
-                enriched_hashes = fm.enriched_frame_hashes or {}
-                for nid, h in current_hashes.items():
-                    if nid not in enriched_hashes or enriched_hashes[nid] != h:
-                        stale_ids.add(nid)
-                # Also include frames with no hash at all (new frames)
-                for nid in all_body_ids:
-                    if nid not in enriched_hashes:
-                        stale_ids.add(nid)
-        else:
+        state = load_state(repo_dir)
+        stale_ids = stale_frame_ids_from_manifest(
+            state,
+            file_key=file_key,
+            page_node_id=fm.page_node_id,
+            enriched_frame_hashes=fm.enriched_frame_hashes,
+        )
+        if stale_ids is None:
             # No manifest entry — all frames are stale
             stale_ids = set(all_body_ids)
         node_ids = [nid for nid in all_body_ids if nid in stale_ids]
@@ -176,15 +165,13 @@ async def _run(
     lock_fd = await asyncio.to_thread(_acquire)
     try:
         async with FigmaClient(api_key) as client:
-            all_urls: dict[str, str | None] = {}
-            for i in range(0, len(node_ids), _FIGMA_IMAGE_BATCH):
-                batch = node_ids[i : i + _FIGMA_IMAGE_BATCH]
-                try:
-                    urls = await client.get_image_urls(file_key, batch)
-                except Exception:
-                    # API error for this batch — mark all as failed
-                    urls = {nid: None for nid in batch}
-                all_urls.update(urls)
+            all_urls = await get_image_urls_batched(
+                client,
+                file_key,
+                node_ids,
+                batch_size=DEFAULT_IMAGE_BATCH_SIZE,
+                fill_none_on_batch_error=True,
+            )
 
             semaphore = asyncio.Semaphore(_MAX_CONCURRENT_DOWNLOADS)
             tasks = [

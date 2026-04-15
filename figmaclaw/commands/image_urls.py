@@ -8,15 +8,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from pathlib import Path
 
 import click
 
+from figmaclaw.commands._shared import require_figma_api_key
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_parse import parse_frontmatter
-
-_FIGMA_IMAGE_BATCH = 50
+from figmaclaw.image_export import DEFAULT_IMAGE_BATCH_SIZE, get_image_urls_batched
 
 
 @click.command("image-urls")
@@ -56,9 +55,7 @@ def image_urls_cmd(
 
     Output: {"file_key": "...", "images": {"node_id": "url", ...}}
     """
-    api_key = os.environ.get("FIGMA_API_KEY", "")
-    if not api_key:
-        raise click.UsageError("FIGMA_API_KEY environment variable is not set.")
+    api_key = require_figma_api_key()
 
     repo_dir = Path(ctx.obj["repo_dir"])
     result = asyncio.run(_run(api_key, repo_dir, md_path, nodes, scale, img_format))
@@ -94,15 +91,13 @@ async def _run(
         return {"file_key": file_key, "images": {}}
 
     async with FigmaClient(api_key) as client:
-        all_urls: dict[str, str | None] = {}
-        for i in range(0, len(node_ids), _FIGMA_IMAGE_BATCH):
-            batch = node_ids[i : i + _FIGMA_IMAGE_BATCH]
-            urls = await client.get_image_urls(
-                file_key,
-                batch,
-                scale=scale,
-                format=img_format,
-            )
-            all_urls.update(urls)
+        all_urls = await get_image_urls_batched(
+            client,
+            file_key,
+            node_ids,
+            batch_size=DEFAULT_IMAGE_BATCH_SIZE,
+            scale=scale,
+            format=img_format,
+        )
 
     return {"file_key": file_key, "images": all_urls}

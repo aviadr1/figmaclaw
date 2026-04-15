@@ -30,6 +30,7 @@ from pathlib import Path
 
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_frontmatter import SectionNode
+from figmaclaw.image_export import get_image_urls_batched
 
 # Max data string length that safely fits inside a use_figma code call alongside helpers.
 # Measured overhead per call: helpers (~9.8KB) + _find_page_js (~165 chars)
@@ -87,6 +88,25 @@ class ContextBuildError(RuntimeError):
         self.category = category
 
 
+async def _get_single_export_url(
+    client: FigmaClient,
+    file_key: str,
+    node_id: str,
+    *,
+    format: str,
+    scale: float | None = None,
+) -> str | None:
+    """Fetch one export URL for one node using shared batching logic."""
+    urls = await get_image_urls_batched(
+        client,
+        file_key,
+        [node_id],
+        format=format,
+        scale=scale,
+    )
+    return urls.get(node_id)
+
+
 async def fetch_section_data(
     client: FigmaClient,
     file_key: str,
@@ -98,8 +118,7 @@ async def fetch_section_data(
     at decreasing scales). Uses the first format+scale whose base64 fits within
     SVG_SIZE_LIMIT. Raises ValueError if nothing fits.
     """
-    svg_urls = await client.get_image_urls(file_key, [section.node_id], format="svg")
-    svg_url = svg_urls.get(section.node_id)
+    svg_url = await _get_single_export_url(client, file_key, section.node_id, format="svg")
     if svg_url:
         svg_bytes = await client.download_url(svg_url)
         try:
@@ -115,8 +134,13 @@ async def fetch_section_data(
     # SVG too large — try raster formats at decreasing scales
     saw_raster_url = False
     for fmt, scale in _RASTER_FALLBACK_STEPS:
-        urls = await client.get_image_urls(file_key, [section.node_id], format=fmt, scale=scale)
-        url = urls.get(section.node_id)
+        url = await _get_single_export_url(
+            client,
+            file_key,
+            section.node_id,
+            format=fmt,
+            scale=scale,
+        )
         if not url:
             continue
         saw_raster_url = True

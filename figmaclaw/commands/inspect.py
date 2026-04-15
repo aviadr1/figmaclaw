@@ -18,6 +18,7 @@ from pathlib import Path
 
 import click
 
+from figmaclaw.commands._shared import load_state
 from figmaclaw.figma_frontmatter import (
     CURRENT_ENRICHMENT_SCHEMA_VERSION,
     CURRENT_PULL_SCHEMA_VERSION,
@@ -26,6 +27,8 @@ from figmaclaw.figma_frontmatter import (
 from figmaclaw.figma_md_parse import section_line_ranges
 from figmaclaw.figma_parse import parse_frontmatter
 from figmaclaw.figma_schema import is_placeholder_row
+from figmaclaw.schema_status import enrichment_schema_status, is_pull_schema_stale
+from figmaclaw.staleness import stale_frame_ids_from_manifest
 
 SECTION_THRESHOLD = 80
 
@@ -59,24 +62,13 @@ def _stale_frame_ids(
     except Exception:
         return set()  # no manifest — can't determine staleness
 
-    file_entry = state.manifest.files.get(file_key)
-    if file_entry is None:
-        return set()
-    page_entry = file_entry.pages.get(page_node_id)
-    if page_entry is None:
-        return set()
-
-    current = page_entry.frame_hashes
-    enriched = enriched_frame_hashes or {}
-    stale: set[str] = set()
-    for nid, h in current.items():
-        if nid not in enriched or enriched[nid] != h:
-            stale.add(nid)
-    # Also frames in enriched but not in current (removed frames)
-    for nid in enriched:
-        if nid not in current:
-            stale.add(nid)
-    return stale
+    stale = stale_frame_ids_from_manifest(
+        state,
+        file_key=file_key,
+        page_node_id=page_node_id,
+        enriched_frame_hashes=enriched_frame_hashes,
+    )
+    return stale or set()
 
 
 @click.command("inspect")
@@ -166,20 +158,17 @@ def inspect_cmd(
 
     # Schema staleness: pull-pass frontmatter fields
     try:
-        from figmaclaw.figma_sync_state import FigmaSyncState as _FSS
-
-        _state = _FSS(repo_dir)
-        _state.load()
-        _file_entry = _state.manifest.files.get(meta.file_key)
-        file_pull_schema_version = _file_entry.pull_schema_version if _file_entry else 0
+        file_entry = load_state(repo_dir).manifest.files.get(meta.file_key)
+        file_pull_schema_version = file_entry.pull_schema_version if file_entry else 0
     except Exception:
         file_pull_schema_version = 0
-    pull_schema_stale = file_pull_schema_version < CURRENT_PULL_SCHEMA_VERSION
+    pull_schema_stale = is_pull_schema_stale(file_pull_schema_version)
 
     # Schema staleness: enrichment prompt/format
-    esv = meta.enriched_schema_version  # 0 if pre-versioning or never enriched
-    enrichment_must_update = esv < MIN_REQUIRED_ENRICHMENT_SCHEMA_VERSION
-    enrichment_should_update = esv < CURRENT_ENRICHMENT_SCHEMA_VERSION
+    enrichment = enrichment_schema_status(meta.enriched_schema_version)
+    esv = enrichment.version  # 0 if pre-versioning or never enriched
+    enrichment_must_update = enrichment.must_update
+    enrichment_should_update = enrichment.should_update
 
     needs_enrichment = (
         has_placeholders
