@@ -204,7 +204,6 @@ jobs:
         env:
           FIGMACLAW_REQUIRE_LIVE_SMOKE: "1"
           FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
-          FIGMA_WEBHOOK_TEAM_ID: ${{ secrets.FIGMA_WEBHOOK_TEAM_ID }}
         run: >
           uv run python -m pytest -q
           -m smoke_api
@@ -237,6 +236,15 @@ jobs:
         run: |
           if [ -z "${FIGMA_API_KEY}" ]; then
             echo "::error::Missing required secret FIGMA_API_KEY for smoke-webhook job."
+            exit 1
+          fi
+
+      - name: Validate FIGMA_WEBHOOK_TEAM_ID secret is configured
+        env:
+          FIGMA_WEBHOOK_TEAM_ID: ${{ secrets.FIGMA_WEBHOOK_TEAM_ID }}
+        run: |
+          if [ -z "${FIGMA_WEBHOOK_TEAM_ID}" ]; then
+            echo "::error::Missing required secret FIGMA_WEBHOOK_TEAM_ID for smoke-webhook job."
             exit 1
           fi
 

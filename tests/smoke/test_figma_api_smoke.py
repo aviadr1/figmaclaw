@@ -54,7 +54,8 @@ def webhook_team_id() -> str:
     Use FIGMA_WEBHOOK_TEAM_ID in CI to point at a team where the token has webhook-read
     permission. Falls back to a known personal team ID for local smoke runs.
     """
-    return os.environ.get("FIGMA_WEBHOOK_TEAM_ID", _DEFAULT_WEBHOOK_TEAM_ID)
+    team_id = os.environ.get("FIGMA_WEBHOOK_TEAM_ID", "").strip()
+    return team_id or _DEFAULT_WEBHOOK_TEAM_ID
 
 
 @pytest.mark.smoke_api
