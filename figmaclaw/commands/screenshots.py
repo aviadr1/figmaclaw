@@ -98,15 +98,16 @@ async def _run(
         )
 
     file_key = fm.file_key
+    sections = parse_sections(md_text)
 
     # Node IDs come from the body (parse_sections) — covers pages where fm.frames
     # is empty because no descriptions have been written yet.
-    all_body_ids = [f.node_id for s in parse_sections(md_text) for f in s.frames]
+    all_body_ids = [f.node_id for s in sections for f in s.frames]
 
     # Section filter: restrict to frames in one section
     if section_node_id:
         section_frames: set[str] = set()
-        for s in parse_sections(md_text):
+        for s in sections:
             if s.node_id == section_node_id:
                 section_frames = {f.node_id for f in s.frames}
                 break

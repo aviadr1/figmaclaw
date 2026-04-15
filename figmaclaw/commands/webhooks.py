@@ -45,6 +45,7 @@ from typing import Any, Protocol
 
 import click
 
+from figmaclaw.commands._shared import require_figma_api_key
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_models import ValidationReport, Webhook
 from figmaclaw.figma_sync_state import FigmaSyncState
@@ -82,10 +83,7 @@ def _load_tracked_files(repo_dir: Path) -> list[str]:
 
 
 def _require_api_key() -> str:
-    api_key = os.environ.get("FIGMA_API_KEY", "")
-    if not api_key:
-        raise click.UsageError("FIGMA_API_KEY environment variable is not set.")
-    return api_key
+    return require_figma_api_key()
 
 
 def _require_passcode() -> str:

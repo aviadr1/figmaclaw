@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from figmaclaw.figma_paths import token_sidecar_path
+from figmaclaw.figma_paths import token_sidecar_path, token_sidecar_rel_to_md_rel
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
 
 _NODE_SUFFIX_RE = re.compile(r".*-\d+-\d+\.md$")
@@ -91,7 +91,7 @@ def find_generated_orphans(
             if is_generated_md_relpath(rel) and rel not in expected_paths:
                 orphans.add(rel)
         for tok in directory.glob("*.tokens.json"):
-            md_rel = str(tok.relative_to(repo_root)).replace(".tokens.json", ".md")
+            md_rel = token_sidecar_rel_to_md_rel(str(tok.relative_to(repo_root)))
             if is_generated_md_relpath(md_rel) and md_rel not in expected_paths:
                 orphans.add(str(tok.relative_to(repo_root)))
     return sorted(orphans)

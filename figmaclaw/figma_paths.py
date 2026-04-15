@@ -74,3 +74,8 @@ def census_path(file_slug: str) -> str:
 def token_sidecar_path(screen_md: Path) -> Path:
     """Return the .tokens.json sidecar path for a screen markdown file path."""
     return screen_md.with_suffix(".tokens.json")
+
+
+def token_sidecar_rel_to_md_rel(sidecar_rel: str) -> str:
+    """Convert a repo-relative .tokens.json path to its .md counterpart."""
+    return sidecar_rel.replace(".tokens.json", ".md")
