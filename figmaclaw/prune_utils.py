@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from figmaclaw.figma_paths import token_sidecar_path
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
 
 _NODE_SUFFIX_RE = re.compile(r".*-\d+-\d+\.md$")
@@ -43,7 +44,7 @@ def remove_generated_relpath(repo_root: Path, rel_path: str) -> int:
         path.unlink()
         removed += 1
     if path.suffix == ".md":
-        sidecar = path.with_suffix(".tokens.json")
+        sidecar = token_sidecar_path(path)
         if sidecar.exists():
             sidecar.unlink()
             removed += 1

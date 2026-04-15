@@ -9,9 +9,9 @@ from pathlib import Path
 
 import click
 
+from figmaclaw.commands._shared import load_state, require_figma_api_key
 from figmaclaw.commands.pull import _git_commit_page
 from figmaclaw.figma_client import FigmaClient
-from figmaclaw.figma_sync_state import FigmaSyncState
 from figmaclaw.git_utils import git_push as _git_push
 from figmaclaw.prune_utils import prune_file_artifacts_from_manifest
 from figmaclaw.pull_logic import pull_file
@@ -35,9 +35,7 @@ class WebhookAuthError(Exception):
 def apply_webhook_cmd(ctx: click.Context, auto_commit: bool, push_every: int) -> None:
     """Process a Figma webhook payload from FIGMA_WEBHOOK_PAYLOAD env var."""
     repo_dir = Path(ctx.obj["repo_dir"])
-    api_key = os.environ.get("FIGMA_API_KEY", "")
-    if not api_key:
-        raise click.UsageError("FIGMA_API_KEY environment variable is not set.")
+    api_key = require_figma_api_key()
 
     payload = os.environ.get("FIGMA_WEBHOOK_PAYLOAD", "")
     if not payload:
@@ -83,8 +81,7 @@ async def _run(
         click.echo("Webhook payload missing file_key/file_id — skipping.")
         return
 
-    state = FigmaSyncState(repo_dir)
-    state.load()
+    state = load_state(repo_dir)
 
     if event_type == "FILE_DELETE":
         had_file = file_key in state.manifest.files or file_key in state.manifest.tracked_files

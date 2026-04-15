@@ -55,7 +55,14 @@ from figmaclaw.figma_frontmatter import (
 from figmaclaw.figma_hash import compute_frame_hashes, compute_page_hash
 from figmaclaw.figma_models import FigmaPage, FigmaSection, from_page_node
 from figmaclaw.figma_parse import parse_flows, parse_frontmatter
-from figmaclaw.figma_paths import census_path, component_path, file_slug_for_key, page_path, slugify
+from figmaclaw.figma_paths import (
+    census_path,
+    component_path,
+    file_slug_for_key,
+    page_path,
+    slugify,
+    token_sidecar_path,
+)
 from figmaclaw.figma_render import (
     build_component_frontmatter,
     build_page_frontmatter,
@@ -363,7 +370,7 @@ def _write_token_sidecar(
     size by ~100x on complex pages while preserving all data needed by
     suggest-tokens.
     """
-    sidecar_path = screen_md.with_suffix(".tokens.json")
+    sidecar_path = token_sidecar_path(screen_md)
     now = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     frames_data: dict = {}
@@ -409,7 +416,7 @@ def _screen_artifacts_need_reconcile(md_abs: Path) -> bool:
     """Return True when screen markdown/sidecar artifacts are missing or stale."""
     if not md_abs.exists():
         return True
-    return _sidecar_needs_backfill(md_abs.with_suffix(".tokens.json"))
+    return _sidecar_needs_backfill(token_sidecar_path(md_abs))
 
 
 def _node_suffix_from_relpath(rel_path: str) -> str | None:
@@ -445,8 +452,8 @@ def _migrate_generated_path(
         old_path.unlink()
 
     if move_sidecar and old_path.suffix == ".md":
-        old_sidecar = old_path.with_suffix(".tokens.json")
-        new_sidecar = new_path.with_suffix(".tokens.json")
+        old_sidecar = token_sidecar_path(old_path)
+        new_sidecar = token_sidecar_path(new_path)
         if old_sidecar.exists() and not new_sidecar.exists():
             new_sidecar.parent.mkdir(parents=True, exist_ok=True)
             old_sidecar.rename(new_sidecar)

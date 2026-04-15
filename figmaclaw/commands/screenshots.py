@@ -15,18 +15,18 @@ from __future__ import annotations
 import asyncio
 import fcntl
 import json
-import os
 from pathlib import Path
 from typing import Any
 
 import click
 
+from figmaclaw.commands._shared import load_state, require_figma_api_key
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_md_parse import parse_sections
 from figmaclaw.figma_parse import parse_frontmatter
 from figmaclaw.figma_paths import screenshot_cache_path
+from figmaclaw.image_export import DEFAULT_IMAGE_BATCH_SIZE, get_image_urls_batched
 
-_FIGMA_IMAGE_BATCH = 50
 _MAX_CONCURRENT_DOWNLOADS = 10
 _DOWNLOAD_LOCK_FILENAME = ".figma-downloads.lock"
 
@@ -71,9 +71,7 @@ def screenshots_cmd(
     MCP plugins are unavailable.
     """
     repo_dir = Path(ctx.obj["repo_dir"])
-    api_key = os.environ.get("FIGMA_API_KEY", "")
-    if not api_key:
-        raise click.UsageError("FIGMA_API_KEY environment variable is not set.")
+    api_key = require_figma_api_key()
 
     result = asyncio.run(
         _run(api_key, repo_dir, md_path, pending_only, stale_only, section_node_id)
@@ -118,10 +116,7 @@ async def _run(
         # Stale = frames whose content hash changed since last enrichment.
         # Compare manifest frame_hashes (current) vs frontmatter
         # enriched_frame_hashes (at last enrichment).
-        from figmaclaw.figma_sync_state import FigmaSyncState
-
-        state = FigmaSyncState(repo_dir)
-        state.load()
+        state = load_state(repo_dir)
         stale_ids: set[str] = set()
         manifest_file = state.manifest.files.get(file_key)
         if manifest_file:
@@ -176,15 +171,13 @@ async def _run(
     lock_fd = await asyncio.to_thread(_acquire)
     try:
         async with FigmaClient(api_key) as client:
-            all_urls: dict[str, str | None] = {}
-            for i in range(0, len(node_ids), _FIGMA_IMAGE_BATCH):
-                batch = node_ids[i : i + _FIGMA_IMAGE_BATCH]
-                try:
-                    urls = await client.get_image_urls(file_key, batch)
-                except Exception:
-                    # API error for this batch — mark all as failed
-                    urls = {nid: None for nid in batch}
-                all_urls.update(urls)
+            all_urls = await get_image_urls_batched(
+                client,
+                file_key,
+                node_ids,
+                batch_size=DEFAULT_IMAGE_BATCH_SIZE,
+                fill_none_on_batch_error=True,
+            )
 
             semaphore = asyncio.Semaphore(_MAX_CONCURRENT_DOWNLOADS)
             tasks = [

@@ -69,3 +69,8 @@ def census_path(file_slug: str) -> str:
     Example: figma/design-system/_census.md
     """
     return f"figma/{file_slug}/_census.md"
+
+
+def token_sidecar_path(screen_md: Path) -> Path:
+    """Return the .tokens.json sidecar path for a screen markdown file path."""
+    return screen_md.with_suffix(".tokens.json")
