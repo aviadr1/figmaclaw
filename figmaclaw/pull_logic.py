@@ -113,6 +113,25 @@ def _candidate_dirs_from_rel(repo_root: Path, rel: str) -> set[Path]:
     return dirs
 
 
+def _build_prune_candidate_dirs(
+    repo_root: Path,
+    file_slug: str,
+    *,
+    expected_paths: set[str],
+    previous_entry_paths: set[str],
+) -> set[Path]:
+    """Build the candidate directory set used by generated-orphan pruning."""
+    candidate_dirs = {
+        repo_root / f"figma/{file_slug}",
+        repo_root / f"figma/{file_slug}/pages",
+        repo_root / f"figma/{file_slug}/components",
+    }
+    candidate_dirs.update(_all_figma_file_dirs(repo_root))
+    for rel in expected_paths | previous_entry_paths:
+        candidate_dirs.update(_candidate_dirs_from_rel(repo_root, rel))
+    return candidate_dirs
+
+
 def _file_slug_for_state(state: FigmaSyncState, file_key: str, file_name: str) -> str:
     """Return a collision-safe file slug for the current manifest state."""
     from figmaclaw.figma_paths import file_slug_for_key
@@ -651,14 +670,15 @@ async def pull_file(
         # Even on file-level skip, optionally prune generated orphans under file slug.
         if prune:
             expected_paths = _all_manifest_generated_paths(state)
-            candidate_dirs = {
-                repo_root / f"figma/{file_slug}",
-                repo_root / f"figma/{file_slug}/pages",
-                repo_root / f"figma/{file_slug}/components",
+            previous_entry_paths = {
+                rel for page in stored.pages.values() for rel in entry_paths(page)
             }
-            candidate_dirs.update(_all_figma_file_dirs(repo_root))
-            for rel in {rel for page in stored.pages.values() for rel in entry_paths(page)}:
-                candidate_dirs.update(_candidate_dirs_from_rel(repo_root, rel))
+            candidate_dirs = _build_prune_candidate_dirs(
+                repo_root,
+                file_slug,
+                expected_paths=expected_paths,
+                previous_entry_paths=previous_entry_paths,
+            )
             for orphan_rel in find_generated_orphans(
                 repo_root, candidate_dirs=candidate_dirs, expected_paths=expected_paths
             ):
@@ -1115,17 +1135,15 @@ async def pull_file(
 
         # 3) Existing on-disk generated artifacts not referenced by manifest (legacy orphans).
         expected_paths = _all_manifest_generated_paths(state)
-        candidate_dirs = {
-            repo_root / f"figma/{file_slug}",
-            repo_root / f"figma/{file_slug}/pages",
-            repo_root / f"figma/{file_slug}/components",
+        previous_entry_paths = {
+            rel for previous_entry in previous_pages.values() for rel in entry_paths(previous_entry)
         }
-        candidate_dirs.update(_all_figma_file_dirs(repo_root))
-        for rel in expected_paths:
-            candidate_dirs.update(_candidate_dirs_from_rel(repo_root, rel))
-        for previous_entry in previous_pages.values():
-            for rel in entry_paths(previous_entry):
-                candidate_dirs.update(_candidate_dirs_from_rel(repo_root, rel))
+        candidate_dirs = _build_prune_candidate_dirs(
+            repo_root,
+            file_slug,
+            expected_paths=expected_paths,
+            previous_entry_paths=previous_entry_paths,
+        )
         for orphan_rel in find_generated_orphans(
             repo_root, candidate_dirs=candidate_dirs, expected_paths=expected_paths
         ):
