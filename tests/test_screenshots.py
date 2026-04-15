@@ -18,8 +18,9 @@ import pytest
 from figmaclaw.commands import screenshots as screenshots_module
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection
+from figmaclaw.figma_paths import screenshot_cache_path
 from figmaclaw.figma_render import scaffold_page
-from figmaclaw.figma_sync_state import PageEntry
+from figmaclaw.figma_sync_state import FileEntry, PageEntry
 
 
 def _make_page(node_ids: list[str] | None = None, described: bool = False) -> FigmaPage:
@@ -227,6 +228,79 @@ async def test_screenshots_pending_only_skips_described_frames(tmp_path: Path) -
     mock_client.get_image_urls.assert_called_once_with("abc123", ["11:2"])
     node_ids = {s["node_id"] for s in result["screenshots"]}
     assert node_ids == {"11:2"}
+
+
+@pytest.mark.asyncio
+async def test_screenshots_non_stale_reuses_existing_cache(tmp_path: Path) -> None:
+    """INVARIANT: non-stale runs skip re-downloading already cached screenshots."""
+    md_path = _write_md(tmp_path, _make_page(["11:1", "11:2"]))
+    cached = screenshot_cache_path(tmp_path, "abc123", "11:1")
+    cached.parent.mkdir(parents=True, exist_ok=True)
+    cached.write_bytes(b"\x89PNG\r\ncached")
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_image_urls = AsyncMock(return_value={"11:2": "http://example.com/2.png"})
+    mock_client.download_url = AsyncMock(return_value=b"\x89PNG\r\nfresh")
+
+    with patch.object(screenshots_module, "FigmaClient") as MockClientClass:
+        MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        result = await screenshots_module._run(
+            "fake-key", tmp_path, md_path, pending_only=False, stale_only=False
+        )
+
+    # Existing cached frame is skipped from fetch list.
+    mock_client.get_image_urls.assert_called_once_with("abc123", ["11:2"])
+    node_ids = {s["node_id"] for s in result["screenshots"]}
+    assert node_ids == {"11:1", "11:2"}
+    assert result["failed"] == []
+
+
+@pytest.mark.asyncio
+async def test_screenshots_stale_mode_downloads_even_if_cached(tmp_path: Path) -> None:
+    """INVARIANT: --stale always refreshes selected stale frames, ignoring cache presence."""
+    md_path = _write_md(tmp_path, _make_page(["11:1", "11:2"]))
+    cached = screenshot_cache_path(tmp_path, "abc123", "11:1")
+    cached.parent.mkdir(parents=True, exist_ok=True)
+    cached.write_bytes(b"\x89PNG\r\nold")
+
+    state = screenshots_module.load_state(tmp_path)
+    state.manifest.files["abc123"] = FileEntry(
+        file_name="Web App",
+        version="v1",
+        last_modified="2026-03-31T00:00:00Z",
+        pages={},
+    )
+    page_entry = PageEntry(
+        page_name="Onboarding",
+        page_slug="onboarding",
+        md_path=str(md_path.relative_to(tmp_path)),
+        page_hash="deadbeef",
+        last_refreshed_at="2026-03-31T00:00:00Z",
+        frame_hashes={"11:1": "new-h1", "11:2": "new-h2"},
+    )
+    state.set_page_entry("abc123", "7741:45837", page_entry)
+    state.save()
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_image_urls = AsyncMock(
+        return_value={"11:1": "http://example.com/1.png", "11:2": "http://example.com/2.png"}
+    )
+    mock_client.download_url = AsyncMock(return_value=b"\x89PNG\r\nfresh")
+
+    with patch.object(screenshots_module, "FigmaClient") as MockClientClass:
+        MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        result = await screenshots_module._run(
+            "fake-key", tmp_path, md_path, pending_only=False, stale_only=True
+        )
+
+    # Both stale frames are fetched, including one with an existing local cache file.
+    mock_client.get_image_urls.assert_called_once_with("abc123", ["11:1", "11:2"])
+    node_ids = {s["node_id"] for s in result["screenshots"]}
+    assert node_ids == {"11:1", "11:2"}
 
 
 def test_screenshots_semaphore_limit_constant() -> None:
