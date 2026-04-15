@@ -11,7 +11,6 @@ import os
 import re
 from pathlib import Path
 
-import httpx
 import pytest
 
 from figmaclaw.commands.build_context import _run as build_context_run
@@ -35,8 +34,6 @@ TEST_PAGE_NODE_ID = "7741:45837"
 # Confirmed from live API: 8 SECTION children on this page
 EXPECTED_SECTION_COUNT = 8
 
-_DEFAULT_WEBHOOK_TEAM_ID = "1314645078360119627"
-
 
 @pytest.fixture
 def api_key() -> str:
@@ -45,17 +42,6 @@ def api_key() -> str:
         name="FIGMA_API_KEY",
         hint="Export FIGMA_API_KEY to run real Figma API smoke tests.",
     )
-
-
-@pytest.fixture
-def webhook_team_id() -> str:
-    """Optional team ID used for webhook-listing smoke test.
-
-    Use FIGMA_WEBHOOK_TEAM_ID in CI to point at a team where the token has webhook-read
-    permission. Falls back to a known personal team ID for local smoke runs.
-    """
-    team_id = os.environ.get("FIGMA_WEBHOOK_TEAM_ID", "").strip()
-    return team_id or _DEFAULT_WEBHOOK_TEAM_ID
 
 
 @pytest.mark.smoke_api
@@ -158,18 +144,10 @@ async def test_render_and_parse_round_trip_against_real_page(api_key: str) -> No
 
 @pytest.mark.smoke_webhook
 @pytest.mark.asyncio
-async def test_list_webhooks_returns_list(api_key: str, webhook_team_id: str) -> None:
-    """Smoke: list_webhooks returns a list (may be empty) for personal team."""
+async def test_list_file_webhooks_returns_list(api_key: str) -> None:
+    """Smoke: list_file_webhooks returns a list (may be empty) for a tracked file."""
     async with FigmaClient(api_key=api_key) as client:
-        try:
-            webhooks = await client.list_webhooks(team_id=webhook_team_id)
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code in {401, 403}:
-                pytest.fail(
-                    "Token lacks webhook-list permission for team "
-                    f"{webhook_team_id}; set FIGMA_WEBHOOK_TEAM_ID to an authorized team."
-                )
-            raise
+        webhooks = await client.list_file_webhooks(file_key=TEST_FILE_KEY)
 
     assert isinstance(webhooks, list)
 
