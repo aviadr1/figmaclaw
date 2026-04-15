@@ -16,6 +16,7 @@ from figmaclaw.figma_utils import parse_since
 from figmaclaw.git_utils import git_commit, git_push
 from figmaclaw.prune_utils import prune_file_artifacts_from_manifest
 from figmaclaw.pull_logic import PullResult, pull_file
+from figmaclaw.status_markers import COMMIT_MSG_PREFIX, HAS_MORE_TRUE
 
 
 @click.command("pull")
@@ -321,7 +322,7 @@ async def _run(
         if total_schema_upgraded and not total_written:
             # Schema-only run: use a different verb so it's recognizable in git log
             parts.append(f"{total_schema_upgraded} page(s) schema-upgraded")
-        click.echo(f"COMMIT_MSG:sync: figmaclaw pull — {', '.join(parts)} updated")
+        click.echo(f"{COMMIT_MSG_PREFIX}sync: figmaclaw pull — {', '.join(parts)} updated")
 
     if has_more_global:
-        click.echo("HAS_MORE:true")
+        click.echo(HAS_MORE_TRUE)

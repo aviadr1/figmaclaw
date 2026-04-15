@@ -20,6 +20,7 @@ from figmaclaw.figma_client import FigmaClient
 from figmaclaw.git_utils import git_push as _git_push
 from figmaclaw.prune_utils import prune_file_artifacts_from_manifest
 from figmaclaw.pull_logic import pull_file
+from figmaclaw.status_markers import COMMIT_MSG_PREFIX
 
 
 class WebhookAuthError(Exception):
@@ -100,7 +101,9 @@ async def _run(
         if had_file:
             state.manifest.skipped_files[file_key] = "deleted via FILE_DELETE webhook"
             state.save()
-            click.echo(f"COMMIT_MSG:sync: figmaclaw apply-webhook — file deleted [{file_key}]")
+            click.echo(
+                f"{COMMIT_MSG_PREFIX}sync: figmaclaw apply-webhook — file deleted [{file_key}]"
+            )
             click.echo(f"{file_key}: pruned {removed_paths} generated path(s) after FILE_DELETE.")
         else:
             click.echo(f"File {file_key!r} is not tracked — skipping.")
@@ -137,6 +140,8 @@ async def _run(
 
     if result.pages_written > 0:
         n = result.pages_written
-        click.echo(f"COMMIT_MSG:sync: figmaclaw apply-webhook — {n} page(s) updated [{file_key}]")
+        click.echo(
+            f"{COMMIT_MSG_PREFIX}sync: figmaclaw apply-webhook — {n} page(s) updated [{file_key}]"
+        )
     else:
         click.echo(f"{file_key}: no pages changed.")

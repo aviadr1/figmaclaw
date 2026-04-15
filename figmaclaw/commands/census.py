@@ -49,6 +49,7 @@ from figmaclaw.commands._shared import load_state, require_figma_api_key, requir
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_paths import census_path, file_slug_for_key
 from figmaclaw.git_utils import git_commit
+from figmaclaw.status_markers import COMMIT_MSG_PREFIX
 
 # ── Hash ─────────────────────────────────────────────────────────────────────
 
@@ -231,4 +232,4 @@ async def _run(
                     click.echo("  ✓ committed")
 
     if written:
-        click.echo(f"COMMIT_MSG:sync: figmaclaw census — {len(written)} file(s) updated")
+        click.echo(f"{COMMIT_MSG_PREFIX}sync: figmaclaw census — {len(written)} file(s) updated")

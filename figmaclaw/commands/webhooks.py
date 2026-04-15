@@ -40,6 +40,7 @@ import asyncio
 import os
 import sys
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -337,21 +338,30 @@ def _run(coro: Any) -> Any:
     return asyncio.run(coro)
 
 
+def _resolve_context(ctx: click.Context) -> tuple[str, list[str]]:
+    """Return (api_key, tracked_file_keys) for webhook commands."""
+    repo_dir = Path(ctx.obj["repo_dir"])
+    return _require_api_key(), _load_tracked_files(repo_dir)
+
+
+def _run_with_client(api_key: str, op: Callable[[FigmaClient], Awaitable[Any]]) -> Any:
+    """Execute one async operation with a managed FigmaClient."""
+
+    async def _main() -> Any:
+        async with FigmaClient(api_key) as client:
+            return await op(client)
+
+    return _run(_main())
+
+
 @webhooks_group.command("sync")
 @click.option("--endpoint", required=True, help="Webhook delivery endpoint URL.")
 @click.option("--dry-run", is_flag=True, help="Preview changes without mutating Figma.")
 @click.pass_context
 def sync_cmd(ctx: click.Context, endpoint: str, dry_run: bool) -> None:
     """Enforce exactly-one webhook per tracked file (idempotent)."""
-    repo_dir = Path(ctx.obj["repo_dir"])
-    api_key = _require_api_key()
-    file_keys = _load_tracked_files(repo_dir)
-
-    async def _main() -> None:
-        async with FigmaClient(api_key) as client:
-            await sync(client, endpoint, file_keys, dry_run=dry_run)
-
-    _run(_main())
+    api_key, file_keys = _resolve_context(ctx)
+    _run_with_client(api_key, lambda client: sync(client, endpoint, file_keys, dry_run=dry_run))
 
 
 @webhooks_group.command("register")
@@ -360,15 +370,11 @@ def sync_cmd(ctx: click.Context, endpoint: str, dry_run: bool) -> None:
 @click.pass_context
 def register_cmd(ctx: click.Context, endpoint: str, dry_run: bool) -> None:
     """Add missing webhooks only (conservative, never deletes)."""
-    repo_dir = Path(ctx.obj["repo_dir"])
-    api_key = _require_api_key()
-    file_keys = _load_tracked_files(repo_dir)
-
-    async def _main() -> None:
-        async with FigmaClient(api_key) as client:
-            await register(client, endpoint, file_keys, dry_run=dry_run)
-
-    _run(_main())
+    api_key, file_keys = _resolve_context(ctx)
+    _run_with_client(
+        api_key,
+        lambda client: register(client, endpoint, file_keys, dry_run=dry_run),
+    )
 
 
 @webhooks_group.command("validate")
@@ -376,15 +382,8 @@ def register_cmd(ctx: click.Context, endpoint: str, dry_run: bool) -> None:
 @click.pass_context
 def validate_cmd(ctx: click.Context, endpoint: str) -> None:
     """Check invariant; exits non-zero if issues are found."""
-    repo_dir = Path(ctx.obj["repo_dir"])
-    api_key = _require_api_key()
-    file_keys = _load_tracked_files(repo_dir)
-
-    async def _main() -> ValidationReport:
-        async with FigmaClient(api_key) as client:
-            return await validate(client, endpoint, file_keys)
-
-    report = _run(_main())
+    api_key, file_keys = _resolve_context(ctx)
+    report = _run_with_client(api_key, lambda client: validate(client, endpoint, file_keys))
     if not report.ok:
         sys.exit(1)
 
@@ -393,15 +392,8 @@ def validate_cmd(ctx: click.Context, endpoint: str) -> None:
 @click.pass_context
 def list_cmd(ctx: click.Context) -> None:
     """List all registered webhooks for tracked files."""
-    repo_dir = Path(ctx.obj["repo_dir"])
-    api_key = _require_api_key()
-    file_keys = _load_tracked_files(repo_dir)
-
-    async def _main() -> None:
-        async with FigmaClient(api_key) as client:
-            await list_all(client, file_keys)
-
-    _run(_main())
+    api_key, file_keys = _resolve_context(ctx)
+    _run_with_client(api_key, lambda client: list_all(client, file_keys))
 
 
 @webhooks_group.command("delete-all")
@@ -409,12 +401,7 @@ def list_cmd(ctx: click.Context) -> None:
 @click.pass_context
 def delete_all_cmd(ctx: click.Context, endpoint: str | None) -> None:
     """Delete all file-level webhooks (optionally filtered to an endpoint)."""
-    repo_dir = Path(ctx.obj["repo_dir"])
-    api_key = _require_api_key()
-    file_keys = _load_tracked_files(repo_dir)
-
-    async def _main() -> None:
-        async with FigmaClient(api_key) as client:
-            await delete_all(client, file_keys, endpoint_filter=endpoint)
-
-    _run(_main())
+    api_key, file_keys = _resolve_context(ctx)
+    _run_with_client(
+        api_key, lambda client: delete_all(client, file_keys, endpoint_filter=endpoint)
+    )
