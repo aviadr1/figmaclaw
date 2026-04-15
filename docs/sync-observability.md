@@ -26,7 +26,14 @@ Key events:
 
 - `run_start` / `run_end`
 - `listing_prefilter` (when `--team-id` is used)
+- `file_heartbeat` (every N seconds while a single file pull is still running; default 30s)
 - `file_end` (one line per considered file with outcome + duration)
+
+`file_end` outcomes include:
+
+- `updated`: file processing produced page/component/schema writes
+- `processed_no_writes`: file was processed but no page/component/schema writes occurred
+- `pull_skipped`, `listing_prefilter_skip`, `manifest_skipped`, `no_access_pruned`, `error`
 
 ## Artifact files
 

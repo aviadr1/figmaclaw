@@ -100,17 +100,17 @@ commit_if_changed() {
   GIT_PUSH_S=0
 
   t0="$(date +%s)"
-  git pull --no-rebase --ff-only origin main
+  git pull --no-rebase --ff-only origin main >&2
   t1="$(date +%s)"
   GIT_PULL_S="$((t1 - t0))"
 
   t0="$(date +%s)"
-  git add figma/ .figma-sync/
+  git add figma/ .figma-sync/ >&2
   t1="$(date +%s)"
   GIT_ADD_S="$((t1 - t0))"
 
   t0="$(date +%s)"
-  if git diff --cached --quiet; then
+  if git diff --cached --quiet >&2; then
     t1="$(date +%s)"
     GIT_DIFF_S="$((t1 - t0))"
     echo "false"
@@ -123,12 +123,12 @@ commit_if_changed() {
   COMMIT_MSG="${COMMIT_MSG:-sync: figmaclaw — checkpoint batch $BATCH}"
 
   t0="$(date +%s)"
-  git commit -m "${COMMIT_MSG}"
+  git commit -m "${COMMIT_MSG}" >&2
   t1="$(date +%s)"
   GIT_COMMIT_S="$((t1 - t0))"
 
   t0="$(date +%s)"
-  git push
+  git push >&2
   t1="$(date +%s)"
   GIT_PUSH_S="$((t1 - t0))"
   echo "true"

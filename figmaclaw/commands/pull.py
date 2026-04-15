@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -182,6 +183,33 @@ class _PullObs:
         self.emit("run_end", **payload)
 
 
+def _pull_heartbeat_seconds() -> int:
+    raw = os.getenv("FIGMACLAW_PULL_HEARTBEAT_SECONDS", "30").strip()
+    with contextlib.suppress(ValueError):
+        val = int(raw)
+        return max(val, 0)
+    return 30
+
+
+async def _file_heartbeat_loop(
+    obs: _PullObs, *, file_key: str, file_start: float, stop_event: asyncio.Event, interval_s: int
+) -> None:
+    if interval_s <= 0:
+        return
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval_s)
+            return
+        except TimeoutError:
+            obs.emit(
+                "file_heartbeat",
+                file_key=file_key,
+                elapsed_s=round(time.monotonic() - file_start, 3),
+                interval_s=interval_s,
+                note="still_processing",
+            )
+
+
 async def _listing_prefilter(
     client: FigmaClient,
     team_id: str,
@@ -269,6 +297,7 @@ async def _run(
         since=since,
         prune=prune,
     )
+    heartbeat_interval_s = _pull_heartbeat_seconds()
 
     def on_page_written(page_label: str, paths: list[str]) -> None:
         nonlocal commit_count
@@ -351,16 +380,30 @@ async def _run(
 
             try:
                 obs.files_attempted_pull += 1
-                result = await pull_file(
-                    client,
-                    key,
-                    state,
-                    repo_dir,
-                    force=force,
-                    max_pages=pages_budget,
-                    prune=prune,
-                    on_page_written=on_page_written,
+                stop_heartbeat = asyncio.Event()
+                heartbeat_task = asyncio.create_task(
+                    _file_heartbeat_loop(
+                        obs,
+                        file_key=key,
+                        file_start=file_start,
+                        stop_event=stop_heartbeat,
+                        interval_s=heartbeat_interval_s,
+                    )
                 )
+                try:
+                    result = await pull_file(
+                        client,
+                        key,
+                        state,
+                        repo_dir,
+                        force=force,
+                        max_pages=pages_budget,
+                        prune=prune,
+                        on_page_written=on_page_written,
+                    )
+                finally:
+                    stop_heartbeat.set()
+                    await asyncio.gather(heartbeat_task, return_exceptions=True)
             except Exception as exc:
                 click.echo(f"{key}: error — {exc} (skipping)")
                 obs.files_errors += 1
@@ -405,7 +448,17 @@ async def _run(
                 click.echo(f"{key}: unchanged (skipped)")
                 obs.file_end(key, "pull_skipped", file_start)
             else:
-                obs.files_updated += 1
+                wrote_any = bool(
+                    result.pages_written
+                    or result.component_sections_written
+                    or result.pages_schema_upgraded
+                )
+                if wrote_any:
+                    obs.files_updated += 1
+                    outcome = "updated"
+                else:
+                    # Pull processed file-level metadata but wrote no page/component output.
+                    outcome = "processed_no_writes"
                 errored = f", {result.pages_errored} error(s)" if result.pages_errored else ""
                 upgraded = (
                     f", {result.pages_schema_upgraded} schema-upgraded"
@@ -421,7 +474,7 @@ async def _run(
                     click.echo(f"  ❖ {path}")
                 obs.file_end(
                     key,
-                    "updated",
+                    outcome,
                     file_start,
                     pages_written=result.pages_written,
                     components_written=result.component_sections_written,
