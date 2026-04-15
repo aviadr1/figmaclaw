@@ -62,8 +62,20 @@ exit 0
 set -euo pipefail
 _duration="${1:?}"
 shift
+TIMEOUT_COUNT_FILE="${TIMEOUT_COUNT_FILE:-}"
+timeout_count=0
+if [ -n "$TIMEOUT_COUNT_FILE" ] && [ -f "$TIMEOUT_COUNT_FILE" ]; then timeout_count="$(cat "$TIMEOUT_COUNT_FILE")"; fi
 if [ "${TIMEOUT_MODE:-pass}" = "always" ]; then
   exit 124
+fi
+if [ "${TIMEOUT_MODE:-pass}" = "first_only" ]; then
+  timeout_count=$((timeout_count+1))
+  if [ -n "$TIMEOUT_COUNT_FILE" ]; then echo "$timeout_count" > "$TIMEOUT_COUNT_FILE"; fi
+  "$@"
+  if [ "$timeout_count" -eq 1 ]; then
+    exit 124
+  fi
+  exit $?
 fi
 "$@"
 """,
@@ -81,6 +93,7 @@ def _run_loop(
     trace = tmp_path / "git-trace.txt"
     count = tmp_path / "count.txt"
     args = tmp_path / "pull-args.txt"
+    timeout_count = tmp_path / "timeout-count.txt"
 
     bin_dir = _setup_fake_bin(
         tmp_path, scenario=scenario, git_dirty=git_dirty, timeout_mode=timeout_mode
@@ -94,6 +107,7 @@ def _run_loop(
             "TRACE_FILE": str(trace),
             "FIGMACLAW_OUT_PATH": str(out_path),
             "ARGS_FILE": str(args),
+            "TIMEOUT_COUNT_FILE": str(timeout_count),
             "SCENARIO": scenario,
             "GIT_DIRTY": git_dirty,
             "TIMEOUT_MODE": timeout_mode,
@@ -189,3 +203,29 @@ def test_force_uses_force_flag_only(tmp_path: Path) -> None:
     )
     args = (tmp_path / "pull-args.txt").read_text().strip()
     assert args == "pull --force"
+
+
+def test_timeout_retries_with_smaller_batch_then_succeeds(tmp_path: Path) -> None:
+    out = _run_loop(
+        tmp_path,
+        scenario="single_done",
+        git_dirty="1",
+        timeout_mode="first_only",
+        MAX_PAGES_PER_BATCH="8",
+    )
+    args = (tmp_path / "pull-args.txt").read_text().strip().splitlines()
+    assert args == ["pull --max-pages 8", "pull --max-pages 4"]
+    assert "retrying with --max-pages 4" in out
+
+
+def test_timeout_does_not_retry_in_force_mode(tmp_path: Path) -> None:
+    out = _run_loop(
+        tmp_path,
+        scenario="single_done",
+        git_dirty="1",
+        timeout_mode="first_only",
+        INPUT_FORCE="true",
+    )
+    count = int((tmp_path / "count.txt").read_text())
+    assert count == 1
+    assert "stopping checkpoint loop early." in out

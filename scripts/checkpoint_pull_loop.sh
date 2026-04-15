@@ -12,11 +12,15 @@ MAX_PAGES_PER_BATCH="${MAX_PAGES_PER_BATCH:-5}"
 FIGMACLAW_OUT_PATH="${FIGMACLAW_OUT_PATH:-/tmp/figmaclaw-out.txt}"
 
 declare -a PULL_ARGS
-if [ "$INPUT_FORCE" = "true" ]; then
-  PULL_ARGS=(--force)
-else
-  PULL_ARGS=(--max-pages "$MAX_PAGES_PER_BATCH")
-fi
+CURRENT_MAX_PAGES_PER_BATCH="$MAX_PAGES_PER_BATCH"
+
+set_pull_args() {
+  if [ "$INPUT_FORCE" = "true" ]; then
+    PULL_ARGS=(--force)
+  else
+    PULL_ARGS=(--max-pages "$CURRENT_MAX_PAGES_PER_BATCH")
+  fi
+}
 
 run_pull_batch() {
   set +e
@@ -52,13 +56,25 @@ while true; do
 
   echo "--- batch $BATCH ---"
 
+  set_pull_args
   run_pull_batch
   pull_status="$PULL_STATUS"
 
   if [ "$pull_status" -eq 124 ]; then
+    if [ "$INPUT_FORCE" != "true" ] && [ "$CURRENT_MAX_PAGES_PER_BATCH" -gt 1 ]; then
+      CURRENT_MAX_PAGES_PER_BATCH=$((CURRENT_MAX_PAGES_PER_BATCH / 2))
+      if [ "$CURRENT_MAX_PAGES_PER_BATCH" -lt 1 ]; then
+        CURRENT_MAX_PAGES_PER_BATCH=1
+      fi
+      echo "figmaclaw pull timed out after ${BATCH_TIMEOUT_SECONDS}s; retrying with --max-pages ${CURRENT_MAX_PAGES_PER_BATCH}."
+      continue
+    fi
     echo "figmaclaw pull timed out after ${BATCH_TIMEOUT_SECONDS}s; stopping checkpoint loop early."
     break
   fi
+
+  # After a successful backoff retry, restore the default batch size for throughput.
+  CURRENT_MAX_PAGES_PER_BATCH="$MAX_PAGES_PER_BATCH"
 
   committed="$(commit_if_changed)"
 

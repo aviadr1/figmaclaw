@@ -21,15 +21,17 @@ on:
         required: false
         default: '3m'
 
-# Must be in caller: concurrency groups are repo-scoped.
-# Sync is isolated from webhook debounce to avoid cross-workflow cancellation.
-# cancel-in-progress: false — never drop a scheduled sync run.
-concurrency:
-  group: figma-git-sync-pull
-  cancel-in-progress: false
+# NOTE:
+# Keep concurrency at the job level (not workflow level) so long-running
+# enrichment from run N does not block pull/census from run N+1.
 
 jobs:
   sync:
+    # Must be in caller: concurrency groups are repo-scoped.
+    # cancel-in-progress: false — never drop a scheduled sync pull.
+    concurrency:
+      group: figma-git-sync-pull
+      cancel-in-progress: false
     uses: aviadr1/figmaclaw/.github/workflows/sync.yml@main
     with:
       force: ${{ github.event.inputs.force || 'false' }}
@@ -43,6 +45,10 @@ jobs:
   census:
     needs: sync
     if: success()
+    # Only the latest census run matters; cancel stale in-flight runs.
+    concurrency:
+      group: figma-git-census
+      cancel-in-progress: true
     uses: aviadr1/figmaclaw/.github/workflows/census.yml@main
     secrets:
       FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
@@ -52,6 +58,10 @@ jobs:
   enrich:
     needs: sync
     if: success()
+    # Debounce enrichment backlog across scheduled runs.
+    concurrency:
+      group: figma-git-enrich
+      cancel-in-progress: true
     uses: aviadr1/figmaclaw/.github/workflows/claude-run.yml@main
     with:
       target: figma/
@@ -72,6 +82,10 @@ jobs:
   enrich-large:
     needs: sync
     if: success()
+    # Debounce large-page enrichment backlog across scheduled runs.
+    concurrency:
+      group: figma-git-enrich-large
+      cancel-in-progress: true
     uses: aviadr1/figmaclaw/.github/workflows/claude-run.yml@main
     with:
       target: figma/
