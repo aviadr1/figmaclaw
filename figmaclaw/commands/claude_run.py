@@ -183,6 +183,16 @@ def collect_files(
         files = _changed_files(target, glob_pattern)
     else:
         files = sorted(target.glob(glob_pattern))
+
+    # Census markdown is an inventory artifact, never a page-enrichment target.
+    census_count = sum(1 for f in files if f.name == "_census.md")
+    if census_count:
+        files = [f for f in files if f.name != "_census.md"]
+        click.echo(
+            f"[claude-run] skipping {census_count} census file(s) (_census.md, non-enrichable)",
+            err=True,
+        )
+
     if needs_enrichment:
         before = len(files)
         enrichable: list[tuple[Path, int]] = []
