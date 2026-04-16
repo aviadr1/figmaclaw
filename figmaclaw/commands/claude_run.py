@@ -511,8 +511,9 @@ def enrichment_info(md_path: Path) -> tuple[bool, int]:
     # Frame-size estimate from canonical body parser (frame sections only).
     frame_count = frame_row_count(text)
     has_unresolved = any(unresolved_row_node_id(line) is not None for line in text.splitlines())
+    has_llm_marker = "<!-- LLM:" in text
 
-    if has_unresolved:
+    if has_unresolved or has_llm_marker:
         return True, frame_count
 
     parts = split_frontmatter(text)

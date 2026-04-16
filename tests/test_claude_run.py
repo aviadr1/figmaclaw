@@ -135,6 +135,31 @@ class TestEnrichmentInfo:
         assert needs is True
         assert count == 2
 
+    def test_enriched_hash_with_llm_marker_still_needs_enrichment(self, tmp_path: Path) -> None:
+        """LLM marker rows must override enriched_hash and force re-enrichment."""
+        md = tmp_path / "page.md"
+        md.write_text(
+            textwrap.dedent("""            ---
+            file_key: abc123
+            page_node_id: "0:1"
+            enriched_hash: "sha256:abcdef1234567890"
+            enriched_at: "2026-04-01T00:00:00Z"
+            enriched_schema_version: 1
+            ---
+
+            # Page Title
+
+            <!-- LLM: needs rewrite for stale prose -->
+
+            | Screen | Node ID | Description |
+            |--------|---------|-------------|
+            | Login  | `1:1`   | Login screen with email/password form |
+        """)
+        )
+        needs, count = enrichment_info(md)
+        assert needs is True
+        assert count == 1
+
     def test_counts_frame_rows_correctly(self, tmp_path: Path) -> None:
         """Frame count = table rows with backtick node IDs, excluding header/separator."""
         md = tmp_path / "page.md"
@@ -920,6 +945,50 @@ def test_collect_files_matches_inspect_enrich_must_schema_upgrade(tmp_path: Path
     inspect_data = json.loads(inspect_res.output)
     assert inspect_data["needs_enrichment"] is True
     assert inspect_data["enrichment_must_update"] is True
+
+    selected = collect_files(
+        tmp_path / "figma",
+        "**/*.md",
+        changed_only=False,
+        needs_enrichment=True,
+    )
+    assert selected == [page]
+
+
+def test_collect_files_matches_inspect_llm_marker_signal(tmp_path: Path) -> None:
+    """Selector and inspect must agree on <!-- LLM: ... --> enrichment signal."""
+    page = tmp_path / "figma" / "pages" / "llm-marker.md"
+    page.parent.mkdir(parents=True, exist_ok=True)
+    page.write_text(
+        textwrap.dedent(
+            """            ---
+            file_key: abc123
+            page_node_id: "0:1"
+            frames: ["1:1"]
+            ---
+
+            # File / Page
+
+            <!-- LLM: rewrite section intro to reflect latest frame changes -->
+
+            ## Auth (`10:1`)
+
+            | Screen | Node ID | Description |
+            |--------|---------|-------------|
+            | Login | `1:1` | A described frame |
+            """
+        )
+    )
+
+    runner = CliRunner()
+    inspect_res = runner.invoke(
+        cli,
+        ["--repo-dir", str(tmp_path), "inspect", str(page), "--json"],
+        catch_exceptions=False,
+    )
+    assert inspect_res.exit_code == 0
+    inspect_data = json.loads(inspect_res.output)
+    assert inspect_data["needs_enrichment"] is True
 
     selected = collect_files(
         tmp_path / "figma",
