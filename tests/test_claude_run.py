@@ -262,6 +262,13 @@ class TestCollectFiles:
         result = collect_files(md, "**/*.md", changed_only=False)
         assert result == [md]
 
+    def test_single_file_target_census_is_skipped(self, tmp_path: Path) -> None:
+        """Single-file census targets are ignored as non-enrichable artifacts."""
+        census = tmp_path / "_census.md"
+        census.write_text("---\nfile_key: abc123\n---\n")
+        result = collect_files(census, "**/*.md", changed_only=False)
+        assert result == []
+
     def test_directory_glob(self, tmp_path: Path) -> None:
         """Directory target → glob matches."""
         pages = tmp_path / "figma" / "pages"
@@ -270,6 +277,16 @@ class TestCollectFiles:
         (tmp_path / "figma" / "other.txt").write_text("not a match")
         result = collect_files(tmp_path / "figma", "**/*.md", changed_only=False)
         assert len(result) == 2
+
+    def test_directory_glob_skips_census_even_without_needs_enrichment(
+        self, tmp_path: Path
+    ) -> None:
+        """Census files are excluded during discovery even without needs_enrichment."""
+        root = tmp_path / "figma" / "web-app-abc123"
+        self._make_page(root / "pages" / "a.md")
+        (root / "_census.md").write_text("---\nfile_key: abc123\n---\n")
+        result = collect_files(tmp_path / "figma", "**/*.md", changed_only=False)
+        assert [p.name for p in result] == ["a.md"]
 
     def test_needs_enrichment_filters_enriched(self, tmp_path: Path) -> None:
         """needs_enrichment=True filters out files with enriched_hash."""

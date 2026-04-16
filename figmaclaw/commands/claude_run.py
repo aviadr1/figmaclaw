@@ -49,6 +49,7 @@ from figmaclaw.verdict import (
 SECTION_THRESHOLD = 80  # pages/sections above this use incremental mode
 ENRICHMENT_LOG = ".figma-sync/enrichment-log.csv"
 STREAM_JSON_LOG = ".figma-sync/claude-stream.jsonl"  # raw stream-json, appended per batch
+NON_ENRICHABLE_MARKDOWN_BASENAMES = frozenset({"_census.md"})
 
 
 def _log_enrichment(
@@ -114,6 +115,17 @@ def _changed_files(base: Path, glob_pattern: str) -> list[Path]:
     return sorted(result)
 
 
+def _is_non_enrichable_markdown(path: Path) -> bool:
+    """Return True when a markdown artifact should never be enriched."""
+    return path.name in NON_ENRICHABLE_MARKDOWN_BASENAMES
+
+
+def _exclude_non_enrichable_markdown(files: list[Path]) -> tuple[list[Path], int]:
+    """Drop known non-enrichable markdown artifacts from discovered files."""
+    filtered = [f for f in files if not _is_non_enrichable_markdown(f)]
+    return filtered, len(files) - len(filtered)
+
+
 def enrichment_info(md_path: Path) -> tuple[bool, int]:
     """Fast check: does *md_path* need enrichment?
 
@@ -125,8 +137,8 @@ def enrichment_info(md_path: Path) -> tuple[bool, int]:
     * Else has ``enriched_hash`` in fm?      → already enriched → skip.
     * Counts body table rows for a frame-size estimate.
     """
-    # Census files are inventories, not page docs; never send them to enrichment.
-    if md_path.name == "_census.md":
+    # Inventory artifacts are never page-enrichment targets.
+    if _is_non_enrichable_markdown(md_path):
         return False, 0
 
     try:
@@ -183,6 +195,14 @@ def collect_files(
         files = _changed_files(target, glob_pattern)
     else:
         files = sorted(target.glob(glob_pattern))
+
+    files, skipped_non_enrichable = _exclude_non_enrichable_markdown(files)
+    if skipped_non_enrichable:
+        click.echo(
+            (f"[claude-run] skipping {skipped_non_enrichable} non-enrichable markdown artifact(s)"),
+            err=True,
+        )
+
     if needs_enrichment:
         before = len(files)
         enrichable: list[tuple[Path, int]] = []
