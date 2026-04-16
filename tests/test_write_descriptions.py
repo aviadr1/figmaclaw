@@ -59,7 +59,7 @@ flowchart LR
 
 def test_update_descriptions_replaces_matched_rows() -> None:
     """INVARIANT: matched node_ids get their descriptions updated."""
-    result, count = _update_descriptions(
+    result, count, _ = _update_descriptions(
         _TEST_MD,
         {
             "11:1": "A login screen with email/password fields",
@@ -75,7 +75,7 @@ def test_update_descriptions_replaces_matched_rows() -> None:
 
 def test_update_descriptions_preserves_unmatched_rows() -> None:
     """INVARIANT: rows not in descriptions dict are unchanged."""
-    result, count = _update_descriptions(_TEST_MD, {"11:1": "Updated"})
+    result, count, _ = _update_descriptions(_TEST_MD, {"11:1": "Updated"})
     assert count == 1
     assert "| Signup | `11:2` | (no description yet) |" in result
     assert "| Home | `21:1` | (no description yet) |" in result
@@ -83,34 +83,34 @@ def test_update_descriptions_preserves_unmatched_rows() -> None:
 
 def test_update_descriptions_preserves_frontmatter() -> None:
     """INVARIANT: frontmatter is never touched."""
-    result, _ = _update_descriptions(_TEST_MD, {"11:1": "New desc"})
+    result, _, _ = _update_descriptions(_TEST_MD, {"11:1": "New desc"})
     assert "file_key: abc" in result
     assert "frames: ['11:1', '11:2', '21:1']" in result
 
 
 def test_update_descriptions_preserves_page_summary() -> None:
     """INVARIANT: page summary is never touched."""
-    result, _ = _update_descriptions(_TEST_MD, {"11:1": "New desc"})
+    result, _, _ = _update_descriptions(_TEST_MD, {"11:1": "New desc"})
     assert "Page summary text." in result
 
 
 def test_update_descriptions_preserves_section_intros() -> None:
     """INVARIANT: section intros are never touched."""
-    result, _ = _update_descriptions(_TEST_MD, {"11:1": "New desc"})
+    result, _, _ = _update_descriptions(_TEST_MD, {"11:1": "New desc"})
     assert "Auth section intro." in result
     assert "Dashboard intro." in result
 
 
 def test_update_descriptions_preserves_screen_flows() -> None:
     """INVARIANT: mermaid block is never touched."""
-    result, _ = _update_descriptions(_TEST_MD, {"11:1": "New desc"})
+    result, _, _ = _update_descriptions(_TEST_MD, {"11:1": "New desc"})
     assert "```mermaid" in result
     assert 'A["Login"] --> B["Home"]' in result
 
 
 def test_update_descriptions_escapes_pipe() -> None:
     """INVARIANT: pipe characters in descriptions are escaped."""
-    result, count = _update_descriptions(
+    result, count, _ = _update_descriptions(
         _TEST_MD,
         {
             "11:1": "A screen with yes | no options",
@@ -122,7 +122,7 @@ def test_update_descriptions_escapes_pipe() -> None:
 
 def test_update_descriptions_missing_node_id() -> None:
     """INVARIANT: missing node_ids are silently skipped (count reflects actual updates)."""
-    result, count = _update_descriptions(
+    result, count, _ = _update_descriptions(
         _TEST_MD,
         {
             "99:99": "Ghost description",
@@ -133,7 +133,7 @@ def test_update_descriptions_missing_node_id() -> None:
 
 def test_update_descriptions_partial_match() -> None:
     """INVARIANT: only matched rows updated, count reflects actual updates."""
-    result, count = _update_descriptions(
+    result, count, _ = _update_descriptions(
         _TEST_MD,
         {
             "11:1": "Updated login",
@@ -198,14 +198,14 @@ def test_cli_write_descriptions_warns_on_missing(tmp_path: Path) -> None:
 def test_update_descriptions_idempotent() -> None:
     """INVARIANT: running twice with same descriptions produces identical output."""
     descs = {"11:1": "A login screen", "11:2": "A signup screen"}
-    result1, _ = _update_descriptions(_TEST_MD, descs)
-    result2, _ = _update_descriptions(result1, descs)
+    result1, _, _ = _update_descriptions(_TEST_MD, descs)
+    result2, _, _ = _update_descriptions(result1, descs)
     assert result1 == result2
 
 
 def test_update_descriptions_handles_failed_frames() -> None:
     """INVARIANT: failed frames (screenshot unavailable) clear the placeholder."""
-    result, count = _update_descriptions(
+    result, count, _ = _update_descriptions(
         _TEST_MD,
         {
             "11:1": "(screenshot unavailable)",
@@ -221,7 +221,7 @@ def test_update_descriptions_handles_failed_frames() -> None:
 
 def test_update_descriptions_clears_all_placeholders_with_mixed() -> None:
     """INVARIANT: mix of real descriptions and unavailable markers works."""
-    result, count = _update_descriptions(
+    result, count, _ = _update_descriptions(
         _TEST_MD,
         {
             "11:1": "A real login screen description",
@@ -231,3 +231,34 @@ def test_update_descriptions_clears_all_placeholders_with_mixed() -> None:
     )
     assert count == 3
     assert "(no description yet)" not in result
+
+
+def test_update_descriptions_does_not_touch_non_canonical_table_rows() -> None:
+    """INVARIANT: replacement is limited to canonical frame/variant section tables."""
+    md = """\
+---
+file_key: abc
+page_node_id: '1:1'
+frames: ['11:1']
+---
+
+# Page
+
+## Auth (`10:1`)
+
+| Screen | Node ID | Description |
+|--------|---------|-------------|
+| Login | `11:1` | (no description yet) |
+
+## Notes (`20:1`)
+
+| Title | Node ID | Value |
+|-------|---------|-------|
+| Debug row | `11:1` | should stay untouched |
+"""
+
+    result, count, _ = _update_descriptions(md, {"11:1": "Updated canonical row"})
+
+    assert count == 1
+    assert "| Login | `11:1` | Updated canonical row |" in result
+    assert "| Debug row | `11:1` | should stay untouched |" in result
