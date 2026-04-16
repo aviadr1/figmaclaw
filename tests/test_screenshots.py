@@ -233,3 +233,41 @@ def test_screenshots_semaphore_limit_constant() -> None:
     """INVARIANT: The max concurrent downloads constant is set to a sensible limit (<= 20)."""
     assert screenshots_module._MAX_CONCURRENT_DOWNLOADS <= 20
     assert screenshots_module._MAX_CONCURRENT_DOWNLOADS >= 1
+
+
+@pytest.mark.asyncio
+async def test_screenshots_pending_only_includes_unavailable_markers(tmp_path: Path) -> None:
+    """INVARIANT: --pending includes rows marked screenshot-unavailable for retry."""
+    md_path = tmp_path / "page.md"
+    md_path.write_text(
+        "---\n"
+        "file_key: abc123\n"
+        "page_node_id: '7741:45837'\n"
+        "frames: ['11:1', '11:2']\n"
+        "---\n\n"
+        "## Auth (`10:1`)\n\n"
+        "| Screen | Node ID | Description |\n"
+        "|--------|---------|-------------|\n"
+        "| Login | `11:1` | (screenshot unavailable) |\n"
+        "| Signup | `11:2` | Ready and described |\n",
+        encoding="utf-8",
+    )
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.download_url = AsyncMock(return_value=b"\x89PNG\r\n")
+
+    with (
+        patch.object(
+            screenshots_module, "get_image_urls_batched", AsyncMock(return_value={"11:1": None})
+        ),
+        patch.object(screenshots_module, "FigmaClient") as MockClientClass,
+    ):
+        MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        result = await screenshots_module._run(
+            "fake-key", tmp_path, md_path, pending_only=True, stale_only=False
+        )
+
+    assert result["screenshots"] == []
+    assert result["failed"] == ["11:1"]

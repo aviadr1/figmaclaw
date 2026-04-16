@@ -924,3 +924,88 @@ def test_collect_files_migrates_missing_schema_version_and_matches_inspect(tmp_p
     inspect_data = json.loads(inspect_res.output)
     assert inspect_data["needs_enrichment"] is True
     assert inspect_data["enrichment_must_update"] is True
+
+
+def test_enrichment_info_treats_no_screenshot_available_as_unresolved(tmp_path: Path) -> None:
+    """Rows marked (no screenshot available) remain pending and retryable."""
+    md = tmp_path / "page.md"
+    md.write_text(
+        textwrap.dedent(
+            """\
+            ---
+            file_key: abc123
+            page_node_id: "0:1"
+            enriched_hash: "sha256:abcdef1234567890"
+            enriched_at: "2026-04-01T00:00:00Z"
+            enriched_schema_version: 1
+            ---
+
+            | Screen | Node ID | Description |
+            |--------|---------|-------------|
+            | Login  | `1:1`   | (no screenshot available) |
+            """
+        )
+    )
+    needs, count = enrichment_info(md)
+    assert needs is True
+    assert count == 1
+
+
+def test_enrichment_info_treats_screenshot_unavailable_as_unresolved(tmp_path: Path) -> None:
+    """Rows marked (screenshot unavailable) remain pending and retryable."""
+    md = tmp_path / "page.md"
+    md.write_text(
+        textwrap.dedent(
+            """\
+            ---
+            file_key: abc123
+            page_node_id: "0:1"
+            enriched_hash: "sha256:abcdef1234567890"
+            enriched_at: "2026-04-01T00:00:00Z"
+            enriched_schema_version: 1
+            ---
+
+            | Screen | Node ID | Description |
+            |--------|---------|-------------|
+            | Login  | `1:1`   | (screenshot unavailable) |
+            """
+        )
+    )
+    needs, count = enrichment_info(md)
+    assert needs is True
+    assert count == 1
+
+
+def test_pending_sections_counts_unavailable_rows_as_pending(tmp_path: Path) -> None:
+    """pending_sections counts screenshot-unavailable rows as pending work."""
+    md = tmp_path / "page.md"
+    md.write_text(
+        "---\n"
+        "file_key: abc\n"
+        "page_node_id: '1:1'\n"
+        "---\n\n"
+        "## Auth (`10:1`)\n\n"
+        "| Screen | Node ID | Description |\n"
+        "|--------|---------|-------------|\n"
+        "| Login | `11:1` | (screenshot unavailable) |\n"
+        "| Signup | `11:2` | (no screenshot available) |\n"
+    )
+    sections = pending_sections(md)
+    assert len(sections) == 1
+    assert sections[0]["pending_frames"] == 2
+
+
+def test_needs_finalization_false_when_unavailable_rows_remain(tmp_path: Path) -> None:
+    """Finalization must not run while unavailable screenshot markers remain."""
+    md = tmp_path / "page.md"
+    md.write_text(
+        "---\n"
+        "file_key: abc\n"
+        "page_node_id: '1:1'\n"
+        "---\n\n"
+        "## Auth (`10:1`)\n\n"
+        "| Screen | Node ID | Description |\n"
+        "|--------|---------|-------------|\n"
+        "| Login | `11:1` | (screenshot unavailable) |\n"
+    )
+    assert needs_finalization(md) is False

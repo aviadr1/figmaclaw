@@ -36,7 +36,7 @@ import pydantic
 from figmaclaw.budget import BudgetDecision, decide_next_batch, load_per_frame_history
 from figmaclaw.figma_md_parse import section_line_ranges
 from figmaclaw.figma_parse import parse_frontmatter, split_frontmatter
-from figmaclaw.figma_schema import PLACEHOLDER_DESCRIPTION, is_placeholder_row
+from figmaclaw.figma_schema import is_unresolved_row
 from figmaclaw.schema_status import enrichment_schema_status
 from figmaclaw.verdict import (
     EXIT_RED,
@@ -164,7 +164,7 @@ def enrichment_info(md_path: Path) -> tuple[bool, int]:
     for line in text.splitlines():
         if line.startswith("| ") and "`" in line and "Node ID" not in line and "---" not in line:
             frame_count += 1
-        if is_placeholder_row(line):
+        if is_unresolved_row(line):
             has_placeholder = True
 
     if has_placeholder:
@@ -266,7 +266,7 @@ def pending_sections(md_path: Path) -> list[dict[str, str | int]]:
     for section, start, end in section_line_ranges(text):
         if not section.node_id:
             continue  # prose sections (Screen Flow) have no node_id
-        pending = sum(1 for line in lines[start:end] if is_placeholder_row(line))
+        pending = sum(1 for line in lines[start:end] if is_unresolved_row(line))
         if pending > 0:
             result.append(
                 {
@@ -290,7 +290,7 @@ def needs_finalization(md_path: Path) -> bool:
         return False
 
     # If there are still pending placeholders anywhere, not ready.
-    if f"| {PLACEHOLDER_DESCRIPTION} |" in text:
+    if any(is_unresolved_row(line) for line in text.splitlines()):
         return False
 
     # If already marked as enriched, no need to finalize

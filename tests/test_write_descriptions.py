@@ -214,8 +214,8 @@ def test_update_descriptions_handles_failed_frames() -> None:
     assert count == 1
     assert "(screenshot unavailable)" in result
     assert "| Login | `11:1` | (screenshot unavailable) |" in result
-    # This frame no longer has the "(no description yet)" placeholder
-    # so pending_sections() won't count it, breaking the stuck loop
+    # This frame no longer has the canonical placeholder, but remains unresolved
+    # and retryable because of the unavailable marker.
     assert result.count("(no description yet)") == 2  # 11:2 and 21:1 still pending
 
 

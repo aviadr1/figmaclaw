@@ -130,15 +130,15 @@ async def _run(
             stale_ids = set(all_body_ids)
         node_ids = [nid for nid in all_body_ids if nid in stale_ids]
     elif pending_only:
-        # Pending = frames whose body table row has the placeholder
+        # Pending = frames whose body table row has an unresolved marker
         # description. Both the placeholder check and the node_id
         # extraction come from figma_schema so this can't drift from the
         # enrichment dispatcher's notion of "pending".
-        from figmaclaw.figma_schema import is_placeholder_row, parse_frame_row
+        from figmaclaw.figma_schema import is_unresolved_row, parse_frame_row
 
         pending_ids: set[str] = set()
         for line in md_text.splitlines():
-            if not is_placeholder_row(line):
+            if not is_unresolved_row(line):
                 continue
             row = parse_frame_row(line)
             if row is not None:
