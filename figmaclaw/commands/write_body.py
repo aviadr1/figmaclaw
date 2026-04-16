@@ -52,11 +52,19 @@ def _write_section(md: str, section_node_id: str, new_section_text: str) -> str:
     fm_body, body = parts
 
     # Safety: require a matching section heading in the replacement text.
-    first_nonempty = next((line for line in new_section_text.splitlines() if line.strip()), "")
-    parsed_new = parse_section_heading(first_nonempty)
+    # Accept leading preamble lines (e.g. LLM notes) and validate the first
+    # parsed section heading instead of the first non-empty line.
+    parsed_new = next(
+        (
+            parsed
+            for parsed in (parse_section_heading(line) for line in new_section_text.splitlines())
+            if parsed is not None and parsed.node_id
+        ),
+        None,
+    )
     if parsed_new is None or parsed_new.node_id != section_node_id:
         raise ValueError(
-            f"Replacement section must start with heading `## Name (`{section_node_id}`)`"
+            f"Replacement section must contain heading `## Name (`{section_node_id}`)`"
         )
 
     lines = body.split("\n")

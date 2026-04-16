@@ -200,3 +200,27 @@ def test_mark_enriched_refuses_invalid_body_frame_contract(tmp_path: Path) -> No
     fm = parse_frontmatter(md_path.read_text())
     assert fm is not None
     assert fm.enriched_hash is None
+
+
+def test_mark_enriched_refuses_duplicate_frontmatter_frame_ids(tmp_path: Path) -> None:
+    """INVARIANT: mark-enriched exits 2 on duplicate frame IDs in frontmatter."""
+    md_path = _setup(tmp_path)
+
+    text = md_path.read_text()
+    text = text.replace("frames: ['11:1', '11:2']", "frames: ['11:1', '11:1', '11:2']", 1)
+    md_path.write_text(text)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "mark-enriched",
+            str(md_path),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "duplicate frame node_ids in frontmatter" in result.output
+    assert "11:1" in result.output
