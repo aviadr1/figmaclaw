@@ -173,6 +173,7 @@ jobs:
 
   smoke-api:
     name: smoke-api-ci
+    if: github.event_name != 'pull_request' || github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -212,6 +213,7 @@ jobs:
 
   smoke-webhook:
     name: smoke-webhook-ci
+    if: github.event_name != 'pull_request' || github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -251,6 +253,7 @@ jobs:
 
   smoke-mcp:
     name: smoke-mcp-ci
+    if: github.event_name != 'pull_request' || github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
