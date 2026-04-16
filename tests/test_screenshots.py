@@ -252,6 +252,36 @@ async def test_screenshots_non_stale_reuses_existing_cache(tmp_path: Path) -> No
 
     # Existing cached frame is skipped from fetch list.
     mock_client.get_image_urls.assert_called_once_with("abc123", ["11:2"])
+    mock_client.download_url.assert_called_once_with("http://example.com/2.png")
+    node_ids = {s["node_id"] for s in result["screenshots"]}
+    assert node_ids == {"11:1", "11:2"}
+    assert result["failed"] == []
+
+
+@pytest.mark.asyncio
+async def test_screenshots_non_stale_all_cached_skips_figma_fetch(tmp_path: Path) -> None:
+    """INVARIANT: non-stale runs do zero Figma calls when all requested frames are cached."""
+    md_path = _write_md(tmp_path, _make_page(["11:1", "11:2"]))
+    cached_1 = screenshot_cache_path(tmp_path, "abc123", "11:1")
+    cached_2 = screenshot_cache_path(tmp_path, "abc123", "11:2")
+    cached_1.parent.mkdir(parents=True, exist_ok=True)
+    cached_1.write_bytes(b"\x89PNG\r\ncached-1")
+    cached_2.write_bytes(b"\x89PNG\r\ncached-2")
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_image_urls = AsyncMock(return_value={})
+    mock_client.download_url = AsyncMock(return_value=b"\x89PNG\r\nfresh")
+
+    with patch.object(screenshots_module, "FigmaClient") as MockClientClass:
+        MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        result = await screenshots_module._run(
+            "fake-key", tmp_path, md_path, pending_only=False, stale_only=False
+        )
+
+    mock_client.get_image_urls.assert_not_called()
+    mock_client.download_url.assert_not_called()
     node_ids = {s["node_id"] for s in result["screenshots"]}
     assert node_ids == {"11:1", "11:2"}
     assert result["failed"] == []
@@ -299,6 +329,7 @@ async def test_screenshots_stale_mode_downloads_even_if_cached(tmp_path: Path) -
 
     # Both stale frames are fetched, including one with an existing local cache file.
     mock_client.get_image_urls.assert_called_once_with("abc123", ["11:1", "11:2"])
+    assert mock_client.download_url.call_count == 2
     node_ids = {s["node_id"] for s in result["screenshots"]}
     assert node_ids == {"11:1", "11:2"}
 
