@@ -11,6 +11,7 @@ breaks the entire enrichment pipeline (24+ hours of silent CI failures).
 
 from __future__ import annotations
 
+import csv
 import json
 import py_compile
 import textwrap
@@ -21,6 +22,7 @@ from click.testing import CliRunner
 
 from figmaclaw.commands import claude_run as claude_run_mod
 from figmaclaw.commands.claude_run import (
+    ENRICHMENT_LOG_SCHEMA_VERSION,
     build_prompt,
     collect_files,
     enrichment_info,
@@ -1009,3 +1011,107 @@ def test_needs_finalization_false_when_unavailable_rows_remain(tmp_path: Path) -
         "| Login | `11:1` | (screenshot unavailable) |\n"
     )
     assert needs_finalization(md) is False
+
+
+class TestEnrichmentLogSchemaAndIdempotency:
+    """enrichment-log.csv is schema-stable, append-safe, and idempotent."""
+
+    def test_log_writes_schema_header_and_event_id(self, tmp_path: Path) -> None:
+        md = tmp_path / "figma" / "pages" / "a.md"
+        md.parent.mkdir(parents=True, exist_ok=True)
+        md.write_text("---\nfile_key: a\n---\n")
+
+        claude_run_mod._log_enrichment(
+            tmp_path,
+            md,
+            "batch",
+            12,
+            31.0,
+            True,
+            section_name="Auth",
+            claude=claude_run_mod.ClaudeResult(
+                turns=3,
+                cost_usd=0.1234,
+                duration_ms=31000,
+                stop_reason="end_turn",
+            ),
+        )
+
+        log_path = tmp_path / claude_run_mod.ENRICHMENT_LOG
+        with log_path.open(newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["schema_version"] == str(ENRICHMENT_LOG_SCHEMA_VERSION)
+        assert row["event_id"] != ""
+        assert row["mode"] == "batch"
+        assert row["frames"] == "12"
+        assert row["duration_s"] == "31"
+
+    def test_log_is_idempotent_for_duplicate_event(self, tmp_path: Path) -> None:
+        md = tmp_path / "figma" / "pages" / "a.md"
+        md.parent.mkdir(parents=True, exist_ok=True)
+        md.write_text("---\nfile_key: a\n---\n")
+
+        args = (tmp_path, md, "whole-page", 20, 42.0, True)
+        kwargs = {"section_name": "", "claude": claude_run_mod.ClaudeResult(exit_code=0)}
+        claude_run_mod._log_enrichment(*args, **kwargs)
+        claude_run_mod._log_enrichment(*args, **kwargs)
+
+        log_path = tmp_path / claude_run_mod.ENRICHMENT_LOG
+        with log_path.open(newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+        assert len(rows) == 1
+
+    def test_log_migrates_legacy_header_to_schema_versioned(self, tmp_path: Path) -> None:
+        log_path = tmp_path / claude_run_mod.ENRICHMENT_LOG
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(
+            "timestamp,file,mode,frames,duration_s,success,section,"
+            "turns,cost_usd,claude_duration_ms,stop_reason\n"
+            "2026-04-15T00:00:00+00:00,figma/a.md,batch,10,50,True,Auth,2,0.1111,50000,end_turn\n",
+            encoding="utf-8",
+        )
+
+        md = tmp_path / "figma" / "pages" / "a.md"
+        md.parent.mkdir(parents=True, exist_ok=True)
+        md.write_text("---\nfile_key: a\n---\n")
+        claude_run_mod._log_enrichment(tmp_path, md, "batch", 12, 31.0, True)
+
+        with log_path.open(newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+            assert reader.fieldnames is not None
+            assert "schema_version" in reader.fieldnames
+            assert "event_id" in reader.fieldnames
+        assert len(rows) == 2
+        assert rows[0]["schema_version"] in {"0", str(ENRICHMENT_LOG_SCHEMA_VERSION)}
+        assert rows[0]["event_id"] != ""
+        assert rows[1]["schema_version"] == str(ENRICHMENT_LOG_SCHEMA_VERSION)
+
+    def test_log_csv_escaping_preserves_commas_and_newlines(self, tmp_path: Path) -> None:
+        md = tmp_path / "figma" / "pages" / "a.md"
+        md.parent.mkdir(parents=True, exist_ok=True)
+        md.write_text("---\nfile_key: a\n---\n")
+
+        section = "Auth, Login\nFlow"
+        stop_reason = "tool_error, retry\nneeded"
+        claude_run_mod._log_enrichment(
+            tmp_path,
+            md,
+            "batch",
+            5,
+            19.0,
+            False,
+            section_name=section,
+            claude=claude_run_mod.ClaudeResult(stop_reason=stop_reason),
+        )
+
+        log_path = tmp_path / claude_run_mod.ENRICHMENT_LOG
+        with log_path.open(newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+
+        assert len(rows) == 1
+        assert rows[0]["section"] == section
+        assert rows[0]["stop_reason"] == stop_reason

@@ -22,12 +22,15 @@ Prompt template placeholders:
 
 from __future__ import annotations
 
+import csv
+import fcntl
+import hashlib
 import importlib.resources
 import subprocess
 import sys
 import threading
 import time
-from datetime import UTC
+from datetime import UTC, datetime
 from pathlib import Path
 
 import click
@@ -51,6 +54,160 @@ from figmaclaw.verdict import (
 SECTION_THRESHOLD = 80  # pages/sections above this use incremental mode
 ENRICHMENT_LOG = ".figma-sync/enrichment-log.csv"
 STREAM_JSON_LOG = ".figma-sync/claude-stream.jsonl"  # raw stream-json, appended per batch
+ENRICHMENT_LOG_SCHEMA_VERSION = 1
+ENRICHMENT_LOG_FIELDS: tuple[str, ...] = (
+    "schema_version",
+    "event_id",
+    "timestamp",
+    "file",
+    "mode",
+    "frames",
+    "duration_s",
+    "success",
+    "section",
+    "turns",
+    "cost_usd",
+    "claude_duration_ms",
+    "stop_reason",
+)
+LEGACY_ENRICHMENT_LOG_FIELDS: tuple[str, ...] = (
+    "timestamp",
+    "file",
+    "mode",
+    "frames",
+    "duration_s",
+    "success",
+    "section",
+    "turns",
+    "cost_usd",
+    "claude_duration_ms",
+    "stop_reason",
+)
+
+
+def _enrichment_rel_path(repo_dir: Path, file_path: Path) -> str:
+    return (
+        str(file_path.relative_to(repo_dir))
+        if file_path.is_relative_to(repo_dir)
+        else str(file_path)
+    )
+
+
+def _enrichment_event_id(
+    *,
+    rel: str,
+    mode: str,
+    frames: int,
+    duration_s_rounded: int,
+    success: bool,
+    section_name: str,
+    turns: str,
+    cost: str,
+    claude_duration_ms: str,
+    stop_reason: str,
+) -> str:
+    payload = "|".join(
+        [
+            rel,
+            mode,
+            str(frames),
+            str(duration_s_rounded),
+            str(success),
+            section_name,
+            turns,
+            cost,
+            claude_duration_ms,
+            stop_reason,
+        ]
+    )
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:20]
+
+
+def _legacy_row_to_current(row: dict[str, str]) -> dict[str, str]:
+    rel = row.get("file", "")
+    mode = row.get("mode", "")
+    try:
+        frames = int(row.get("frames") or 0)
+    except (TypeError, ValueError):
+        frames = 0
+    try:
+        duration_s_rounded = int(float(row.get("duration_s") or 0))
+    except (TypeError, ValueError):
+        duration_s_rounded = 0
+    success = row.get("success", "") == "True"
+    section_name = row.get("section", "")
+    turns = row.get("turns", "")
+    cost = row.get("cost_usd", "")
+    claude_duration_ms = row.get("claude_duration_ms", "")
+    stop_reason = row.get("stop_reason", "")
+    event_id = _enrichment_event_id(
+        rel=rel,
+        mode=mode,
+        frames=frames,
+        duration_s_rounded=duration_s_rounded,
+        success=success,
+        section_name=section_name,
+        turns=turns,
+        cost=cost,
+        claude_duration_ms=claude_duration_ms,
+        stop_reason=stop_reason,
+    )
+    return {
+        "schema_version": "0",
+        "event_id": event_id,
+        "timestamp": row.get("timestamp", ""),
+        "file": rel,
+        "mode": mode,
+        "frames": str(frames),
+        "duration_s": str(duration_s_rounded),
+        "success": "True" if success else "False",
+        "section": section_name,
+        "turns": turns,
+        "cost_usd": cost,
+        "claude_duration_ms": claude_duration_ms,
+        "stop_reason": stop_reason,
+    }
+
+
+def _read_csv_rows(log_path: Path) -> tuple[list[str], list[dict[str, str]]]:
+    with log_path.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        fieldnames = list(reader.fieldnames or [])
+        rows = [dict(r) for r in reader]
+    return fieldnames, rows
+
+
+def _rewrite_csv_rows(log_path: Path, rows: list[dict[str, str]]) -> None:
+    with log_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(ENRICHMENT_LOG_FIELDS))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _ensure_enrichment_log_schema(log_path: Path) -> None:
+    """Ensure enrichment-log.csv is schema-versioned and parseable.
+
+    Migration is idempotent:
+    - missing file: creates current header
+    - legacy header (pre-schema_version/event_id): rewrites to current schema
+    - current header: no-op
+    """
+    if not log_path.exists():
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        _rewrite_csv_rows(log_path, [])
+        return
+
+    fieldnames, rows = _read_csv_rows(log_path)
+    if tuple(fieldnames) == ENRICHMENT_LOG_FIELDS:
+        return
+
+    if tuple(fieldnames) == LEGACY_ENRICHMENT_LOG_FIELDS:
+        migrated = [_legacy_row_to_current(row) for row in rows]
+        _rewrite_csv_rows(log_path, migrated)
+        return
+
+    if not fieldnames:
+        _rewrite_csv_rows(log_path, [])
 
 
 def _log_enrichment(
@@ -63,29 +220,74 @@ def _log_enrichment(
     section_name: str = "",
     claude: ClaudeResult | None = None,
 ) -> None:
-    """Append one row to the enrichment log for empirical analysis."""
+    """Append one row to the enrichment log for empirical analysis.
+
+    Invariants:
+    - schema-versioned CSV header
+    - CSV-safe escaping for free-text columns
+    - idempotent append by deterministic event_id
+    """
     log_path = repo_dir / ENRICHMENT_LOG
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    if not log_path.exists():
-        log_path.write_text(
-            "timestamp,file,mode,frames,duration_s,success,section,"
-            "turns,cost_usd,claude_duration_ms,stop_reason\n"
-        )
-    from datetime import datetime
 
-    ts = datetime.now(UTC).isoformat()
-    rel = (
-        str(file_path.relative_to(repo_dir))
-        if file_path.is_relative_to(repo_dir)
-        else str(file_path)
-    )
-    turns = claude.turns if claude else ""
+    rel = _enrichment_rel_path(repo_dir, file_path)
+    turns = str(claude.turns) if claude else ""
     cost = f"{claude.cost_usd:.4f}" if claude else ""
-    claude_dur = claude.duration_ms if claude else ""
+    claude_dur = str(claude.duration_ms) if claude else ""
     stop = claude.stop_reason if claude else ""
-    row = f"{ts},{rel},{mode},{frames},{duration_s:.0f},{success},{section_name},{turns},{cost},{claude_dur},{stop}\n"
-    with open(log_path, "a") as f:
-        f.write(row)
+    duration_s_rounded = int(round(duration_s))
+    event_id = _enrichment_event_id(
+        rel=rel,
+        mode=mode,
+        frames=frames,
+        duration_s_rounded=duration_s_rounded,
+        success=success,
+        section_name=section_name,
+        turns=turns,
+        cost=cost,
+        claude_duration_ms=claude_dur,
+        stop_reason=stop,
+    )
+
+    row = {
+        "schema_version": str(ENRICHMENT_LOG_SCHEMA_VERSION),
+        "event_id": event_id,
+        "timestamp": datetime.now(UTC).isoformat(),
+        "file": rel,
+        "mode": mode,
+        "frames": str(frames),
+        "duration_s": str(duration_s_rounded),
+        "success": "True" if success else "False",
+        "section": section_name,
+        "turns": turns,
+        "cost_usd": cost,
+        "claude_duration_ms": claude_dur,
+        "stop_reason": stop,
+    }
+
+    # File lock keeps append/migration safe under concurrent writers.
+    with log_path.open("a+", newline="", encoding="utf-8") as lock_f:
+        fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
+        lock_f.flush()
+
+        _ensure_enrichment_log_schema(log_path)
+
+        fieldnames, rows = _read_csv_rows(log_path)
+        if tuple(fieldnames) != ENRICHMENT_LOG_FIELDS:
+            # Unknown/unmigratable schema: fail closed (skip append) to avoid corruption.
+            fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+            return
+
+        if any((r.get("event_id") or "") == event_id for r in rows):
+            fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+            return
+
+        with log_path.open("a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=list(ENRICHMENT_LOG_FIELDS))
+            writer.writerow(row)
+            f.flush()
+
+        fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
 
 
 # ---------------------------------------------------------------------------
