@@ -150,24 +150,40 @@ async def _run(
     if not node_ids:
         return {"file_key": file_key, "screenshots": []}
 
+    requested_node_ids = list(node_ids)
+
     # In non-stale modes, reuse existing local cache files to avoid repeated
     # downloads during local retries. In --stale mode we always refresh.
     cached_screenshots: list[dict[str, str]] = []
     if not stale_only:
         uncached_ids: list[str] = []
+        invalid_cache_count = 0
         for node_id in node_ids:
             cached_path = screenshot_cache_path(repo_dir, file_key, node_id)
-            if cached_path.exists():
+            if cached_path.is_file() and cached_path.stat().st_size > 0:
                 try:
                     rel = str(cached_path.relative_to(repo_dir))
                 except ValueError:
                     rel = str(cached_path)
                 cached_screenshots.append({"node_id": node_id, "path": rel})
             else:
+                if cached_path.exists():
+                    invalid_cache_count += 1
                 uncached_ids.append(node_id)
+        click.echo(
+            (
+                f"[screenshots] cache hits={len(cached_screenshots)} "
+                f"misses={len(uncached_ids)} invalid={invalid_cache_count}"
+            ),
+            err=True,
+        )
         node_ids = uncached_ids
 
     if not node_ids:
+        click.echo(
+            f"[screenshots] cache satisfied all {len(requested_node_ids)} frame(s); no fetch needed",
+            err=True,
+        )
         return {"file_key": file_key, "screenshots": cached_screenshots, "failed": []}
 
     lock_path = repo_dir / ".figma-cache" / _DOWNLOAD_LOCK_FILENAME
@@ -204,7 +220,9 @@ async def _run(
         await asyncio.to_thread(_release, lock_fd)
 
     downloaded = [r for r in results if isinstance(r, dict)]
-    screenshots = cached_screenshots + downloaded
+    screenshot_by_id = {s["node_id"]: s for s in cached_screenshots}
+    screenshot_by_id.update({s["node_id"]: s for s in downloaded})
+    screenshots = [screenshot_by_id[nid] for nid in requested_node_ids if nid in screenshot_by_id]
     # Frames where Figma returned null URL (hidden/deleted/unrenderable)
     null_url = {nid for nid, url in all_urls.items() if url is None}
     # Frames where download failed (URL existed but PNG download errored)
