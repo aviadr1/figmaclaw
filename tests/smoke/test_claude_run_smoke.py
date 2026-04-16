@@ -7,10 +7,12 @@ CLI path used in CI for selecting files to enrich.
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from click.testing import CliRunner
 
+from figmaclaw.commands import claude_run as claude_run_mod
 from figmaclaw.main import cli
 
 
@@ -151,3 +153,148 @@ def test_claude_run_dry_run_also_excludes_census_files(tmp_path: Path) -> None:
     out = result.output
     assert str(md_page) in out
     assert str(census_md) not in out
+
+
+@pytest.mark.smoke
+def test_section_mode_smoke_stops_after_no_progress_batch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Smoke: same unresolved frame set should stop file in same run (no loop)."""
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "fixtures"
+        / "linear_git_real"
+        / "live_ui_unavailable_rows.md"
+    )
+    page = tmp_path / "figma" / "pages" / "live-ui.md"
+    page.parent.mkdir(parents=True, exist_ok=True)
+    page.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+    sections = [{"node_id": "10:1", "name": "Auth", "pending_frames": 2}]
+    pending = [sections, sections]
+    monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p: (True, 120))
+    monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p: pending.pop(0))
+    monkeypatch.setattr(claude_run_mod, "pending_frame_node_ids", lambda _p: {"11:1", "11:2"})
+    monkeypatch.setattr(claude_run_mod, "_is_schema_upgrade_only_candidate", lambda _p: False)
+    monkeypatch.setattr(claude_run_mod, "_classify_no_work_candidate", lambda _p: "phantom")
+    monkeypatch.setattr(
+        claude_run_mod.subprocess,
+        "run",
+        lambda *args, **kwargs: Mock(stdout="", returncode=0),
+    )
+    run_mock = Mock(return_value=claude_run_mod.ClaudeResult(exit_code=0))
+    monkeypatch.setattr(claude_run_mod, "_run_claude", run_mock)
+    monkeypatch.setattr(claude_run_mod, "count_commits_since", lambda *_args, **_kwargs: 1)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "claude-run",
+            str(page),
+            "--section-mode",
+            "--prompt",
+            "noop {file_path}",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "NO-PROGRESS" in result.output
+    assert run_mock.call_count == 1
+
+
+@pytest.mark.smoke
+def test_section_mode_smoke_phantom_selection_is_fail_fast(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Smoke: phantom selection should turn run red immediately."""
+    page_a = tmp_path / "a.md"
+    page_b = tmp_path / "b.md"
+    _write_page(page_a, enriched=False, placeholder=True)
+    _write_page(page_b, enriched=False, placeholder=True)
+
+    monkeypatch.setattr(claude_run_mod, "collect_files", lambda *args, **kwargs: [page_a, page_b])
+    monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p: (True, 120))
+    monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p: [])
+    monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p: False)
+    monkeypatch.setattr(claude_run_mod, "_is_schema_upgrade_only_candidate", lambda _p: False)
+    monkeypatch.setattr(claude_run_mod, "_classify_no_work_candidate", lambda _p: "phantom")
+    monkeypatch.setattr(
+        claude_run_mod.subprocess,
+        "run",
+        lambda *args, **kwargs: Mock(stdout="", returncode=0),
+    )
+
+    monkeypatch.setattr(claude_run_mod, "count_commits_since", lambda *_args, **_kwargs: 0)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "claude-run",
+            str(page_a),
+            "--section-mode",
+            "--prompt",
+            "noop {file_path}",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "PHANTOM SELECTION" in result.output
+    assert "[2/2]" not in result.output
+
+
+@pytest.mark.smoke
+def test_section_mode_smoke_llm_marker_only_is_non_phantom_skip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Smoke: marker-only section candidates should skip without phantom red."""
+    page = tmp_path / "marker-only.md"
+    page.write_text(
+        """---
+file_key: smoke123
+page_node_id: "0:1"
+enriched_hash: deadbeef
+enriched_schema_version: 1
+---
+
+<!-- LLM: section rewrite needed -->
+
+| Screen | Node ID | Description |
+|--------|---------|-------------|
+| A | `1:1` | already described |
+"""
+    )
+
+    monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p: (True, 120))
+    monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p: [])
+    monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p: False)
+    monkeypatch.setattr(claude_run_mod, "_is_schema_upgrade_only_candidate", lambda _p: False)
+    monkeypatch.setattr(claude_run_mod, "_is_llm_marker_only_candidate", lambda _p: True)
+    monkeypatch.setattr(
+        claude_run_mod.subprocess,
+        "run",
+        lambda *args, **kwargs: Mock(stdout="", returncode=0),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "claude-run",
+            str(page),
+            "--section-mode",
+            "--prompt",
+            "noop {file_path}",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "skip (LLM-marker-only candidate)" in result.output
+    assert "PHANTOM SELECTION" not in result.output

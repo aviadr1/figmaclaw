@@ -41,7 +41,7 @@ Follow this workflow exactly:
 
 8. Commit and push:
    ```
-   git add {file_path} .figma-cache/ .figma-sync/
+   git add {file_path}
    git commit -m "sync: finalize enrichment for {{page-name}}"
    git push || (git pull --no-rebase && git push)
    ```
@@ -50,3 +50,6 @@ IMPORTANT:
 - Use `write-body --section --intro` for section intros — it NEVER touches frame tables.
 - Do NOT use `write-body` (full replace) — it risks truncating large tables.
 - The critical step is mark-enriched — call it even if some intros fail.
+- If push is rejected, use ONLY: `git pull --no-rebase && git push`
+- NEVER use `git stash`, `git stash pop`, `git reset --hard`, `git checkout --`, or `rm` for recovery.
+- NEVER delete `.figma-sync/*` files to make git/push succeed.

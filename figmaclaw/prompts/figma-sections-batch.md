@@ -42,3 +42,6 @@ IMPORTANT:
 - Descriptions must be valid JSON strings (escape quotes with \").
 - ALWAYS include failed frames with "(no screenshot available)" — do NOT leave them as "(no description yet)". This marker is unresolved and retryable in future runs.
 - If there were more than 80 pending screenshots, you will be called again for the rest.
+- If push is rejected, use ONLY: `git pull --no-rebase && git push`
+- NEVER use `git stash`, `git stash pop`, `git reset --hard`, `git checkout --`, or `rm` for recovery.
+- NEVER delete `.figma-sync/*` files to make git/push succeed.
