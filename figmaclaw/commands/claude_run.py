@@ -53,11 +53,15 @@ from figmaclaw.verdict import (
 
 SECTION_THRESHOLD = 80  # pages/sections above this use incremental mode
 ENRICHMENT_LOG = ".figma-sync/enrichment-log.csv"
+ENRICHMENT_LOG_ERROR = ".figma-sync/enrichment-log.error"
+ENRICHMENT_LOG_EVENT_INDEX = ".figma-sync/enrichment-log.event_ids"
 STREAM_JSON_LOG = ".figma-sync/claude-stream.jsonl"  # raw stream-json, appended per batch
 ENRICHMENT_LOG_SCHEMA_VERSION = 1
+
 ENRICHMENT_LOG_FIELDS: tuple[str, ...] = (
     "schema_version",
     "event_id",
+    "run_id",
     "timestamp",
     "file",
     "mode",
@@ -84,6 +88,28 @@ LEGACY_ENRICHMENT_LOG_FIELDS: tuple[str, ...] = (
     "stop_reason",
 )
 
+_EVENT_ID_CACHE: dict[Path, set[str]] = {}
+
+
+def _warn_enrichment_log(repo_dir: Path, message: str) -> None:
+    line = f"[claude-run] WARN enrichment-log: {message}"
+    sys.stderr.write(line + "\n")
+    err_path = repo_dir / ENRICHMENT_LOG_ERROR
+    err_path.parent.mkdir(parents=True, exist_ok=True)
+    with err_path.open("a", encoding="utf-8") as f:
+        f.write(f"{datetime.now(UTC).isoformat()} {line}\n")
+
+
+def _csv_cell_str(value: object) -> str:
+    """Normalize arbitrary CSV cell value into a safe text cell."""
+    if value is None:
+        return ""
+    return str(value).replace("\x00", "")
+
+
+def _canon_csv_key(key: str) -> str:
+    return key.lstrip("\ufeff").strip()
+
 
 def _enrichment_rel_path(repo_dir: Path, file_path: Path) -> str:
     return (
@@ -95,6 +121,7 @@ def _enrichment_rel_path(repo_dir: Path, file_path: Path) -> str:
 
 def _enrichment_event_id(
     *,
+    run_id: str,
     rel: str,
     mode: str,
     frames: int,
@@ -108,6 +135,7 @@ def _enrichment_event_id(
 ) -> str:
     payload = "|".join(
         [
+            run_id,
             rel,
             mode,
             str(frames),
@@ -123,39 +151,130 @@ def _enrichment_event_id(
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:20]
 
 
-def _legacy_row_to_current(row: dict[str, str]) -> dict[str, str]:
-    rel = row.get("file", "")
-    mode = row.get("mode", "")
+def _read_csv_header(log_path: Path) -> list[str]:
+    with log_path.open(newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        first = next(reader, [])
+    return [_canon_csv_key(_csv_cell_str(x)) for x in first]
+
+
+def _read_csv_rows(log_path: Path) -> tuple[list[str], list[dict[str, str]]]:
+    with log_path.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        fieldnames = [_canon_csv_key(_csv_cell_str(n)) for n in (reader.fieldnames or [])]
+        rows: list[dict[str, str]] = []
+        for raw in reader:
+            norm: dict[str, str] = {}
+            for key, value in raw.items():
+                if key is None:
+                    continue
+                norm[_canon_csv_key(_csv_cell_str(key))] = _csv_cell_str(value)
+            rows.append(norm)
+    return fieldnames, rows
+
+
+def _rewrite_csv_rows(log_path: Path, rows: list[dict[str, str]]) -> None:
+    with log_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(ENRICHMENT_LOG_FIELDS))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _event_index_path(repo_dir: Path) -> Path:
+    return repo_dir / ENRICHMENT_LOG_EVENT_INDEX
+
+
+def _invalidate_event_id_cache(repo_dir: Path) -> None:
+    _EVENT_ID_CACHE.pop(_event_index_path(repo_dir), None)
+
+
+def _rebuild_event_id_index(repo_dir: Path, rows: list[dict[str, str]]) -> None:
+    event_ids = [row.get("event_id", "") for row in rows if row.get("event_id", "")]
+    idx_path = _event_index_path(repo_dir)
+    idx_path.parent.mkdir(parents=True, exist_ok=True)
+    with idx_path.open("w", encoding="utf-8") as f:
+        for event_id in event_ids:
+            f.write(event_id + "\n")
+    _EVENT_ID_CACHE[idx_path] = set(event_ids)
+
+
+def _load_event_id_cache(repo_dir: Path, log_path: Path) -> set[str]:
+    idx_path = _event_index_path(repo_dir)
+    cached = _EVENT_ID_CACHE.get(idx_path)
+    if cached is not None:
+        return cached
+
+    event_ids: set[str] = set()
+    if idx_path.exists():
+        try:
+            for line in idx_path.read_text(encoding="utf-8").splitlines():
+                if line:
+                    event_ids.add(line)
+        except OSError:
+            event_ids = set()
+    else:
+        try:
+            fieldnames, rows = _read_csv_rows(log_path)
+            if "event_id" in fieldnames:
+                event_ids = {row.get("event_id", "") for row in rows if row.get("event_id", "")}
+            _rebuild_event_id_index(repo_dir, rows)
+            _EVENT_ID_CACHE[idx_path] = event_ids
+            return event_ids
+        except (OSError, csv.Error, UnicodeError):
+            event_ids = set()
+
+    _EVENT_ID_CACHE[idx_path] = event_ids
+    return event_ids
+
+
+def _row_to_current(row: dict[str, str]) -> dict[str, str]:
+    run_id = _csv_cell_str(row.get("run_id", ""))
+    rel = _csv_cell_str(row.get("file", ""))
+    mode = _csv_cell_str(row.get("mode", ""))
+    section_name = _csv_cell_str(row.get("section", ""))
+    turns = _csv_cell_str(row.get("turns", ""))
+    cost = _csv_cell_str(row.get("cost_usd", ""))
+    claude_duration_ms = _csv_cell_str(row.get("claude_duration_ms", ""))
+    stop_reason = _csv_cell_str(row.get("stop_reason", ""))
+
     try:
-        frames = int(row.get("frames") or 0)
-    except (TypeError, ValueError):
+        frames = int(_csv_cell_str(row.get("frames", "0")) or 0)
+    except ValueError:
         frames = 0
     try:
-        duration_s_rounded = int(float(row.get("duration_s") or 0))
-    except (TypeError, ValueError):
+        duration_s_rounded = int(float(_csv_cell_str(row.get("duration_s", "0")) or 0))
+    except ValueError:
         duration_s_rounded = 0
-    success = row.get("success", "") == "True"
-    section_name = row.get("section", "")
-    turns = row.get("turns", "")
-    cost = row.get("cost_usd", "")
-    claude_duration_ms = row.get("claude_duration_ms", "")
-    stop_reason = row.get("stop_reason", "")
-    event_id = _enrichment_event_id(
-        rel=rel,
-        mode=mode,
-        frames=frames,
-        duration_s_rounded=duration_s_rounded,
-        success=success,
-        section_name=section_name,
-        turns=turns,
-        cost=cost,
-        claude_duration_ms=claude_duration_ms,
-        stop_reason=stop_reason,
-    )
+
+    success = _csv_cell_str(row.get("success", "False")) == "True"
+
+    schema_version_raw = _csv_cell_str(row.get("schema_version", "0"))
+    try:
+        schema_version = int(schema_version_raw or 0)
+    except ValueError:
+        schema_version = 0
+
+    event_id = _csv_cell_str(row.get("event_id", ""))
+    if not event_id:
+        event_id = _enrichment_event_id(
+            run_id=run_id,
+            rel=rel,
+            mode=mode,
+            frames=frames,
+            duration_s_rounded=duration_s_rounded,
+            success=success,
+            section_name=section_name,
+            turns=turns,
+            cost=cost,
+            claude_duration_ms=claude_duration_ms,
+            stop_reason=stop_reason,
+        )
+
     return {
-        "schema_version": "0",
+        "schema_version": str(schema_version),
         "event_id": event_id,
-        "timestamp": row.get("timestamp", ""),
+        "run_id": run_id,
+        "timestamp": _csv_cell_str(row.get("timestamp", "")),
         "file": rel,
         "mode": mode,
         "frames": str(frames),
@@ -169,45 +288,57 @@ def _legacy_row_to_current(row: dict[str, str]) -> dict[str, str]:
     }
 
 
-def _read_csv_rows(log_path: Path) -> tuple[list[str], list[dict[str, str]]]:
-    with log_path.open(newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        fieldnames = list(reader.fieldnames or [])
-        rows = [dict(r) for r in reader]
-    return fieldnames, rows
-
-
-def _rewrite_csv_rows(log_path: Path, rows: list[dict[str, str]]) -> None:
-    with log_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=list(ENRICHMENT_LOG_FIELDS))
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def _ensure_enrichment_log_schema(log_path: Path) -> None:
-    """Ensure enrichment-log.csv is schema-versioned and parseable.
-
-    Migration is idempotent:
-    - missing file: creates current header
-    - legacy header (pre-schema_version/event_id): rewrites to current schema
-    - current header: no-op
-    """
+def _ensure_enrichment_log_schema(repo_dir: Path, log_path: Path) -> bool:
+    """Ensure enrichment-log.csv is schema-versioned and parseable."""
     if not log_path.exists():
         log_path.parent.mkdir(parents=True, exist_ok=True)
         _rewrite_csv_rows(log_path, [])
-        return
+        _rebuild_event_id_index(repo_dir, [])
+        return True
 
-    fieldnames, rows = _read_csv_rows(log_path)
-    if tuple(fieldnames) == ENRICHMENT_LOG_FIELDS:
-        return
+    try:
+        header = _read_csv_header(log_path)
+    except (OSError, csv.Error, UnicodeError) as exc:
+        _warn_enrichment_log(repo_dir, f"failed reading header ({exc}); append skipped")
+        return False
 
-    if tuple(fieldnames) == LEGACY_ENRICHMENT_LOG_FIELDS:
-        migrated = [_legacy_row_to_current(row) for row in rows]
-        _rewrite_csv_rows(log_path, migrated)
-        return
+    if tuple(header) == ENRICHMENT_LOG_FIELDS:
+        return True
+
+    try:
+        fieldnames, rows = _read_csv_rows(log_path)
+    except (OSError, csv.Error, UnicodeError, TypeError, ValueError) as exc:
+        _warn_enrichment_log(repo_dir, f"failed reading rows ({exc}); append skipped")
+        return False
 
     if not fieldnames:
         _rewrite_csv_rows(log_path, [])
+        _rebuild_event_id_index(repo_dir, [])
+        return True
+
+    if tuple(fieldnames) == ENRICHMENT_LOG_FIELDS:
+        return True
+
+    if tuple(fieldnames) == LEGACY_ENRICHMENT_LOG_FIELDS:
+        migrated = [_row_to_current(row) for row in rows]
+        _rewrite_csv_rows(log_path, migrated)
+        _rebuild_event_id_index(repo_dir, migrated)
+        return True
+
+    if set(LEGACY_ENRICHMENT_LOG_FIELDS).issubset(set(fieldnames)):
+        normalized = [_row_to_current(row) for row in rows]
+        _rewrite_csv_rows(log_path, normalized)
+        _rebuild_event_id_index(repo_dir, normalized)
+        _warn_enrichment_log(
+            repo_dir, "normalized non-canonical enrichment log header to schema-v1"
+        )
+        return True
+
+    _warn_enrichment_log(
+        repo_dir,
+        "unsupported enrichment log schema/header; append skipped until file is fixed",
+    )
+    return False
 
 
 def _log_enrichment(
@@ -219,6 +350,7 @@ def _log_enrichment(
     success: bool,
     section_name: str = "",
     claude: ClaudeResult | None = None,
+    run_id: str = "",
 ) -> None:
     """Append one row to the enrichment log for empirical analysis.
 
@@ -236,7 +368,9 @@ def _log_enrichment(
     claude_dur = str(claude.duration_ms) if claude else ""
     stop = claude.stop_reason if claude else ""
     duration_s_rounded = int(round(duration_s))
+
     event_id = _enrichment_event_id(
+        run_id=run_id,
         rel=rel,
         mode=mode,
         frames=frames,
@@ -252,6 +386,7 @@ def _log_enrichment(
     row = {
         "schema_version": str(ENRICHMENT_LOG_SCHEMA_VERSION),
         "event_id": event_id,
+        "run_id": run_id,
         "timestamp": datetime.now(UTC).isoformat(),
         "file": rel,
         "mode": mode,
@@ -265,21 +400,15 @@ def _log_enrichment(
         "stop_reason": stop,
     }
 
-    # File lock keeps append/migration safe under concurrent writers.
     with log_path.open("a+", newline="", encoding="utf-8") as lock_f:
         fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
         lock_f.flush()
 
-        _ensure_enrichment_log_schema(log_path)
-
-        fieldnames, rows = _read_csv_rows(log_path)
-        if tuple(fieldnames) != ENRICHMENT_LOG_FIELDS:
-            # Unknown/unmigratable schema: fail closed (skip append) to avoid corruption.
-            fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+        if not _ensure_enrichment_log_schema(repo_dir, log_path):
             return
 
-        if any((r.get("event_id") or "") == event_id for r in rows):
-            fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+        event_ids = _load_event_id_cache(repo_dir, log_path)
+        if event_id in event_ids:
             return
 
         with log_path.open("a", newline="", encoding="utf-8") as f:
@@ -287,7 +416,11 @@ def _log_enrichment(
             writer.writerow(row)
             f.flush()
 
-        fcntl.flock(lock_f.fileno(), fcntl.LOCK_UN)
+        idx_path = _event_index_path(repo_dir)
+        with idx_path.open("a", encoding="utf-8") as idx:
+            idx.write(event_id + "\n")
+            idx.flush()
+        event_ids.add(event_id)
 
 
 # ---------------------------------------------------------------------------
@@ -808,6 +941,7 @@ def claude_run_cmd(
     # landed, which is the only honest signal that useful work was done.
     start_sha = head_sha(repo_dir)
     run_start = time.monotonic()
+    run_id = datetime.now(UTC).isoformat()
 
     # Load per-mode rolling histories from the enrichment log. These are
     # "prior knowledge" from past runs; within this run we append to them
@@ -922,6 +1056,7 @@ def claude_run_cmd(
                                 total_pending,
                                 0,
                                 False,
+                                run_id=run_id,
                             )
                             break
                     else:
@@ -975,6 +1110,7 @@ def claude_run_cmd(
                         dur,
                         ok,
                         claude=rc,
+                        run_id=run_id,
                     )
                     if not ok:
                         click.echo(
@@ -1037,6 +1173,7 @@ def claude_run_cmd(
                         dur,
                         ok,
                         claude=rc,
+                        run_id=run_id,
                     )
                     if not ok:
                         click.echo(
@@ -1090,6 +1227,7 @@ def claude_run_cmd(
                     dur,
                     ok,
                     claude=rc,
+                    run_id=run_id,
                 )
                 if not ok:
                     click.echo(

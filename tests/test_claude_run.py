@@ -1115,3 +1115,99 @@ class TestEnrichmentLogSchemaAndIdempotency:
         assert len(rows) == 1
         assert rows[0]["section"] == section
         assert rows[0]["stop_reason"] == stop_reason
+
+
+def test_log_keeps_distinct_runs_with_identical_payload(tmp_path: Path) -> None:
+    """INVARIANT: dedupe is run-scoped, not global across different runs."""
+    md = tmp_path / "figma" / "pages" / "a.md"
+    md.parent.mkdir(parents=True, exist_ok=True)
+    md.write_text("---\nfile_key: a\n---\n")
+
+    claude_run_mod._log_enrichment(
+        tmp_path,
+        md,
+        "whole-page",
+        20,
+        42.0,
+        True,
+        run_id="run-a",
+    )
+    claude_run_mod._log_enrichment(
+        tmp_path,
+        md,
+        "whole-page",
+        20,
+        42.0,
+        True,
+        run_id="run-b",
+    )
+
+    log_path = tmp_path / claude_run_mod.ENRICHMENT_LOG
+    with log_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 2
+
+
+def test_log_unknown_header_is_observable_and_skips_append(tmp_path: Path) -> None:
+    """Unsupported header must not crash and must emit an error marker."""
+    log_path = tmp_path / claude_run_mod.ENRICHMENT_LOG
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text("foo,bar,baz\n1,2,3\n", encoding="utf-8")
+
+    md = tmp_path / "figma" / "pages" / "a.md"
+    md.parent.mkdir(parents=True, exist_ok=True)
+    md.write_text("---\nfile_key: a\n---\n")
+
+    claude_run_mod._log_enrichment(tmp_path, md, "batch", 1, 1.0, True, run_id="run-x")
+
+    err = tmp_path / claude_run_mod.ENRICHMENT_LOG_ERROR
+    assert err.exists()
+    assert "unsupported enrichment log schema/header" in err.read_text(encoding="utf-8")
+
+
+def test_log_malformed_legacy_csv_is_observable_and_does_not_crash(tmp_path: Path) -> None:
+    """Malformed legacy CSV should degrade safely (warn + skip), not raise."""
+    log_path = tmp_path / claude_run_mod.ENRICHMENT_LOG
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(
+        "timestamp,file,mode,frames,duration_s,success,section,turns,cost_usd,claude_duration_ms,stop_reason\n"
+        '2026-04-15T00:00:00+00:00,figma/a.md,batch,10,50,True,"broken,2,0.1111,50000,end_turn\n',
+        encoding="utf-8",
+    )
+
+    md = tmp_path / "figma" / "pages" / "a.md"
+    md.parent.mkdir(parents=True, exist_ok=True)
+    md.write_text("---\nfile_key: a\n---\n")
+
+    claude_run_mod._log_enrichment(tmp_path, md, "batch", 2, 2.0, True, run_id="run-x")
+
+    err = tmp_path / claude_run_mod.ENRICHMENT_LOG_ERROR
+    if err.exists():
+        assert "failed reading rows" in err.read_text(encoding="utf-8")
+    else:
+        # Some malformed rows are still parseable by csv.DictReader; ensure write path survives.
+        assert "schema_version,event_id" in log_path.read_text(encoding="utf-8")
+
+
+def test_log_normalizes_header_with_extra_columns(tmp_path: Path) -> None:
+    """Headers that include required columns + extras are normalized to canonical schema."""
+    log_path = tmp_path / claude_run_mod.ENRICHMENT_LOG
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(
+        "timestamp,file,mode,frames,duration_s,success,section,turns,cost_usd,claude_duration_ms,stop_reason,extra\n"
+        "2026-04-15T00:00:00+00:00,figma/a.md,batch,10,50,True,Auth,2,0.1111,50000,end_turn,ignored\n",
+        encoding="utf-8",
+    )
+
+    md = tmp_path / "figma" / "pages" / "a.md"
+    md.parent.mkdir(parents=True, exist_ok=True)
+    md.write_text("---\nfile_key: a\n---\n")
+
+    claude_run_mod._log_enrichment(tmp_path, md, "batch", 12, 31.0, True, run_id="run-x")
+
+    with log_path.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+        assert reader.fieldnames is not None
+        assert tuple(reader.fieldnames) == claude_run_mod.ENRICHMENT_LOG_FIELDS
+    assert len(rows) == 2
