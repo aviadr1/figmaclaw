@@ -116,14 +116,35 @@ def _changed_files(base: Path, glob_pattern: str) -> list[Path]:
     return sorted(result)
 
 
+def _migrate_missing_enrichment_schema_version(md_path: Path, text: str) -> str:
+    """Backfill explicit ``enriched_schema_version`` when missing.
+
+    Migration is body-preserving and idempotent. Missing version is written as ``0``
+    so selector/inspect parity treats legacy pages as ENRICH MUST.
+    """
+    parts = split_frontmatter(text)
+    if parts is None:
+        return text
+    fm_block, body = parts
+    if "enriched_schema_version:" in fm_block:
+        return text
+    if "file_key:" not in fm_block:
+        return text
+
+    new_fm_block = f"{fm_block.rstrip()}\nenriched_schema_version: 0"
+    migrated = f"---\n{new_fm_block}\n---\n{body}"
+    if migrated != text:
+        md_path.write_text(migrated)
+    return migrated
+
+
 def enrichment_info(md_path: Path) -> tuple[bool, int]:
     """Fast selector for enrichment candidacy and frame-size estimate.
 
     Returns ``(needs_it, frame_count)``.
 
-    Contract: this selector must agree with ``inspect`` on ENRICH MUST
-    schema upgrades (figmaclaw#111), while remaining resilient to partially
-    shaped markdown files used in tests and dry-runs.
+    Contract: selector must match ``inspect`` for ENRICH MUST decisions and
+    must migrate legacy files lacking explicit schema version.
     """
     try:
         text = md_path.read_text()
@@ -133,6 +154,8 @@ def enrichment_info(md_path: Path) -> tuple[bool, int]:
     # Must have figmaclaw-like frontmatter to be enrichable.
     if "file_key:" not in text:
         return False, 0
+
+    text = _migrate_missing_enrichment_schema_version(md_path, text)
 
     # Keep frame counting heuristic aligned with existing behavior for batch sizing
     # even on partially shaped files.
@@ -149,20 +172,17 @@ def enrichment_info(md_path: Path) -> tuple[bool, int]:
 
     parts = split_frontmatter(text)
     fm_block = parts[0] if parts is not None else ""
-    has_enriched_hash = "enriched_hash:" in fm_block
 
-    # Selector/inspect parity for ENRICH MUST: only when schema version exists
-    # explicitly in frontmatter and is below min required.
-    has_schema_version = "enriched_schema_version:" in fm_block
-    if has_schema_version:
-        try:
-            fm = parse_frontmatter(text)
-        except Exception:
-            fm = None
-        if fm is not None and enrichment_schema_status(fm.enriched_schema_version).must_update:
-            return True, frame_count
+    # Selector/inspect parity for ENRICH MUST schema upgrades, including legacy
+    # pages where missing field has just been migrated to explicit 0.
+    try:
+        fm = parse_frontmatter(text)
+    except Exception:
+        fm = None
+    if fm is not None and enrichment_schema_status(fm.enriched_schema_version).must_update:
+        return True, frame_count
 
-    if has_enriched_hash:
+    if "enriched_hash:" in fm_block:
         return False, 0
 
     return True, frame_count

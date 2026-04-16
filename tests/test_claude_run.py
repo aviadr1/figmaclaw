@@ -95,6 +95,7 @@ class TestEnrichmentInfo:
             page_node_id: "0:1"
             enriched_hash: "sha256:abcdef1234567890"
             enriched_at: "2026-04-01T00:00:00Z"
+            enriched_schema_version: 1
             ---
 
             # Page Title
@@ -229,6 +230,7 @@ class TestCollectFiles:
         fm_lines = ["---", "file_key: abc", 'page_node_id: "0:1"']
         if enriched:
             fm_lines.append('enriched_hash: "sha256:abc"')
+            fm_lines.append("enriched_schema_version: 1")
         fm_lines.append("---")
         fm_lines.append("")
         fm_lines.append("| Screen | Node ID | Description |")
@@ -868,3 +870,57 @@ def test_collect_files_matches_inspect_enrich_must_schema_upgrade(tmp_path: Path
         needs_enrichment=True,
     )
     assert selected == [page]
+
+
+def test_collect_files_migrates_missing_schema_version_and_matches_inspect(tmp_path: Path) -> None:
+    """Legacy enriched files without explicit schema version are migrated and selected.
+
+    Invariant:
+    - collect_files(... needs_enrichment=True) migrates missing enriched_schema_version
+      to explicit 0 and agrees with inspect ENRICH MUST.
+    """
+    page = tmp_path / "figma" / "pages" / "legacy-no-schema.md"
+    page.parent.mkdir(parents=True, exist_ok=True)
+    page.write_text(
+        textwrap.dedent(
+            """\
+            ---
+            file_key: abc123
+            page_node_id: "0:1"
+            frames: ["1:1"]
+            enriched_hash: deadbeefcafebabe
+            ---
+
+            # File / Page
+
+            ## Auth (`10:1`)
+
+            | Screen | Node ID | Description |
+            |--------|---------|-------------|
+            | Login | `1:1` | A described frame |
+            """
+        )
+    )
+
+    selected = collect_files(
+        tmp_path / "figma",
+        "**/*.md",
+        changed_only=False,
+        needs_enrichment=True,
+    )
+    assert selected == [page]
+
+    # Migration persisted explicitly.
+    migrated_text = page.read_text()
+    assert "enriched_schema_version: 0" in migrated_text
+
+    runner = CliRunner()
+    inspect_res = runner.invoke(
+        cli,
+        ["--repo-dir", str(tmp_path), "inspect", str(page), "--json"],
+        catch_exceptions=False,
+    )
+    assert inspect_res.exit_code == 0
+    inspect_data = json.loads(inspect_res.output)
+    assert inspect_data["needs_enrichment"] is True
+    assert inspect_data["enrichment_must_update"] is True

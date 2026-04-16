@@ -57,6 +57,7 @@ def test_mark_stale_handles_already_stale_and_no_frontmatter(tmp_path: Path) -> 
 file_key: abc123
 page_node_id: "1:1"
 frames: ["2:2"]
+enriched_schema_version: 0
 ---
 Body\n""",
         encoding="utf-8",
@@ -278,3 +279,23 @@ def test_git_utils_commit_returns_false_on_no_diff(tmp_path: Path) -> None:
 
     assert committed is False
     assert not any(cmd[-1] == "commit" for cmd in calls)
+
+
+def test_mark_stale_migrates_missing_enrichment_schema_version(tmp_path: Path) -> None:
+    md = tmp_path / "legacy.md"
+    md.write_text(
+        """---
+file_key: abc123
+page_node_id: "1:1"
+frames: ["2:2"]
+---
+Body
+""",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    res = runner.invoke(cli, ["--repo-dir", str(tmp_path), "mark-stale", str(md)])
+    assert res.exit_code == 0
+    assert "cleared enrichment state" in res.output
+    assert "enriched_schema_version: 0" in md.read_text(encoding="utf-8")
