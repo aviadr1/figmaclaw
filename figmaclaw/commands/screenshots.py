@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import fcntl
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,45 @@ from figmaclaw.staleness import stale_frame_ids_from_manifest
 
 _MAX_CONCURRENT_DOWNLOADS = 10
 _DOWNLOAD_LOCK_FILENAME = ".figma-downloads.lock"
+_ALLOWED_SCREENSHOT_EXTS = {".png", ".jpg", ".jpeg", ".svg"}
+
+
+def _looks_like_supported_image_bytes(head: bytes, suffix: str) -> bool:
+    """Validate basic file signature for supported screenshot formats."""
+    ext = suffix.lower()
+    if ext == ".png":
+        return head.startswith(b"\x89PNG\r\n\x1a\n")
+    if ext in {".jpg", ".jpeg"}:
+        return head.startswith(b"\xff\xd8\xff")
+    if ext == ".svg":
+        text = head.decode("utf-8", errors="ignore").lstrip().lower()
+        return text.startswith("<svg") or "<svg" in text
+    return False
+
+
+def _is_valid_cached_screenshot(path: Path) -> bool:
+    """Return True when a cached screenshot path is a supported non-empty file."""
+    ext = path.suffix.lower()
+    if ext not in _ALLOWED_SCREENSHOT_EXTS:
+        return False
+    if not path.is_file():
+        return False
+    try:
+        if path.stat().st_size <= 0:
+            return False
+        with path.open("rb") as f:
+            head = f.read(4096)
+    except OSError:
+        return False
+    return _looks_like_supported_image_bytes(head, ext)
+
+
+def _path_for_manifest(repo_dir: Path, path: Path) -> str:
+    """Render path as repo-relative when possible, absolute otherwise."""
+    try:
+        return str(path.relative_to(repo_dir))
+    except ValueError:
+        return str(path)
 
 
 @click.command("screenshots")
@@ -148,6 +188,8 @@ async def _run(
     if not node_ids:
         return {"file_key": file_key, "screenshots": []}
 
+    requested_node_ids = list(node_ids)
+
     lock_path = repo_dir / ".figma-cache" / _DOWNLOAD_LOCK_FILENAME
 
     def _acquire() -> Any:
@@ -162,6 +204,42 @@ async def _run(
 
     lock_fd = await asyncio.to_thread(_acquire)
     try:
+        # In non-stale modes, reuse existing local cache files to avoid repeated
+        # downloads during local retries. In --stale mode we always refresh.
+        cached_screenshots: list[dict[str, str]] = []
+        if not stale_only:
+            uncached_ids: list[str] = []
+            invalid_cache_count = 0
+            for node_id in node_ids:
+                cached_path = screenshot_cache_path(repo_dir, file_key, node_id)
+                if _is_valid_cached_screenshot(cached_path):
+                    cached_screenshots.append(
+                        {"node_id": node_id, "path": _path_for_manifest(repo_dir, cached_path)}
+                    )
+                else:
+                    if cached_path.exists():
+                        invalid_cache_count += 1
+                    uncached_ids.append(node_id)
+            click.echo(
+                (
+                    f"[screenshots] file_key={file_key} stale_only={stale_only} "
+                    f"cache hits={len(cached_screenshots)} "
+                    f"misses={len(uncached_ids)} invalid={invalid_cache_count}"
+                ),
+                err=True,
+            )
+            node_ids = uncached_ids
+
+        if not node_ids:
+            click.echo(
+                (
+                    f"[screenshots] file_key={file_key} stale_only={stale_only} "
+                    f"cache satisfied all {len(requested_node_ids)} frame(s); no fetch needed"
+                ),
+                err=True,
+            )
+            return {"file_key": file_key, "screenshots": cached_screenshots, "failed": []}
+
         async with FigmaClient(api_key) as client:
             all_urls = await get_image_urls_batched(
                 client,
@@ -181,7 +259,10 @@ async def _run(
     finally:
         await asyncio.to_thread(_release, lock_fd)
 
-    screenshots = [r for r in results if isinstance(r, dict)]
+    downloaded = [r for r in results if isinstance(r, dict)]
+    screenshot_by_id = {s["node_id"]: s for s in cached_screenshots}
+    screenshot_by_id.update({s["node_id"]: s for s in downloaded})
+    screenshots = [screenshot_by_id[nid] for nid in requested_node_ids if nid in screenshot_by_id]
     # Frames where Figma returned null URL (hidden/deleted/unrenderable)
     null_url = {nid for nid, url in all_urls.items() if url is None}
     # Frames where download failed (URL existed but PNG download errored)
@@ -209,11 +290,12 @@ async def _download_one(
 
     out_path = screenshot_cache_path(repo_dir, file_key, node_id)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_bytes(data)
-
+    tmp_path = out_path.with_suffix(f"{out_path.suffix}.tmp.{os.getpid()}")
     try:
-        rel = str(out_path.relative_to(repo_dir))
-    except ValueError:
-        rel = str(out_path)
+        tmp_path.write_bytes(data)
+        os.replace(tmp_path, out_path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
 
-    return {"node_id": node_id, "path": rel}
+    return {"node_id": node_id, "path": _path_for_manifest(repo_dir, out_path)}

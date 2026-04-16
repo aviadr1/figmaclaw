@@ -205,6 +205,20 @@ def test_force_uses_force_flag_only(tmp_path: Path) -> None:
     assert args == "pull --force"
 
 
+def test_non_force_includes_team_prefilter_args_when_present(tmp_path: Path) -> None:
+    _run_loop(
+        tmp_path,
+        scenario="single_done",
+        git_dirty="1",
+        timeout_mode="pass",
+        MAX_PAGES_PER_BATCH="7",
+        FIGMA_TEAM_ID="12345",
+        SINCE="7d",
+    )
+    args = (tmp_path / "pull-args.txt").read_text().strip()
+    assert args == "pull --max-pages 7 --team-id 12345 --since 7d"
+
+
 def test_timeout_retries_with_smaller_batch_then_succeeds(tmp_path: Path) -> None:
     out = _run_loop(
         tmp_path,
@@ -229,3 +243,47 @@ def test_timeout_does_not_retry_in_force_mode(tmp_path: Path) -> None:
     count = int((tmp_path / "count.txt").read_text())
     assert count == 1
     assert "stopping checkpoint loop early." in out
+
+
+def test_emits_sync_observability_logs_and_files(tmp_path: Path) -> None:
+    obs_dir = tmp_path / "obs"
+    out = _run_loop(
+        tmp_path,
+        scenario="single_done",
+        git_dirty="1",
+        timeout_mode="pass",
+        FIGMACLAW_SYNC_OBS_DIR=str(obs_dir),
+    )
+
+    events = obs_dir / "checkpoint_events.csv"
+    summary = obs_dir / "checkpoint_summary.txt"
+    assert events.exists()
+    assert summary.exists()
+
+    events_text = events.read_text()
+    assert "event" in events_text.splitlines()[0]
+    assert "batch_start" in events_text
+    assert "loop_end" in events_text
+
+    summary_text = summary.read_text()
+    assert "batches_started=" in summary_text
+    assert "total_commits=1" in summary_text
+
+    assert "SYNC_OBS event=batch_start" in out
+    assert "SYNC_OBS summary_file=" in out
+
+
+def test_timeout_stop_emits_batch_end_event(tmp_path: Path) -> None:
+    obs_dir = tmp_path / "obs"
+    _run_loop(
+        tmp_path,
+        scenario="single_done",
+        git_dirty="1",
+        timeout_mode="always",
+        FIGMACLAW_SYNC_OBS_DIR=str(obs_dir),
+    )
+
+    events_text = (obs_dir / "checkpoint_events.csv").read_text()
+    assert "batch_start" in events_text
+    assert "batch_timeout_stop" in events_text
+    assert "batch_end" in events_text

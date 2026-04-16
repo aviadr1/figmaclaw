@@ -57,6 +57,7 @@ ENRICHMENT_LOG_ERROR = ".figma-sync/enrichment-log.error"
 ENRICHMENT_LOG_EVENT_INDEX = ".figma-sync/enrichment-log.event_ids"
 STREAM_JSON_LOG = ".figma-sync/claude-stream.jsonl"  # raw stream-json, appended per batch
 ENRICHMENT_LOG_SCHEMA_VERSION = 1
+NON_ENRICHABLE_MARKDOWN_BASENAMES = frozenset({"_census.md"})
 
 ENRICHMENT_LOG_FIELDS: tuple[str, ...] = (
     "schema_version",
@@ -451,6 +452,17 @@ def _changed_files(base: Path, glob_pattern: str) -> list[Path]:
     return sorted(result)
 
 
+def _is_non_enrichable_markdown(path: Path) -> bool:
+    """Return True when a markdown artifact should never be enriched."""
+    return path.name in NON_ENRICHABLE_MARKDOWN_BASENAMES
+
+
+def _exclude_non_enrichable_markdown(files: list[Path]) -> tuple[list[Path], int]:
+    """Drop known non-enrichable markdown artifacts from discovered files."""
+    filtered = [f for f in files if not _is_non_enrichable_markdown(f)]
+    return filtered, len(files) - len(filtered)
+
+
 def _migrate_missing_enrichment_schema_version(md_path: Path, text: str) -> str:
     """Backfill explicit ``enriched_schema_version`` when missing.
 
@@ -481,6 +493,10 @@ def enrichment_info(md_path: Path) -> tuple[bool, int]:
     Contract: selector must match ``inspect`` for ENRICH MUST decisions and
     must migrate legacy files lacking explicit schema version.
     """
+    # Inventory artifacts are never page-enrichment targets.
+    if _is_non_enrichable_markdown(md_path):
+        return False, 0
+
     try:
         text = md_path.read_text()
     except OSError:
@@ -536,11 +552,13 @@ def collect_files(
       gets the full CI timeout.
     """
     if target.is_file():
-        return [target]
+        return [] if _is_non_enrichable_markdown(target) else [target]
     if changed_only:
         files = _changed_files(target, glob_pattern)
     else:
         files = sorted(target.glob(glob_pattern))
+
+    files, dropped_non_enrichable = _exclude_non_enrichable_markdown(files)
     if needs_enrichment:
         before = len(files)
         enrichable: list[tuple[Path, int]] = []
@@ -570,7 +588,10 @@ def collect_files(
             msg += f" ({', '.join(parts)})"
         click.echo(msg, err=True)
     else:
-        click.echo(f"[claude-run] {len(files)} files to process", err=True)
+        msg = f"[claude-run] {len(files)} files to process"
+        if dropped_non_enrichable:
+            msg += f" (excluded {dropped_non_enrichable} non-enrichable artifacts)"
+        click.echo(msg, err=True)
     return files
 
 
