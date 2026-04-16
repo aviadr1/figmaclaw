@@ -689,7 +689,7 @@ def _is_schema_upgrade_only_candidate(md_path: Path) -> bool:
     """True when file only needs schema bump (no pending rows, no finalization work)."""
     try:
         fm = parse_frontmatter(md_path.read_text())
-    except OSError:
+    except Exception:
         return False
 
     if fm is None:
@@ -713,6 +713,27 @@ def _is_llm_marker_only_candidate(md_path: Path) -> bool:
     if pending_sections(md_path):
         return False
     return not needs_finalization(md_path)
+
+
+def _classify_no_work_candidate(md_path: Path) -> str:
+    """Classify no-work section candidates from a single file snapshot."""
+    try:
+        text = md_path.read_text()
+    except OSError:
+        return "unreadable"
+
+    has_llm_marker = "<!-- LLM:" in text
+
+    try:
+        fm = parse_frontmatter(text)
+    except Exception:
+        return "malformed-frontmatter"
+
+    if fm is not None and enrichment_schema_status(fm.enriched_schema_version).must_update:
+        return "schema-only"
+    if has_llm_marker:
+        return "llm-marker-only"
+    return "phantom"
 
 
 def needs_finalization(md_path: Path) -> bool:
@@ -1114,27 +1135,42 @@ def claude_run_cmd(
                 sections = pending_sections(file_path)
                 fin_needed = needs_finalization(file_path)
 
-                # Schema-only candidates can be selected for enrichment while
-                # having no pending body work in section mode. Skip these quietly
-                # so they do not become phantom-selection RED failures.
-                if not sections and not fin_needed and _is_schema_upgrade_only_candidate(file_path):
-                    click.echo(
-                        f"[claude-run] [{i}/{total}] skip (schema-only candidate): {file_path}",
-                        err=True,
-                    )
-                    continue
-
-                if not sections and not fin_needed and _is_llm_marker_only_candidate(file_path):
-                    click.echo(
-                        f"[claude-run] [{i}/{total}] skip (LLM-marker-only candidate): {file_path}",
-                        err=True,
-                    )
-                    continue
-
-                # figmaclaw#27 row 5: selector said this file needs enrichment,
-                # but the dispatcher has no work for it. This remains a hard RED
-                # for true selector/dispatcher disagreement (non schema-only).
                 if not sections and not fin_needed:
+                    candidate = _classify_no_work_candidate(file_path)
+                    if candidate == "schema-only":
+                        click.echo(
+                            f"[claude-run] [{i}/{total}] skip (schema-only candidate): {file_path}",
+                            err=True,
+                        )
+                        continue
+                    if candidate == "llm-marker-only":
+                        click.echo(
+                            f"[claude-run] [{i}/{total}] skip (LLM-marker-only candidate): {file_path}",
+                            err=True,
+                        )
+                        continue
+                    if candidate == "malformed-frontmatter":
+                        click.echo(
+                            f"[claude-run] [{i}/{total}] MALFORMED FRONTMATTER: {file_path} — "
+                            f"cannot classify no-work candidate safely; failing closed (row 5).",
+                            err=True,
+                        )
+                        skipped_no_work += 1
+                        phantom_files.append(str(file_path))
+                        break
+                    if candidate == "unreadable":
+                        click.echo(
+                            f"[claude-run] [{i}/{total}] UNREADABLE FILE: {file_path} — "
+                            f"cannot classify no-work candidate safely; failing closed (row 5).",
+                            err=True,
+                        )
+                        skipped_no_work += 1
+                        phantom_files.append(str(file_path))
+                        break
+
+                    # figmaclaw#27 row 5: selector said this file needs enrichment,
+                    # but the dispatcher has no work for it. This remains a hard RED
+                    # for true selector/dispatcher disagreement.
                     click.echo(
                         f"[claude-run] [{i}/{total}] PHANTOM SELECTION: "
                         f"{file_path} — enrichment_info says needs_enrichment=True "

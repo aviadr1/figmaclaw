@@ -176,6 +176,7 @@ def test_section_mode_smoke_stops_after_no_progress_batch(
     monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p: pending.pop(0))
     monkeypatch.setattr(claude_run_mod, "pending_frame_node_ids", lambda _p: {"11:1", "11:2"})
     monkeypatch.setattr(claude_run_mod, "_is_schema_upgrade_only_candidate", lambda _p: False)
+    monkeypatch.setattr(claude_run_mod, "_classify_no_work_candidate", lambda _p: "phantom")
     monkeypatch.setattr(
         claude_run_mod.subprocess,
         "run",
@@ -219,6 +220,7 @@ def test_section_mode_smoke_phantom_selection_is_fail_fast(
     monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p: [])
     monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p: False)
     monkeypatch.setattr(claude_run_mod, "_is_schema_upgrade_only_candidate", lambda _p: False)
+    monkeypatch.setattr(claude_run_mod, "_classify_no_work_candidate", lambda _p: "phantom")
     monkeypatch.setattr(
         claude_run_mod.subprocess,
         "run",
