@@ -57,6 +57,7 @@ from figmaclaw.figma_schema import (
     render_prose_heading,
     render_section_heading,
     render_variant_table_header,
+    unresolved_row_node_id,
 )
 
 # ---------------------------------------------------------------------------
@@ -501,3 +502,12 @@ def test_is_unresolved_row_detects_screenshot_unavailable() -> None:
 def test_is_unresolved_row_rejects_real_description() -> None:
     row = render_frame_row("Frame", "1:2", "a real description")
     assert is_unresolved_row(row) is False
+
+
+def test_unresolved_row_node_id_for_unavailable_marker() -> None:
+    row = render_frame_row("Frame", "1:2", SCREENSHOT_UNAVAILABLE)
+    assert unresolved_row_node_id(row) == "1:2"
+
+
+def test_unresolved_row_node_id_rejects_non_row_text() -> None:
+    assert unresolved_row_node_id("(screenshot unavailable)") is None

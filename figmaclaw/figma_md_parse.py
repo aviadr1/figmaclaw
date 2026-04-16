@@ -88,6 +88,23 @@ class ParsedSection:
     frames: list[ParsedFrame] = field(default_factory=list)
 
 
+def _collect_frames_in_range(lines: list[str], start: int, end: int) -> list[ParsedFrame]:
+    """Collect parsed frame rows inside one line range."""
+    in_table = False
+    frames: list[ParsedFrame] = []
+    for line in lines[start:end]:
+        if is_table_separator(line):
+            in_table = True
+            continue
+        if in_table:
+            row = parse_frame_row(line)
+            if row is not None:
+                frames.append(ParsedFrame(name=row.name, node_id=row.node_id))
+            elif not line.strip():
+                in_table = False
+    return frames
+
+
 def section_line_ranges(md: str) -> list[tuple[ParsedSection, int, int]]:
     """Return ``(section, start_line, end_line)`` for every ``## `` heading.
 
@@ -124,17 +141,7 @@ def section_line_ranges(md: str) -> list[tuple[ParsedSection, int, int]]:
     result: list[tuple[ParsedSection, int, int]] = []
     for idx, (start, section) in enumerate(headings):
         end = headings[idx + 1][0] if idx + 1 < len(headings) else len(lines)
-        in_table = False
-        for line in lines[start:end]:
-            if is_table_separator(line):
-                in_table = True
-                continue
-            if in_table:
-                row = parse_frame_row(line)
-                if row is not None:
-                    section.frames.append(ParsedFrame(name=row.name, node_id=row.node_id))
-                elif not line.strip():
-                    in_table = False
+        section.frames.extend(_collect_frames_in_range(lines, start, end))
         result.append((section, start, end))
 
     return result
@@ -148,3 +155,18 @@ def parse_sections(md: str) -> list[ParsedSection]:
     ``Variants`` section are handled identically to page files.
     """
     return [section for section, _, _ in section_line_ranges(md) if section.node_id]
+
+
+def frame_row_count(md: str) -> int:
+    """Return total parsed frame-row count from canonical markdown tables.
+
+    Primary path: counts rows from parsed frame sections.
+    Fallback path (legacy/plain-table files without H2 section headings):
+    counts rows across the whole document range.
+    """
+    sections = parse_sections(md)
+    if sections:
+        return sum(len(section.frames) for section in sections)
+
+    lines = md.splitlines()
+    return len(_collect_frames_in_range(lines, 0, len(lines)))

@@ -34,9 +34,9 @@ import click
 import pydantic
 
 from figmaclaw.budget import BudgetDecision, decide_next_batch, load_per_frame_history
-from figmaclaw.figma_md_parse import section_line_ranges
+from figmaclaw.figma_md_parse import frame_row_count, section_line_ranges
 from figmaclaw.figma_parse import parse_frontmatter, split_frontmatter
-from figmaclaw.figma_schema import is_unresolved_row
+from figmaclaw.figma_schema import unresolved_row_node_id
 from figmaclaw.schema_status import enrichment_schema_status
 from figmaclaw.verdict import (
     EXIT_RED,
@@ -157,17 +157,11 @@ def enrichment_info(md_path: Path) -> tuple[bool, int]:
 
     text = _migrate_missing_enrichment_schema_version(md_path, text)
 
-    # Keep frame counting heuristic aligned with existing behavior for batch sizing
-    # even on partially shaped files.
-    frame_count = 0
-    has_placeholder = False
-    for line in text.splitlines():
-        if line.startswith("| ") and "`" in line and "Node ID" not in line and "---" not in line:
-            frame_count += 1
-        if is_unresolved_row(line):
-            has_placeholder = True
+    # Frame-size estimate from canonical body parser (frame sections only).
+    frame_count = frame_row_count(text)
+    has_unresolved = any(unresolved_row_node_id(line) is not None for line in text.splitlines())
 
-    if has_placeholder:
+    if has_unresolved:
         return True, frame_count
 
     parts = split_frontmatter(text)
@@ -251,10 +245,10 @@ def collect_files(
 
 
 def pending_sections(md_path: Path) -> list[dict[str, str | int]]:
-    """Return sections that need enrichment (have pending placeholders).
+    """Return sections that need enrichment (have pending unresolved rows).
 
     Returns ``[{"node_id": ..., "name": ..., "pending_frames": N}]`` for
-    sections with ``(no description yet)`` placeholders.
+    sections with unresolved description markers.
     """
     try:
         text = md_path.read_text()
@@ -266,7 +260,7 @@ def pending_sections(md_path: Path) -> list[dict[str, str | int]]:
     for section, start, end in section_line_ranges(text):
         if not section.node_id:
             continue  # prose sections (Screen Flow) have no node_id
-        pending = sum(1 for line in lines[start:end] if is_unresolved_row(line))
+        pending = sum(1 for line in lines[start:end] if unresolved_row_node_id(line) is not None)
         if pending > 0:
             result.append(
                 {
@@ -289,8 +283,8 @@ def needs_finalization(md_path: Path) -> bool:
     except OSError:
         return False
 
-    # If there are still pending placeholders anywhere, not ready.
-    if any(is_unresolved_row(line) for line in text.splitlines()):
+    # If there are still pending unresolved rows anywhere, not ready.
+    if any(unresolved_row_node_id(line) is not None for line in text.splitlines()):
         return False
 
     # If already marked as enriched, no need to finalize

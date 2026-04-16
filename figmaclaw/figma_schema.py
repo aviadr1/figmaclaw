@@ -414,6 +414,14 @@ def is_unresolved_row(line: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def unresolved_row_node_id(line: str) -> str | None:
+    """Return node_id when *line* is an unresolved frame row, else None."""
+    if not is_unresolved_row(line):
+        return None
+    row = parse_frame_row(line)
+    return row.node_id if row is not None else None
+
+
 def assert_section_round_trip(name: str | None, node_id: str) -> None:
     """Assert that render/parse is a bijection for ``(name, node_id)``.
 

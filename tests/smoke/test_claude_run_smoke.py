@@ -14,7 +14,9 @@ from click.testing import CliRunner
 from figmaclaw.main import cli
 
 
-def _write_page(path: Path, *, enriched: bool, placeholder: bool) -> None:
+def _write_page(
+    path: Path, *, enriched: bool, placeholder: bool, schema_version: int | None = None
+) -> None:
     desc = "(no description yet)" if placeholder else "already described"
     fm = [
         "---",
@@ -23,6 +25,8 @@ def _write_page(path: Path, *, enriched: bool, placeholder: bool) -> None:
     ]
     if enriched:
         fm.append('enriched_hash: "sha256:abc"')
+    if schema_version is not None:
+        fm.append(f"enriched_schema_version: {schema_version}")
     fm.extend(
         [
             "---",
@@ -42,8 +46,8 @@ def test_claude_run_needs_enrichment_backfills_placeholder_pages(tmp_path: Path)
     pages = tmp_path / "figma" / "web-app" / "pages"
     md_placeholder = pages / "legacy-placeholder.md"
     md_clean = pages / "already-enriched.md"
-    _write_page(md_placeholder, enriched=True, placeholder=True)
-    _write_page(md_clean, enriched=True, placeholder=False)
+    _write_page(md_placeholder, enriched=True, placeholder=True, schema_version=1)
+    _write_page(md_clean, enriched=True, placeholder=False, schema_version=1)
 
     runner = CliRunner()
     result = runner.invoke(
