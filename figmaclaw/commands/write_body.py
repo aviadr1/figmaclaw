@@ -19,6 +19,7 @@ from pathlib import Path
 
 import click
 
+from figmaclaw.body_validation import validate_markdown_contract
 from figmaclaw.figma_parse import parse_frontmatter, split_frontmatter
 from figmaclaw.figma_schema import is_h2, parse_section_heading
 from figmaclaw.git_utils import git_commit
@@ -49,6 +50,14 @@ def _write_section(md: str, section_node_id: str, new_section_text: str) -> str:
     if parts is None:
         raise ValueError("No frontmatter found")
     fm_body, body = parts
+
+    # Safety: require a matching section heading in the replacement text.
+    first_nonempty = next((line for line in new_section_text.splitlines() if line.strip()), "")
+    parsed_new = parse_section_heading(first_nonempty)
+    if parsed_new is None or parsed_new.node_id != section_node_id:
+        raise ValueError(
+            f"Replacement section must start with heading `## Name (`{section_node_id}`)`"
+        )
 
     lines = body.split("\n")
     section_start: int | None = None
@@ -121,6 +130,20 @@ def _write_section_intro(md: str, section_node_id: str, intro: str) -> str:
     return f"---\n{fm_body}\n---\n{new_body}"
 
 
+def _validate_or_raise(updated_md: str, expected_frames: list[str]) -> None:
+    """Enforce frontmatter/body frame-row parity before writing to disk."""
+    result = validate_markdown_contract(updated_md, expected_frames)
+    if result.ok:
+        return
+    msg_lines = ["body/frontmatter contract validation failed:"]
+    msgs = result.messages()
+    if msgs:
+        msg_lines.extend(f"- {m}" for m in msgs)
+    else:
+        msg_lines.append("- file must contain valid figmaclaw frontmatter and body")
+    raise click.UsageError("\n".join(msg_lines))
+
+
 @click.command("write-body")
 @click.argument("md_path", type=click.Path(exists=True, path_type=Path))
 @click.option(
@@ -167,14 +190,18 @@ def write_body_cmd(
     if not md_path.is_absolute():
         md_path = repo_dir / md_path
 
+    md_text = md_path.read_text()
+    fm = parse_frontmatter(md_text)
+    if fm is None:
+        raise click.UsageError(
+            f"{md_path}: no figmaclaw frontmatter found — is this a figmaclaw .md file?"
+        )
+
     # --intro mode: just write the intro, no body content needed from stdin
     if intro_text is not None and section_node_id is not None:
-        md_text = md_path.read_text()
-        fm = parse_frontmatter(md_text)
-        if fm is None:
-            raise click.UsageError(f"{md_path}: no figmaclaw frontmatter found")
         try:
             updated = _write_section_intro(md_text, section_node_id, intro_text)
+            _validate_or_raise(updated, fm.frames)
         except ValueError as e:
             raise click.UsageError(str(e)) from e
         md_path.write_text(updated)
@@ -192,14 +219,6 @@ def write_body_cmd(
             raise click.UsageError("Provide --body, --intro, or pipe body content to stdin.")
         new_content = sys.stdin.read()
 
-    md_text = md_path.read_text()
-
-    fm = parse_frontmatter(md_text)
-    if fm is None:
-        raise click.UsageError(
-            f"{md_path}: no figmaclaw frontmatter found — is this a figmaclaw .md file?"
-        )
-
     if section_node_id:
         try:
             updated = _write_section(md_text, section_node_id, new_content)
@@ -208,6 +227,7 @@ def write_body_cmd(
     else:
         updated = _write_body(md_text, new_content)
 
+    _validate_or_raise(updated, fm.frames)
     md_path.write_text(updated)
 
     rel = str(md_path.relative_to(repo_dir) if md_path.is_relative_to(repo_dir) else md_path)
