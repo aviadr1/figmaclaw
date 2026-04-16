@@ -11,6 +11,7 @@ breaks the entire enrichment pipeline (24+ hours of silent CI failures).
 
 from __future__ import annotations
 
+import json
 import py_compile
 import textwrap
 from pathlib import Path
@@ -816,3 +817,54 @@ class TestClaudeRunExecutionBranches:
 
         assert "CRASH in dispatch loop: RuntimeError: boom" in result.output
         assert result.exit_code == 2
+
+
+def test_collect_files_matches_inspect_enrich_must_schema_upgrade(tmp_path: Path) -> None:
+    """Selector and inspect must agree when schema requires re-enrichment.
+
+    Repro for figmaclaw issue #111:
+    - inspect marks file as needs_enrichment=True via ENRICH MUST
+    - collect_files(..., needs_enrichment=True) currently drops it
+    """
+    page = tmp_path / "figma" / "pages" / "schema-stale.md"
+    page.parent.mkdir(parents=True, exist_ok=True)
+    page.write_text(
+        textwrap.dedent(
+            """\
+            ---
+            file_key: abc123
+            page_node_id: "0:1"
+            frames: ["1:1"]
+            enriched_hash: deadbeefcafebabe
+            enriched_schema_version: 0
+            ---
+
+            # File / Page
+
+            ## Auth (`10:1`)
+
+            | Screen | Node ID | Description |
+            |--------|---------|-------------|
+            | Login | `1:1` | A described frame |
+            """
+        )
+    )
+
+    runner = CliRunner()
+    inspect_res = runner.invoke(
+        cli,
+        ["--repo-dir", str(tmp_path), "inspect", str(page), "--json"],
+        catch_exceptions=False,
+    )
+    assert inspect_res.exit_code == 0
+    inspect_data = json.loads(inspect_res.output)
+    assert inspect_data["needs_enrichment"] is True
+    assert inspect_data["enrichment_must_update"] is True
+
+    selected = collect_files(
+        tmp_path / "figma",
+        "**/*.md",
+        changed_only=False,
+        needs_enrichment=True,
+    )
+    assert selected == [page]

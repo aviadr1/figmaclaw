@@ -35,7 +35,9 @@ import pydantic
 
 from figmaclaw.budget import BudgetDecision, decide_next_batch, load_per_frame_history
 from figmaclaw.figma_md_parse import section_line_ranges
+from figmaclaw.figma_parse import parse_frontmatter, split_frontmatter
 from figmaclaw.figma_schema import PLACEHOLDER_DESCRIPTION, is_placeholder_row
+from figmaclaw.schema_status import enrichment_schema_status
 from figmaclaw.verdict import (
     EXIT_RED,
     RunVerdict,
@@ -115,26 +117,25 @@ def _changed_files(base: Path, glob_pattern: str) -> list[Path]:
 
 
 def enrichment_info(md_path: Path) -> tuple[bool, int]:
-    """Fast check: does *md_path* need enrichment?
+    """Fast selector for enrichment candidacy and frame-size estimate.
 
     Returns ``(needs_it, frame_count)``.
 
-    Reads the file directly — no subprocess, no Figma API.  Checks:
-
-    * Body still has placeholder rows?       → needs enrichment.
-    * Else has ``enriched_hash`` in fm?      → already enriched → skip.
-    * Counts body table rows for a frame-size estimate.
+    Contract: this selector must agree with ``inspect`` on ENRICH MUST
+    schema upgrades (figmaclaw#111), while remaining resilient to partially
+    shaped markdown files used in tests and dry-runs.
     """
     try:
         text = md_path.read_text()
     except OSError:
         return False, 0
 
-    # Must have figmaclaw frontmatter to be enrichable
+    # Must have figmaclaw-like frontmatter to be enrichable.
     if "file_key:" not in text:
         return False, 0
 
-    # Count frames from body table rows (| name | `node_id` | desc |)
+    # Keep frame counting heuristic aligned with existing behavior for batch sizing
+    # even on partially shaped files.
     frame_count = 0
     has_placeholder = False
     for line in text.splitlines():
@@ -143,13 +144,25 @@ def enrichment_info(md_path: Path) -> tuple[bool, int]:
         if is_placeholder_row(line):
             has_placeholder = True
 
-    # Placeholder rows are a hard signal that this page still needs enrichment,
-    # even if frontmatter was previously marked enriched.
     if has_placeholder:
         return True, frame_count
 
-    # Fast frontmatter check — enriched files without placeholders can be skipped.
-    if "enriched_hash:" in (text.split("\n---")[0] if "\n---" in text else ""):
+    parts = split_frontmatter(text)
+    fm_block = parts[0] if parts is not None else ""
+    has_enriched_hash = "enriched_hash:" in fm_block
+
+    # Selector/inspect parity for ENRICH MUST: only when schema version exists
+    # explicitly in frontmatter and is below min required.
+    has_schema_version = "enriched_schema_version:" in fm_block
+    if has_schema_version:
+        try:
+            fm = parse_frontmatter(text)
+        except Exception:
+            fm = None
+        if fm is not None and enrichment_schema_status(fm.enriched_schema_version).must_update:
+            return True, frame_count
+
+    if has_enriched_hash:
         return False, 0
 
     return True, frame_count
