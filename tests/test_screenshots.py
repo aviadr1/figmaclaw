@@ -314,6 +314,39 @@ async def test_screenshots_non_stale_invalid_cache_is_refetched(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+async def test_screenshots_non_stale_unsupported_extension_is_refetched(tmp_path: Path) -> None:
+    """INVARIANT: cache files with unsupported extension are treated as invalid."""
+    md_path = _write_md(tmp_path, _make_page(["11:1"]))
+    unsupported = tmp_path / ".figma-cache" / "screenshots" / "abc123" / "11-1.webp"
+    unsupported.parent.mkdir(parents=True, exist_ok=True)
+    unsupported.write_bytes(b"RIFF....WEBP")
+
+    def _cache_path(_: Path, __: str, node_id: str) -> Path:
+        if node_id == "11:1":
+            return unsupported
+        raise AssertionError(f"unexpected node id {node_id}")
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_image_urls = AsyncMock(return_value={"11:1": "http://example.com/1.png"})
+    mock_client.download_url = AsyncMock(return_value=b"\x89PNG\r\nfresh")
+
+    with (
+        patch.object(screenshots_module, "screenshot_cache_path", side_effect=_cache_path),
+        patch.object(screenshots_module, "FigmaClient") as MockClientClass,
+    ):
+        MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
+        result = await screenshots_module._run(
+            "fake-key", tmp_path, md_path, pending_only=False, stale_only=False
+        )
+
+    mock_client.get_image_urls.assert_called_once_with("abc123", ["11:1"])
+    mock_client.download_url.assert_called_once_with("http://example.com/1.png")
+    assert [s["node_id"] for s in result["screenshots"]] == ["11:1"]
+    assert result["failed"] == []
+
+
+@pytest.mark.asyncio
 async def test_screenshots_non_stale_preserves_requested_node_order(tmp_path: Path) -> None:
     """INVARIANT: screenshot manifest preserves source node order with mixed cache hits/misses."""
     md_path = _write_md(tmp_path, _make_page(["11:1", "11:2", "11:3"]))

@@ -30,6 +30,16 @@ from figmaclaw.staleness import stale_frame_ids_from_manifest
 
 _MAX_CONCURRENT_DOWNLOADS = 10
 _DOWNLOAD_LOCK_FILENAME = ".figma-downloads.lock"
+_ALLOWED_SCREENSHOT_EXTS = {".png", ".jpg", ".jpeg", ".svg"}
+
+
+def _is_valid_cached_screenshot(path: Path) -> bool:
+    """Return True when a cached screenshot path is a supported non-empty file."""
+    return (
+        path.is_file()
+        and path.suffix.lower() in _ALLOWED_SCREENSHOT_EXTS
+        and path.stat().st_size > 0
+    )
 
 
 @click.command("screenshots")
@@ -160,7 +170,7 @@ async def _run(
         invalid_cache_count = 0
         for node_id in node_ids:
             cached_path = screenshot_cache_path(repo_dir, file_key, node_id)
-            if cached_path.is_file() and cached_path.stat().st_size > 0:
+            if _is_valid_cached_screenshot(cached_path):
                 try:
                     rel = str(cached_path.relative_to(repo_dir))
                 except ValueError:
