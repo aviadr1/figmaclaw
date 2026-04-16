@@ -244,3 +244,55 @@ def test_section_mode_smoke_phantom_selection_is_fail_fast(
     assert result.exit_code == 2
     assert "PHANTOM SELECTION" in result.output
     assert "[2/2]" not in result.output
+
+
+@pytest.mark.smoke
+def test_section_mode_smoke_llm_marker_only_is_non_phantom_skip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Smoke: marker-only section candidates should skip without phantom red."""
+    page = tmp_path / "marker-only.md"
+    page.write_text(
+        """---
+file_key: smoke123
+page_node_id: "0:1"
+enriched_hash: deadbeef
+enriched_schema_version: 1
+---
+
+<!-- LLM: section rewrite needed -->
+
+| Screen | Node ID | Description |
+|--------|---------|-------------|
+| A | `1:1` | already described |
+"""
+    )
+
+    monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p: (True, 120))
+    monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p: [])
+    monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p: False)
+    monkeypatch.setattr(claude_run_mod, "_is_schema_upgrade_only_candidate", lambda _p: False)
+    monkeypatch.setattr(claude_run_mod, "_is_llm_marker_only_candidate", lambda _p: True)
+    monkeypatch.setattr(
+        claude_run_mod.subprocess,
+        "run",
+        lambda *args, **kwargs: Mock(stdout="", returncode=0),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "claude-run",
+            str(page),
+            "--section-mode",
+            "--prompt",
+            "noop {file_path}",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "skip (LLM-marker-only candidate)" in result.output
+    assert "PHANTOM SELECTION" not in result.output

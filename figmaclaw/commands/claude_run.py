@@ -701,6 +701,20 @@ def _is_schema_upgrade_only_candidate(md_path: Path) -> bool:
     return not needs_finalization(md_path)
 
 
+def _is_llm_marker_only_candidate(md_path: Path) -> bool:
+    """True when only unresolved signal is an LLM marker comment."""
+    try:
+        text = md_path.read_text()
+    except OSError:
+        return False
+
+    if "<!-- LLM:" not in text:
+        return False
+    if pending_sections(md_path):
+        return False
+    return not needs_finalization(md_path)
+
+
 def needs_finalization(md_path: Path) -> bool:
     """True when all sections are described but the page isn't marked enriched yet.
 
@@ -1106,6 +1120,13 @@ def claude_run_cmd(
                 if not sections and not fin_needed and _is_schema_upgrade_only_candidate(file_path):
                     click.echo(
                         f"[claude-run] [{i}/{total}] skip (schema-only candidate): {file_path}",
+                        err=True,
+                    )
+                    continue
+
+                if not sections and not fin_needed and _is_llm_marker_only_candidate(file_path):
+                    click.echo(
+                        f"[claude-run] [{i}/{total}] skip (LLM-marker-only candidate): {file_path}",
                         err=True,
                     )
                     continue

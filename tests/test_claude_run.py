@@ -794,6 +794,7 @@ class TestClaudeRunExecutionBranches:
         monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p: [])
         monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p: False)
         monkeypatch.setattr(claude_run_mod, "_is_schema_upgrade_only_candidate", lambda _p: False)
+        monkeypatch.setattr(claude_run_mod, "_is_llm_marker_only_candidate", lambda _p: False)
         monkeypatch.setattr(
             claude_run_mod.subprocess,
             "run",
@@ -817,6 +818,58 @@ class TestClaudeRunExecutionBranches:
         assert result.exit_code == 2
         assert "PHANTOM SELECTION" in result.output
         assert "Verdict (row 5)" in result.output
+
+    def test_section_mode_llm_marker_only_candidate_is_skipped_not_phantom(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        md = tmp_path / "marker-only.md"
+        md.write_text(
+            textwrap.dedent(
+                """                ---
+                file_key: abc123
+                page_node_id: "0:1"
+                enriched_hash: deadbeefcafebabe
+                enriched_schema_version: 1
+                ---
+
+                <!-- LLM: rewrite this section -->
+
+                | Screen | Node ID | Description |
+                |--------|---------|-------------|
+                | Login | `1:1` | already described |
+                """
+            )
+        )
+
+        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p: (True, 120))
+        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p: [])
+        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p: False)
+        monkeypatch.setattr(claude_run_mod, "_is_schema_upgrade_only_candidate", lambda _p: False)
+        monkeypatch.setattr(claude_run_mod, "_is_llm_marker_only_candidate", lambda _p: True)
+        monkeypatch.setattr(
+            claude_run_mod.subprocess,
+            "run",
+            lambda *args, **kwargs: Mock(stdout="", returncode=0),
+        )
+        run_mock = Mock()
+        monkeypatch.setattr(claude_run_mod, "_run_claude", run_mock)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "claude-run",
+                str(md),
+                "--section-mode",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "skip (LLM-marker-only candidate)" in result.output
+        assert "PHANTOM SELECTION" not in result.output
+        assert run_mock.call_count == 0
 
     def test_section_mode_schema_only_candidate_is_skipped_not_phantom(
         self, tmp_path: Path, monkeypatch
@@ -842,6 +895,7 @@ class TestClaudeRunExecutionBranches:
         monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p: [])
         monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p: False)
         monkeypatch.setattr(claude_run_mod, "_is_schema_upgrade_only_candidate", lambda _p: True)
+        monkeypatch.setattr(claude_run_mod, "_is_llm_marker_only_candidate", lambda _p: False)
         monkeypatch.setattr(
             claude_run_mod.subprocess,
             "run",
@@ -932,6 +986,7 @@ class TestClaudeRunExecutionBranches:
         monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p: [])
         monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p: False)
         monkeypatch.setattr(claude_run_mod, "_is_schema_upgrade_only_candidate", lambda _p: False)
+        monkeypatch.setattr(claude_run_mod, "_is_llm_marker_only_candidate", lambda _p: False)
         monkeypatch.setattr(
             claude_run_mod.subprocess,
             "run",
