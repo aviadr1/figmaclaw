@@ -174,6 +174,7 @@ while true; do
     echo "figmaclaw pull timed out after ${BATCH_TIMEOUT_SECONDS}s; stopping checkpoint loop early."
     FINAL_REASON="timeout_stop"
     emit_obs "batch_timeout_stop" "timeout without retry"
+    emit_obs "batch_end" "timeout stop"
     break
   fi
 

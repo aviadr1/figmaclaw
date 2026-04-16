@@ -271,3 +271,19 @@ def test_emits_sync_observability_logs_and_files(tmp_path: Path) -> None:
 
     assert "SYNC_OBS event=batch_start" in out
     assert "SYNC_OBS summary_file=" in out
+
+
+def test_timeout_stop_emits_batch_end_event(tmp_path: Path) -> None:
+    obs_dir = tmp_path / "obs"
+    _run_loop(
+        tmp_path,
+        scenario="single_done",
+        git_dirty="1",
+        timeout_mode="always",
+        FIGMACLAW_SYNC_OBS_DIR=str(obs_dir),
+    )
+
+    events_text = (obs_dir / "checkpoint_events.csv").read_text()
+    assert "batch_start" in events_text
+    assert "batch_timeout_stop" in events_text
+    assert "batch_end" in events_text
