@@ -262,3 +262,103 @@ frames: ['11:1']
     assert count == 1
     assert "| Login | `11:1` | Updated canonical row |" in result
     assert "| Debug row | `11:1` | should stay untouched |" in result
+
+
+def test_cli_write_descriptions_invalid_json_is_usage_error(tmp_path: Path) -> None:
+    """Invalid JSON input must fail cleanly without Python traceback."""
+    md_path = tmp_path / "page.md"
+    md_path.write_text(_TEST_MD)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "write-descriptions",
+            str(md_path),
+            "--descriptions",
+            '{"11:1": "ok",',
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Invalid JSON" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_cli_write_descriptions_supports_descriptions_file(tmp_path: Path) -> None:
+    """Large payload mode: JSON from file should update rows successfully."""
+    md_path = tmp_path / "page.md"
+    md_path.write_text(_TEST_MD)
+
+    payload = tmp_path / "descriptions.json"
+    payload.write_text(json.dumps({"11:1": "From file", "11:2": "Also from file"}))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "write-descriptions",
+            str(md_path),
+            "--descriptions-file",
+            str(payload),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "updated 2/2" in result.output
+    updated = md_path.read_text()
+    assert "From file" in updated
+    assert "Also from file" in updated
+
+
+def test_cli_write_descriptions_rejects_non_string_values(tmp_path: Path) -> None:
+    """Descriptions JSON values must be strings for deterministic markdown output."""
+    md_path = tmp_path / "page.md"
+    md_path.write_text(_TEST_MD)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "write-descriptions",
+            str(md_path),
+            "--descriptions",
+            '{"11:1": 123}',
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "must be a string" in result.output
+
+
+def test_cli_write_descriptions_rejects_dual_input_modes(tmp_path: Path) -> None:
+    """CLI should reject ambiguous payload source selection."""
+    md_path = tmp_path / "page.md"
+    md_path.write_text(_TEST_MD)
+
+    payload = tmp_path / "descriptions.json"
+    payload.write_text('{"11:1": "From file"}')
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "write-descriptions",
+            str(md_path),
+            "--descriptions",
+            '{"11:1": "inline"}',
+            "--descriptions-file",
+            str(payload),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Use either --descriptions or --descriptions-file" in result.output

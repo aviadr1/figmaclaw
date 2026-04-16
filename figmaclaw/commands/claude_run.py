@@ -685,6 +685,22 @@ def pending_frame_node_ids(md_path: Path) -> set[str]:
     }
 
 
+def _is_schema_upgrade_only_candidate(md_path: Path) -> bool:
+    """True when file only needs schema bump (no pending rows, no finalization work)."""
+    try:
+        fm = parse_frontmatter(md_path.read_text())
+    except OSError:
+        return False
+
+    if fm is None:
+        return False
+    if not enrichment_schema_status(fm.enriched_schema_version).must_update:
+        return False
+    if pending_sections(md_path):
+        return False
+    return not needs_finalization(md_path)
+
+
 def needs_finalization(md_path: Path) -> bool:
     """True when all sections are described but the page isn't marked enriched yet.
 
@@ -1084,9 +1100,19 @@ def claude_run_cmd(
                 sections = pending_sections(file_path)
                 fin_needed = needs_finalization(file_path)
 
+                # Schema-only candidates can be selected for enrichment while
+                # having no pending body work in section mode. Skip these quietly
+                # so they do not become phantom-selection RED failures.
+                if not sections and not fin_needed and _is_schema_upgrade_only_candidate(file_path):
+                    click.echo(
+                        f"[claude-run] [{i}/{total}] skip (schema-only candidate): {file_path}",
+                        err=True,
+                    )
+                    continue
+
                 # figmaclaw#27 row 5: selector said this file needs enrichment,
-                # but the dispatcher has no work for it. That is ALWAYS a bug —
-                # a selector/dispatcher disagreement that must surface as RED.
+                # but the dispatcher has no work for it. This remains a hard RED
+                # for true selector/dispatcher disagreement (non schema-only).
                 if not sections and not fin_needed:
                     click.echo(
                         f"[claude-run] [{i}/{total}] PHANTOM SELECTION: "
