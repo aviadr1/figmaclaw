@@ -817,28 +817,29 @@ class TestClaudeRunExecutionBranches:
         assert "PHANTOM SELECTION" in result.output
         assert "Verdict (row 5)" in result.output
 
-    def test_section_mode_stuck_detection_breaks_after_retries(
+    def test_section_mode_stuck_detection_breaks_on_first_no_progress(
         self, tmp_path: Path, monkeypatch
     ) -> None:
         md = tmp_path / "page.md"
         self._write_placeholder_page(md)
 
         sections = [{"node_id": "10:1", "name": "Auth", "pending_frames": 2}]
-        # Initial load + two post-batch refreshes; third loop detects "stuck" and exits.
-        pending = [sections, sections, sections]
+        pending = [sections, sections]
 
         monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p: (True, 120))
         monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p: pending.pop(0))
+        monkeypatch.setattr(claude_run_mod, "pending_frame_node_ids", lambda _p: {"11:1", "11:2"})
         monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p: False)
         monkeypatch.setattr(
             claude_run_mod,
             "decide_next_batch",
             lambda **_: self._budget_decision(True, "[budget] go"),
         )
+        run_mock = Mock(return_value=claude_run_mod.ClaudeResult(exit_code=0))
         monkeypatch.setattr(
             claude_run_mod,
             "_run_claude",
-            lambda **_: claude_run_mod.ClaudeResult(exit_code=0),
+            run_mock,
         )
         monkeypatch.setattr(claude_run_mod, "count_commits_since", lambda *_args, **_kwargs: 1)
         monkeypatch.setattr(
@@ -862,8 +863,48 @@ class TestClaudeRunExecutionBranches:
         )
 
         assert result.exit_code == 0
-        assert "STUCK:" in result.output
+        assert "NO-PROGRESS" in result.output
+        assert run_mock.call_count == 1
         assert "Verdict (row 2)" in result.output
+
+    def test_section_mode_phantom_selection_stops_run_immediately(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        page_a = tmp_path / "a.md"
+        page_b = tmp_path / "b.md"
+        self._write_placeholder_page(page_a)
+        self._write_placeholder_page(page_b)
+
+        monkeypatch.setattr(
+            claude_run_mod, "collect_files", lambda *args, **kwargs: [page_a, page_b]
+        )
+        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p: (True, 120))
+        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p: [])
+        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p: False)
+        monkeypatch.setattr(
+            claude_run_mod.subprocess,
+            "run",
+            lambda *args, **kwargs: Mock(stdout="", returncode=0),
+        )
+        run_mock = Mock()
+        monkeypatch.setattr(claude_run_mod, "_run_claude", run_mock)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "claude-run",
+                str(page_a),
+                "--section-mode",
+            ],
+        )
+
+        assert result.exit_code == 2
+        assert "PHANTOM SELECTION" in result.output
+        assert "[2/2]" not in result.output
+        assert run_mock.call_count == 0
 
     def test_dispatch_crash_is_always_red(self, tmp_path: Path, monkeypatch) -> None:
         md = tmp_path / "page.md"
@@ -1271,6 +1312,32 @@ def test_log_keeps_distinct_runs_with_identical_payload(tmp_path: Path) -> None:
     with log_path.open(newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
     assert len(rows) == 2
+
+
+def test_log_migrates_minimal_legacy_header_without_optional_columns(tmp_path: Path) -> None:
+    """7-column legacy logs should auto-migrate to canonical schema-v1."""
+    log_path = tmp_path / claude_run_mod.ENRICHMENT_LOG
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(
+        "timestamp,file,mode,frames,duration_s,success,section\n"
+        "2026-04-15T00:00:00+00:00,figma/a.md,batch,10,50,True,Auth\n",
+        encoding="utf-8",
+    )
+
+    md = tmp_path / "figma" / "pages" / "a.md"
+    md.parent.mkdir(parents=True, exist_ok=True)
+    md.write_text("---\nfile_key: a\n---\n")
+
+    claude_run_mod._log_enrichment(tmp_path, md, "batch", 12, 31.0, True, run_id="run-x")
+
+    with log_path.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+        assert reader.fieldnames is not None
+        assert tuple(reader.fieldnames) == claude_run_mod.ENRICHMENT_LOG_FIELDS
+    assert len(rows) == 2
+    assert rows[0]["schema_version"] in {"0", str(ENRICHMENT_LOG_SCHEMA_VERSION)}
+    assert rows[0]["event_id"] != ""
 
 
 def test_log_unknown_header_is_observable_and_skips_append(tmp_path: Path) -> None:

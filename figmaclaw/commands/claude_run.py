@@ -88,6 +88,15 @@ LEGACY_ENRICHMENT_LOG_FIELDS: tuple[str, ...] = (
     "claude_duration_ms",
     "stop_reason",
 )
+MINIMAL_LEGACY_ENRICHMENT_LOG_FIELDS: tuple[str, ...] = (
+    "timestamp",
+    "file",
+    "mode",
+    "frames",
+    "duration_s",
+    "success",
+    "section",
+)
 
 _EVENT_ID_CACHE: dict[Path, set[str]] = {}
 
@@ -326,13 +335,27 @@ def _ensure_enrichment_log_schema(repo_dir: Path, log_path: Path) -> bool:
         _rebuild_event_id_index(repo_dir, migrated)
         return True
 
-    if set(LEGACY_ENRICHMENT_LOG_FIELDS).issubset(set(fieldnames)):
+    if set(ENRICHMENT_LOG_FIELDS).issubset(set(fieldnames)):
         normalized = [_row_to_current(row) for row in rows]
         _rewrite_csv_rows(log_path, normalized)
         _rebuild_event_id_index(repo_dir, normalized)
         _warn_enrichment_log(
             repo_dir, "normalized non-canonical enrichment log header to schema-v1"
         )
+        return True
+
+    if set(LEGACY_ENRICHMENT_LOG_FIELDS).issubset(set(fieldnames)):
+        normalized = [_row_to_current(row) for row in rows]
+        _rewrite_csv_rows(log_path, normalized)
+        _rebuild_event_id_index(repo_dir, normalized)
+        _warn_enrichment_log(repo_dir, "normalized legacy enrichment log header to schema-v1")
+        return True
+
+    if set(MINIMAL_LEGACY_ENRICHMENT_LOG_FIELDS).issubset(set(fieldnames)):
+        normalized = [_row_to_current(row) for row in rows]
+        _rewrite_csv_rows(log_path, normalized)
+        _rebuild_event_id_index(repo_dir, normalized)
+        _warn_enrichment_log(repo_dir, "migrated minimal enrichment log header to schema-v1")
         return True
 
     _warn_enrichment_log(
@@ -601,6 +624,29 @@ def collect_files(
 # ---------------------------------------------------------------------------
 
 
+def _pending_sections_with_frame_ids(text: str) -> list[dict[str, str | list[str]]]:
+    """Parse unresolved rows per section from the canonical body table ranges."""
+    lines = text.splitlines()
+    parsed: list[dict[str, str | list[str]]] = []
+    for section, start, end in section_line_ranges(text):
+        if not section.node_id:
+            continue  # prose sections (Screen Flow) have no node_id
+        pending_frame_ids = [
+            node_id
+            for line in lines[start:end]
+            if (node_id := unresolved_row_node_id(line)) is not None
+        ]
+        if pending_frame_ids:
+            parsed.append(
+                {
+                    "node_id": section.node_id,
+                    "name": section.name,
+                    "pending_frame_ids": pending_frame_ids,
+                }
+            )
+    return parsed
+
+
 def pending_sections(md_path: Path) -> list[dict[str, str | int]]:
     """Return sections that need enrichment (have pending unresolved rows).
 
@@ -612,21 +658,31 @@ def pending_sections(md_path: Path) -> list[dict[str, str | int]]:
     except OSError:
         return []
 
-    lines = text.splitlines()
-    result: list[dict[str, str | int]] = []
-    for section, start, end in section_line_ranges(text):
-        if not section.node_id:
-            continue  # prose sections (Screen Flow) have no node_id
-        pending = sum(1 for line in lines[start:end] if unresolved_row_node_id(line) is not None)
-        if pending > 0:
-            result.append(
-                {
-                    "node_id": section.node_id,
-                    "name": section.name,
-                    "pending_frames": pending,
-                }
-            )
-    return result
+    parsed = _pending_sections_with_frame_ids(text)
+    return [
+        {
+            "node_id": str(item["node_id"]),
+            "name": str(item["name"]),
+            "pending_frames": len(item["pending_frame_ids"]),
+        }
+        for item in parsed
+    ]
+
+
+def pending_frame_node_ids(md_path: Path) -> set[str]:
+    """Return unresolved frame node IDs pending enrichment for one page."""
+    try:
+        text = md_path.read_text()
+    except OSError:
+        return set()
+
+    parsed = _pending_sections_with_frame_ids(text)
+    return {
+        node_id
+        for item in parsed
+        for node_id in item["pending_frame_ids"]
+        if isinstance(node_id, str)
+    }
 
 
 def needs_finalization(md_path: Path) -> bool:
@@ -1042,7 +1098,7 @@ def claude_run_cmd(
                     )
                     skipped_no_work += 1
                     phantom_files.append(str(file_path))
-                    continue
+                    break
 
                 total_pending = sum(int(s["pending_frames"]) for s in sections)
                 click.echo(
@@ -1052,38 +1108,10 @@ def claude_run_cmd(
                 )
 
                 chunk_num = 0
-                prev_pending_count = None
-                stale_retries = 0
                 while sections:
                     chunk_num += 1
                     total_pending = sum(int(s["pending_frames"]) for s in sections)
-
-                    # Detect stuck loop: if pending count hasn't decreased after
-                    # a successful batch, the remaining frames are undescribable
-                    # (e.g. screenshot download fails). Skip to next file.
-                    if prev_pending_count is not None and total_pending >= prev_pending_count:
-                        stale_retries += 1
-                        if stale_retries >= 2:
-                            click.echo(
-                                f"[claude-run] [{i}/{total}] STUCK: "
-                                f"{total_pending} frames won't describe "
-                                f"(likely unrenderable screenshots). "
-                                f"Moving to next file.",
-                                err=True,
-                            )
-                            _log_enrichment(
-                                repo_dir,
-                                file_path,
-                                "stuck",
-                                total_pending,
-                                0,
-                                False,
-                                run_id=run_id,
-                            )
-                            break
-                    else:
-                        stale_retries = 0
-                    prev_pending_count = total_pending
+                    before_pending_ids = pending_frame_node_ids(file_path)
 
                     # figmaclaw#26: adaptive budget check BEFORE the expensive call
                     decision = _budget_check(total_pending, mode="batch")
@@ -1149,9 +1177,30 @@ def claude_run_cmd(
                     )
                     _record_success("batch", total_pending, dur)
 
-                    # Re-check pending after commit
+                    # Re-check pending after commit.
+                    # If unresolved frame IDs didn't change, this run made no
+                    # progress on this file; stop immediately to avoid loops.
                     subprocess.run(["git", "pull", "--no-rebase"], capture_output=True)
                     sections = pending_sections(file_path)
+                    after_pending_ids = pending_frame_node_ids(file_path)
+                    if after_pending_ids and after_pending_ids == before_pending_ids:
+                        click.echo(
+                            f"[claude-run] [{i}/{total}] NO-PROGRESS: unresolved frame set "
+                            f"did not change after batch {chunk_num} "
+                            f"({len(after_pending_ids)} frames). "
+                            f"Stopping file to prevent same-run retry loops.",
+                            err=True,
+                        )
+                        _log_enrichment(
+                            repo_dir,
+                            file_path,
+                            "stuck",
+                            len(after_pending_ids),
+                            0,
+                            False,
+                            run_id=run_id,
+                        )
+                        break
 
                 if budget_exhausted:
                     break  # out of outer for

@@ -129,7 +129,7 @@ Check `needs_enrichment` is false.
 ### Step 9 — Commit and push
 
 ```bash
-git add <file_path> .figma-cache/ .figma-sync/
+git add <file_path>
 git commit -m "sync: describe <page-name> frames"
 git push || (git pull --no-rebase && git push)
 ```

@@ -54,7 +54,7 @@ Follow this workflow exactly:
 
 8. Commit and push:
    ```
-   git add {file_path} .figma-cache/ .figma-sync/
+   git add {file_path}
    git commit -m "sync: describe {{page-name}} frames"
    git push || (git pull --no-rebase && git push)
    ```
