@@ -32,13 +32,54 @@ def _apply_flows(md: str, flows: list[list[str]]) -> str:
         fm_data["frames"] = _FlowList(fm.frames)
     if flows:
         fm_data["flows"] = _FlowList(flows)
-    # Preserve enrichment state
+
+    # Preserve enrichment state and explicit schema version.
     if fm.enriched_hash is not None:
         fm_data["enriched_hash"] = fm.enriched_hash
     if fm.enriched_at is not None:
         fm_data["enriched_at"] = fm.enriched_at
     if fm.enriched_frame_hashes:
         fm_data["enriched_frame_hashes"] = _FlowDict(fm.enriched_frame_hashes)
+    fm_data["enriched_schema_version"] = fm.enriched_schema_version
+
+    # Preserve pull-pass fields.
+    if fm.component_set_keys:
+        fm_data["component_set_keys"] = _FlowDict(fm.component_set_keys)
+    if fm.raw_frames:
+        fm_data["raw_frames"] = _FlowDict(
+            {k: _FlowDict({"raw": v.raw, "ds": _FlowList(v.ds)}) for k, v in fm.raw_frames.items()}
+        )
+    if fm.raw_tokens:
+        fm_data["raw_tokens"] = _FlowDict(
+            {
+                k: _FlowDict({"raw": v.raw, "stale": v.stale, "valid": v.valid})
+                for k, v in fm.raw_tokens.items()
+            }
+        )
+    if fm.frame_sections:
+        fm_data["frame_sections"] = _FlowDict(
+            {
+                frame_id: _FlowList(
+                    [
+                        _FlowDict(
+                            {
+                                "node_id": n.node_id,
+                                "name": n.name,
+                                "x": n.x,
+                                "y": n.y,
+                                "w": n.w,
+                                "h": n.h,
+                                "instances": _FlowList(n.instances),
+                                "instance_component_ids": _FlowList(n.instance_component_ids),
+                                "raw_count": n.raw_count,
+                            }
+                        )
+                        for n in nodes
+                    ]
+                )
+                for frame_id, nodes in fm.frame_sections.items()
+            }
+        )
 
     new_fm_body = yaml.dump(
         fm_data,

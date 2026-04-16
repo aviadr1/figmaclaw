@@ -60,10 +60,25 @@ def _write_md(tmp_path: Path) -> Path:
     return md_path
 
 
+def _body_with_marker(md_path: Path, marker: str) -> str:
+    """Return valid body content with a marker inserted in summary text."""
+    content = _frontmatter.loads(md_path.read_text()).content
+    lines = content.splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith("[Open in Figma]"):
+            for j in range(i + 1, len(lines)):
+                if lines[j].strip():
+                    lines[j] = marker
+                    return "\n".join(lines)
+            lines.append(marker)
+            return "\n".join(lines)
+    return content
+
+
 def test_write_body_writes_new_body(tmp_path: Path) -> None:
     """INVARIANT: write-body replaces the body below frontmatter with new content."""
     md_path = _write_md(tmp_path)
-    new_body = "# New Title\n\nThis is the new body written by the LLM.\n"
+    new_body = _body_with_marker(md_path, "This is the new body written by the LLM.")
 
     runner = CliRunner()
     result = runner.invoke(
@@ -92,7 +107,7 @@ def test_bp6_write_body_preserves_frontmatter_byte_for_byte(tmp_path: Path) -> N
     _, _, after_open = original_md.partition("---\n")
     original_fm_body, _, _ = after_open.partition("\n---")
 
-    new_body = "Completely different body content.\n\nWith multiple paragraphs."
+    new_body = _body_with_marker(md_path, "Completely different body content.")
     runner = CliRunner()
     result = runner.invoke(
         cli,
@@ -127,7 +142,7 @@ def test_bp6_write_body_preserves_frontmatter_byte_for_byte(tmp_path: Path) -> N
 def test_write_body_via_stdin(tmp_path: Path) -> None:
     """INVARIANT: write-body reads body from stdin when --body is not given."""
     md_path = _write_md(tmp_path)
-    new_body = "Body from stdin.\n"
+    new_body = _body_with_marker(md_path, "Body from stdin.")
 
     runner = CliRunner()
     result = runner.invoke(
@@ -150,7 +165,7 @@ def test_write_body_via_file(tmp_path: Path) -> None:
     """INVARIANT: write-body reads body from a file path when --body points to one."""
     md_path = _write_md(tmp_path)
     body_file = tmp_path / "new_body.md"
-    body_file.write_text("# LLM Output\n\nBody loaded from file.\n")
+    body_file.write_text(_body_with_marker(md_path, "Body loaded from file."))
 
     runner = CliRunner()
     result = runner.invoke(
@@ -207,7 +222,7 @@ def test_write_body_survives_repeated_calls(tmp_path: Path) -> None:
                 "write-body",
                 str(md_path),
                 "--body",
-                f"Body version {i}.\n",
+                _body_with_marker(md_path, f"Body version {i}."),
             ],
         )
         assert result.exit_code == 0, result.output
@@ -507,3 +522,196 @@ def test_write_section_not_found(tmp_path: Path) -> None:
         ],
     )
     assert result.exit_code != 0
+
+
+def test_write_body_rejects_missing_rows_vs_frontmatter(tmp_path: Path) -> None:
+    """INVARIANT: write-body fails when body omits frame rows listed in frontmatter."""
+    md_path = tmp_path / "page.md"
+    md_path.write_text(_SECTION_TEST_MD)
+
+    invalid_body = """\
+# File / Page
+
+[Open in Figma](https://figma.com)
+
+Page summary text.
+
+## Auth (`10:1`)
+
+Auth section intro.
+
+| Screen | Node ID | Description |
+|--------|---------|-------------|
+| Login | `11:1` | described |
+
+## Dashboard (`20:1`)
+
+Dashboard intro.
+
+| Screen | Node ID | Description |
+|--------|---------|-------------|
+| Home | `21:1` | described |
+"""
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["--repo-dir", str(tmp_path), "write-body", str(md_path), "--body", invalid_body],
+    )
+    assert result.exit_code != 0
+    assert "missing frame rows" in result.output
+    assert "11:2" in result.output
+
+
+def test_write_body_rejects_extra_rows_vs_frontmatter(tmp_path: Path) -> None:
+    """INVARIANT: write-body fails when body contains rows not listed in frontmatter."""
+    md_path = tmp_path / "page.md"
+    md_path.write_text(_SECTION_TEST_MD)
+
+    invalid_body = """\
+# File / Page
+
+[Open in Figma](https://figma.com)
+
+Page summary text.
+
+## Auth (`10:1`)
+
+Auth section intro.
+
+| Screen | Node ID | Description |
+|--------|---------|-------------|
+| Login | `11:1` | described |
+| Signup | `11:2` | described |
+| Unknown | `99:1` | should fail |
+
+## Dashboard (`20:1`)
+
+Dashboard intro.
+
+| Screen | Node ID | Description |
+|--------|---------|-------------|
+| Home | `21:1` | described |
+"""
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["--repo-dir", str(tmp_path), "write-body", str(md_path), "--body", invalid_body],
+    )
+    assert result.exit_code != 0
+    assert "unexpected frame rows" in result.output
+    assert "99:1" in result.output
+
+
+def test_write_body_rejects_duplicate_rows_vs_frontmatter(tmp_path: Path) -> None:
+    """INVARIANT: write-body fails when a frame node_id appears multiple times in body."""
+    md_path = tmp_path / "page.md"
+    md_path.write_text(_SECTION_TEST_MD)
+
+    invalid_body = """\
+# File / Page
+
+[Open in Figma](https://figma.com)
+
+Page summary text.
+
+## Auth (`10:1`)
+
+Auth section intro.
+
+| Screen | Node ID | Description |
+|--------|---------|-------------|
+| Login | `11:1` | described |
+| Login copy | `11:1` | duplicate |
+| Signup | `11:2` | described |
+
+## Dashboard (`20:1`)
+
+Dashboard intro.
+
+| Screen | Node ID | Description |
+|--------|---------|-------------|
+| Home | `21:1` | described |
+"""
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["--repo-dir", str(tmp_path), "write-body", str(md_path), "--body", invalid_body],
+    )
+    assert result.exit_code != 0
+    assert "duplicate frame rows" in result.output
+    assert "11:1" in result.output
+
+
+def test_write_section_requires_matching_heading_node_id(tmp_path: Path) -> None:
+    """INVARIANT: --section replacement text must start with matching section node_id."""
+    md_path = tmp_path / "page.md"
+    md_path.write_text(_SECTION_TEST_MD)
+
+    invalid_section = """\
+## Dashboard (`20:1`)
+
+This heading does not match --section 10:1.
+
+| Screen | Node ID | Description |
+|--------|---------|-------------|
+| Login | `11:1` | desc |
+| Signup | `11:2` | desc |
+"""
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "write-body",
+            str(md_path),
+            "--section",
+            "10:1",
+            "--body",
+            invalid_section,
+        ],
+    )
+    assert result.exit_code != 0
+    assert "must contain heading" in result.output
+
+
+def test_write_section_accepts_leading_preamble_before_heading(tmp_path: Path) -> None:
+    """INVARIANT: --section accepts harmless preamble before target heading."""
+    md_path = tmp_path / "page.md"
+    md_path.write_text(_SECTION_TEST_MD)
+
+    new_auth = """\
+Note: generated by model
+
+## Auth (`10:1`)
+
+Updated auth intro.
+
+| Screen | Node ID | Description |
+|--------|---------|-------------|
+| Login | `11:1` | A login screen |
+| Signup | `11:2` | A signup screen |"""
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "write-body",
+            str(md_path),
+            "--section",
+            "10:1",
+            "--body",
+            new_auth,
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    updated = md_path.read_text()
+    assert "Updated auth intro." in updated
+    assert "Dashboard intro." in updated

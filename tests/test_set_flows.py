@@ -146,3 +146,61 @@ def test_set_flows_exit_2_on_bad_frontmatter(tmp_path: Path) -> None:
         ],
     )
     assert result.exit_code == 2
+
+
+def test_set_flows_preserves_explicit_enrichment_schema_version(tmp_path: Path) -> None:
+    """INVARIANT: set-flows preserves explicit enriched_schema_version in frontmatter."""
+    md = scaffold_page(_make_page(), _make_entry())
+    md_path = tmp_path / "page.md"
+    md_path.write_text(md)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "set-flows",
+            str(md_path),
+            "--flows",
+            json.dumps([["11:1", "11:2"]]),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    text = md_path.read_text()
+    assert "enriched_schema_version: 0" in text
+
+
+def test_set_flows_migrates_missing_enrichment_schema_version(tmp_path: Path) -> None:
+    """INVARIANT: set-flows backfills enriched_schema_version when missing."""
+    md_path = tmp_path / "page.md"
+    md_path.write_text(
+        """---
+file_key: abc123
+page_node_id: '1:1'
+frames: ['11:1']
+---
+
+## Auth (`10:1`)
+
+| Screen | Node ID | Description |
+|--------|---------|-------------|
+| Login | `11:1` | desc |
+"""
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "set-flows",
+            str(md_path),
+            "--flows",
+            json.dumps([["11:1", "11:1"]]),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "enriched_schema_version: 0" in md_path.read_text()

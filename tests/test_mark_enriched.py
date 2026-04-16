@@ -168,3 +168,59 @@ def test_mark_enriched_preserves_llm_body(tmp_path: Path) -> None:
 
     body_after = md_path.read_text().split("---\n", 2)[-1]
     assert body_before == body_after
+
+
+def test_mark_enriched_refuses_invalid_body_frame_contract(tmp_path: Path) -> None:
+    """INVARIANT: mark-enriched exits 2 when body rows drift from frontmatter frames."""
+    md_path = _setup(tmp_path)
+
+    # Remove one expected frame row from body while keeping frontmatter unchanged.
+    text = md_path.read_text()
+    text = text.replace("| permissions | `11:2` | (no description yet) |\n", "")
+    md_path.write_text(text)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "mark-enriched",
+            str(md_path),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "body/frontmatter contract validation failed" in result.output
+    assert "11:2" in result.output
+
+    # Ensure enriched fields were not written after failure.
+    from figmaclaw.figma_parse import parse_frontmatter
+
+    fm = parse_frontmatter(md_path.read_text())
+    assert fm is not None
+    assert fm.enriched_hash is None
+
+
+def test_mark_enriched_refuses_duplicate_frontmatter_frame_ids(tmp_path: Path) -> None:
+    """INVARIANT: mark-enriched exits 2 on duplicate frame IDs in frontmatter."""
+    md_path = _setup(tmp_path)
+
+    text = md_path.read_text()
+    text = text.replace("frames: ['11:1', '11:2']", "frames: ['11:1', '11:1', '11:2']", 1)
+    md_path.write_text(text)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "mark-enriched",
+            str(md_path),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "duplicate frame node_ids in frontmatter" in result.output
+    assert "11:1" in result.output

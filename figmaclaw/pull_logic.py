@@ -233,12 +233,14 @@ def update_page_frontmatter(
     enriched_hash = existing_fm.enriched_hash if existing_fm else None
     enriched_at = existing_fm.enriched_at if existing_fm else None
     enriched_frame_hashes = existing_fm.enriched_frame_hashes if existing_fm else None
+    enriched_schema_version = existing_fm.enriched_schema_version if existing_fm else 0
 
     new_fm = build_page_frontmatter(
         page,
         enriched_hash=enriched_hash,
         enriched_at=enriched_at,
         enriched_frame_hashes=enriched_frame_hashes or None,
+        enriched_schema_version=enriched_schema_version,
         raw_frames=raw_frames,
         raw_tokens=raw_tokens,
         frame_sections=frame_sections,
@@ -283,6 +285,7 @@ def update_component_frontmatter(
     enriched_hash = existing_fm.enriched_hash if existing_fm else None
     enriched_at = existing_fm.enriched_at if existing_fm else None
     enriched_frame_hashes = existing_fm.enriched_frame_hashes if existing_fm else None
+    enriched_schema_version = existing_fm.enriched_schema_version if existing_fm else 0
 
     new_fm = build_component_frontmatter(
         section,
@@ -291,6 +294,7 @@ def update_component_frontmatter(
         enriched_hash=enriched_hash,
         enriched_at=enriched_at,
         enriched_frame_hashes=enriched_frame_hashes or None,
+        enriched_schema_version=enriched_schema_version,
     )
     _rewrite_frontmatter_preserving_body(out_path, md_text, new_fm)
     return out_path

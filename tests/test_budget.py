@@ -430,3 +430,19 @@ class TestLoadHistoryFromCSV:
             ],
         )
         assert load_per_frame_history(csv, "batch") == [6.0]
+
+
+def test_load_history_reads_schema_v1_header_rows(tmp_path: Path) -> None:
+    """INVARIANT: load_per_frame_history works with schema-v1 enrichment log header."""
+    csv_path = tmp_path / "log.csv"
+    csv_path.write_text(
+        "schema_version,event_id,run_id,timestamp,file,mode,frames,duration_s,success,section,turns,cost_usd,claude_duration_ms,stop_reason\n"
+        "1,e1,run-a,2026-04-15T00:00:00+00:00,figma/a.md,batch,80,480,True,Auth,2,0.1111,50000,end_turn\n"
+        "1,e2,run-a,2026-04-15T00:01:00+00:00,figma/a.md,batch,80,999,False,Auth,2,0.1111,50000,error\n"
+        "1,e3,run-b,2026-04-15T00:02:00+00:00,figma/a.md,whole-page,100,900,True,,2,0.2222,90000,end_turn\n"
+        "1,e4,run-b,2026-04-15T00:03:00+00:00,figma/a.md,batch,80,400,True,Auth,2,0.1111,50000,end_turn\n",
+        encoding="utf-8",
+    )
+
+    assert load_per_frame_history(csv_path, "batch") == [6.0, 5.0]
+    assert load_per_frame_history(csv_path, "whole-page") == [9.0]

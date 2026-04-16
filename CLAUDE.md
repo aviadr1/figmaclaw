@@ -96,7 +96,7 @@ Rationale: figmaclaw runs in a CI loop. Any unconditional write — even just a 
 ## Code conventions
 
 - **Use pydantic, not dataclass**, for structured values (decisions, results, model
-  rows, anything with named fields). Use `pydantic.BaseModel` with
+  rows, parser/validator outputs, anything with named fields). Use `pydantic.BaseModel` with
   `model_config = pydantic.ConfigDict(frozen=True)` when immutability matters.
   Rationale: validation, JSON-serialization, and consistency with existing
   models (`ClaudeResult`, figma models) all come for free. `@dataclass` should

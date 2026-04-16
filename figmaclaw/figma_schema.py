@@ -52,6 +52,21 @@ from dataclasses import dataclass
 #: enrichment prompts. Changing this requires updating the prompts too.
 PLACEHOLDER_DESCRIPTION: str = "(no description yet)"
 
+#: Canonical marker used when screenshot export failed for a frame.
+NO_SCREENSHOT_AVAILABLE: str = "(no screenshot available)"
+
+#: Legacy/alternate marker still seen in historical files and prompts.
+SCREENSHOT_UNAVAILABLE: str = "(screenshot unavailable)"
+
+#: Description-cell markers that mean the row is still unresolved/retryable.
+UNRESOLVED_DESCRIPTION_MARKERS: frozenset[str] = frozenset(
+    {
+        PLACEHOLDER_DESCRIPTION,
+        NO_SCREENSHOT_AVAILABLE,
+        SCREENSHOT_UNAVAILABLE,
+    }
+)
+
 #: Substitute for frame or section names that are empty / whitespace-only in
 #: the source Figma data. Making this visible in the rendered markdown is
 #: deliberate — a bare ``##  (`id`)`` heading is both ugly and historically
@@ -382,18 +397,29 @@ def is_table_separator(line: str) -> bool:
 
 
 def is_placeholder_row(line: str) -> bool:
-    """True if *line* is a frame table row whose description is the placeholder.
-
-    Implementation note: matches the literal substring ``| (no description
-    yet) |``, which is how :func:`render_frame_row` emits a frame with an
-    unfilled description.
-    """
+    """True if *line* still carries the canonical placeholder description."""
     return f"| {PLACEHOLDER_DESCRIPTION} |" in line
+
+
+def is_unresolved_row(line: str) -> bool:
+    """True if *line* has any unresolved/retryable description marker.
+
+    Includes the canonical placeholder and screenshot-unavailable markers.
+    """
+    return any(f"| {marker} |" in line for marker in UNRESOLVED_DESCRIPTION_MARKERS)
 
 
 # ---------------------------------------------------------------------------
 # Round-trip invariants (exposed for tests and runtime assertions).
 # ---------------------------------------------------------------------------
+
+
+def unresolved_row_node_id(line: str) -> str | None:
+    """Return node_id when *line* is an unresolved frame row, else None."""
+    if not is_unresolved_row(line):
+        return None
+    row = parse_frame_row(line)
+    return row.node_id if row is not None else None
 
 
 def assert_section_round_trip(name: str | None, node_id: str) -> None:

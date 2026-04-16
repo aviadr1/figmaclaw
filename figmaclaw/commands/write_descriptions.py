@@ -1,7 +1,7 @@
 """figmaclaw write-descriptions — update individual frame descriptions in a .md file.
 
-Mechanically replaces description cells in markdown table rows by matching
-node_id. No LLM needed — this is a pure find-and-replace operation.
+Mechanically replaces description cells in canonical frame/variant markdown table
+rows by matching node_id. No LLM needed — this is a pure find-and-replace operation.
 
 Used for incremental enrichment of large sections where write-body --section
 would require the LLM to reproduce hundreds of unchanged rows.
@@ -12,43 +12,66 @@ Input: JSON mapping of node_id → description, via --descriptions flag or stdin
 from __future__ import annotations
 
 import json
-import re
 import sys
 from pathlib import Path
 
 import click
 
+from figmaclaw.figma_md_parse import section_line_ranges
 from figmaclaw.figma_parse import parse_frontmatter
+from figmaclaw.figma_schema import (
+    parse_frame_row,
+    render_frame_row,
+    render_frame_table_header,
+    render_variant_table_header,
+)
 from figmaclaw.git_utils import git_commit
 
-# Match a table row with a backtick-quoted node_id in the second column.
-# Captures: (1) everything before the description, (2) the description, (3) trailing |
-_ROW_RE = re.compile(
-    r"^(\| [^|]+ \| `([^`]+)` \| )"  # prefix: | name | `node_id` |<space>
-    r"(.*)"  # description (everything until end)
-    r"( \|)\s*$"  # trailing " |"
-)
 
+def _update_descriptions(md: str, descriptions: dict[str, str]) -> tuple[str, int, set[str]]:
+    """Replace description cells in canonical frame rows matching node_ids.
 
-def _update_descriptions(md: str, descriptions: dict[str, str]) -> tuple[str, int]:
-    """Replace description cells in table rows matching node_ids.
-
-    Returns (updated_md, count_of_rows_updated).
+    Returns ``(updated_md, updated_count, matched_node_ids)``.
+    Only rows inside canonical frame/variant tables within frame sections are editable.
     """
     lines = md.splitlines()
     updated = 0
+    matched_node_ids: set[str] = set()
 
-    for i, line in enumerate(lines):
-        m = _ROW_RE.match(line)
-        if m:
-            node_id = m.group(2)
-            if node_id in descriptions:
-                # Escape pipe characters in descriptions to avoid breaking the table
-                desc = descriptions[node_id].replace("|", "\\|")
-                lines[i] = f"{m.group(1)}{desc} |"
-                updated += 1
+    frame_header, frame_separator = render_frame_table_header()
+    variant_header, variant_separator = render_variant_table_header()
+    canonical_tables = {
+        (frame_header, frame_separator),
+        (variant_header, variant_separator),
+    }
 
-    return "\n".join(lines), updated
+    for _section, start, end in section_line_ranges(md):
+        i = start + 1
+        while i < end:
+            current = lines[i].strip()
+            if i + 1 < end and (current, lines[i + 1].strip()) in canonical_tables:
+                i += 2
+                while i < end:
+                    row_line = lines[i]
+                    if not row_line.strip():
+                        break
+                    row = parse_frame_row(row_line)
+                    if row is None:
+                        break
+                    if row.node_id in descriptions:
+                        matched_node_ids.add(row.node_id)
+                        # render_frame_row handles pipe escaping and canonical cell formatting.
+                        lines[i] = render_frame_row(
+                            row.name,
+                            row.node_id,
+                            descriptions[row.node_id],
+                        )
+                        updated += 1
+                    i += 1
+                continue
+            i += 1
+
+    return "\n".join(lines), updated, matched_node_ids
 
 
 @click.command("write-descriptions")
@@ -69,7 +92,7 @@ def write_descriptions_cmd(
 ) -> None:
     """Update individual frame descriptions in a figmaclaw .md file.
 
-    Finds table rows by node_id and replaces the description cell.
+    Finds canonical frame-table rows by node_id and replaces the description cell.
     Does not touch section headings, section intros, page summary,
     or any other content. No Figma API call is made.
 
@@ -94,17 +117,13 @@ def write_descriptions_cmd(
     if fm is None:
         raise click.UsageError(f"{md_path}: no figmaclaw frontmatter found")
 
-    updated_text, count = _update_descriptions(md_text, descriptions)
+    updated_text, count, matched = _update_descriptions(md_text, descriptions)
     md_path.write_text(updated_text)
 
     rel = str(md_path.relative_to(repo_dir) if md_path.is_relative_to(repo_dir) else md_path)
     click.echo(f"write-descriptions: updated {count}/{len(descriptions)} rows in {rel}")
 
-    not_found = set(descriptions.keys()) - {
-        m.group(2)
-        for line in updated_text.splitlines()
-        if (m := _ROW_RE.match(line)) and m.group(2) in descriptions
-    }
+    not_found = set(descriptions.keys()) - matched
     if not_found:
         click.echo(
             f"  warning: {len(not_found)} node_id(s) not found in table: {not_found}", err=True

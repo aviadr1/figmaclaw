@@ -534,3 +534,34 @@ def test_inspect_no_schema_staleness_when_all_current(tmp_path: Path) -> None:
     assert data["pull_schema_stale"] is False
     assert data["enrichment_must_update"] is False
     assert data["enrichment_should_update"] is False
+
+
+def test_inspect_counts_unavailable_rows_as_pending(tmp_path: Path) -> None:
+    """INVARIANT: inspect pending counts include screenshot-unavailable markers."""
+    md_path = tmp_path / "page.md"
+    md_path.write_text(
+        "---\n"
+        "file_key: abc123\n"
+        "page_node_id: '1:1'\n"
+        "frames: ['11:1']\n"
+        "enriched_hash: deadbeef\n"
+        "enriched_schema_version: 1\n"
+        "---\n\n"
+        "## Auth (`10:1`)\n\n"
+        "| Screen | Node ID | Description |\n"
+        "|--------|---------|-------------|\n"
+        "| Login | `11:1` | (no screenshot available) |\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["--repo-dir", str(tmp_path), "inspect", str(md_path), "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["missing_descriptions"] == 1
+    assert data["pending_sections"] == 1
+    assert data["needs_enrichment"] is True

@@ -22,20 +22,25 @@ Prompt template placeholders:
 
 from __future__ import annotations
 
+import csv
+import fcntl
+import hashlib
 import importlib.resources
 import subprocess
 import sys
 import threading
 import time
-from datetime import UTC
+from datetime import UTC, datetime
 from pathlib import Path
 
 import click
 import pydantic
 
 from figmaclaw.budget import BudgetDecision, decide_next_batch, load_per_frame_history
-from figmaclaw.figma_md_parse import section_line_ranges
-from figmaclaw.figma_schema import PLACEHOLDER_DESCRIPTION, is_placeholder_row
+from figmaclaw.figma_md_parse import frame_row_count, section_line_ranges
+from figmaclaw.figma_parse import parse_frontmatter, split_frontmatter
+from figmaclaw.figma_schema import unresolved_row_node_id
+from figmaclaw.schema_status import enrichment_schema_status
 from figmaclaw.verdict import (
     EXIT_RED,
     RunVerdict,
@@ -48,8 +53,293 @@ from figmaclaw.verdict import (
 
 SECTION_THRESHOLD = 80  # pages/sections above this use incremental mode
 ENRICHMENT_LOG = ".figma-sync/enrichment-log.csv"
+ENRICHMENT_LOG_ERROR = ".figma-sync/enrichment-log.error"
+ENRICHMENT_LOG_EVENT_INDEX = ".figma-sync/enrichment-log.event_ids"
 STREAM_JSON_LOG = ".figma-sync/claude-stream.jsonl"  # raw stream-json, appended per batch
+ENRICHMENT_LOG_SCHEMA_VERSION = 1
 NON_ENRICHABLE_MARKDOWN_BASENAMES = frozenset({"_census.md"})
+
+ENRICHMENT_LOG_FIELDS: tuple[str, ...] = (
+    "schema_version",
+    "event_id",
+    "run_id",
+    "timestamp",
+    "file",
+    "mode",
+    "frames",
+    "duration_s",
+    "success",
+    "section",
+    "turns",
+    "cost_usd",
+    "claude_duration_ms",
+    "stop_reason",
+)
+LEGACY_ENRICHMENT_LOG_FIELDS: tuple[str, ...] = (
+    "timestamp",
+    "file",
+    "mode",
+    "frames",
+    "duration_s",
+    "success",
+    "section",
+    "turns",
+    "cost_usd",
+    "claude_duration_ms",
+    "stop_reason",
+)
+
+_EVENT_ID_CACHE: dict[Path, set[str]] = {}
+
+
+def _warn_enrichment_log(repo_dir: Path, message: str) -> None:
+    line = f"[claude-run] WARN enrichment-log: {message}"
+    sys.stderr.write(line + "\n")
+    err_path = repo_dir / ENRICHMENT_LOG_ERROR
+    err_path.parent.mkdir(parents=True, exist_ok=True)
+    with err_path.open("a", encoding="utf-8") as f:
+        f.write(f"{datetime.now(UTC).isoformat()} {line}\n")
+
+
+def _csv_cell_str(value: object) -> str:
+    """Normalize arbitrary CSV cell value into a safe text cell."""
+    if value is None:
+        return ""
+    return str(value).replace("\x00", "")
+
+
+def _canon_csv_key(key: str) -> str:
+    return key.lstrip("\ufeff").strip()
+
+
+def _enrichment_rel_path(repo_dir: Path, file_path: Path) -> str:
+    return (
+        str(file_path.relative_to(repo_dir))
+        if file_path.is_relative_to(repo_dir)
+        else str(file_path)
+    )
+
+
+def _enrichment_event_id(
+    *,
+    run_id: str,
+    rel: str,
+    mode: str,
+    frames: int,
+    duration_s_rounded: int,
+    success: bool,
+    section_name: str,
+    turns: str,
+    cost: str,
+    claude_duration_ms: str,
+    stop_reason: str,
+) -> str:
+    payload = "|".join(
+        [
+            run_id,
+            rel,
+            mode,
+            str(frames),
+            str(duration_s_rounded),
+            str(success),
+            section_name,
+            turns,
+            cost,
+            claude_duration_ms,
+            stop_reason,
+        ]
+    )
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:20]
+
+
+def _read_csv_header(log_path: Path) -> list[str]:
+    with log_path.open(newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        first = next(reader, [])
+    return [_canon_csv_key(_csv_cell_str(x)) for x in first]
+
+
+def _read_csv_rows(log_path: Path) -> tuple[list[str], list[dict[str, str]]]:
+    with log_path.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        fieldnames = [_canon_csv_key(_csv_cell_str(n)) for n in (reader.fieldnames or [])]
+        rows: list[dict[str, str]] = []
+        for raw in reader:
+            norm: dict[str, str] = {}
+            for key, value in raw.items():
+                if key is None:
+                    continue
+                norm[_canon_csv_key(_csv_cell_str(key))] = _csv_cell_str(value)
+            rows.append(norm)
+    return fieldnames, rows
+
+
+def _rewrite_csv_rows(log_path: Path, rows: list[dict[str, str]]) -> None:
+    with log_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(ENRICHMENT_LOG_FIELDS))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _event_index_path(repo_dir: Path) -> Path:
+    return repo_dir / ENRICHMENT_LOG_EVENT_INDEX
+
+
+def _invalidate_event_id_cache(repo_dir: Path) -> None:
+    _EVENT_ID_CACHE.pop(_event_index_path(repo_dir), None)
+
+
+def _rebuild_event_id_index(repo_dir: Path, rows: list[dict[str, str]]) -> None:
+    event_ids = [row.get("event_id", "") for row in rows if row.get("event_id", "")]
+    idx_path = _event_index_path(repo_dir)
+    idx_path.parent.mkdir(parents=True, exist_ok=True)
+    with idx_path.open("w", encoding="utf-8") as f:
+        for event_id in event_ids:
+            f.write(event_id + "\n")
+    _EVENT_ID_CACHE[idx_path] = set(event_ids)
+
+
+def _load_event_id_cache(repo_dir: Path, log_path: Path) -> set[str]:
+    idx_path = _event_index_path(repo_dir)
+    cached = _EVENT_ID_CACHE.get(idx_path)
+    if cached is not None:
+        return cached
+
+    event_ids: set[str] = set()
+    if idx_path.exists():
+        try:
+            for line in idx_path.read_text(encoding="utf-8").splitlines():
+                if line:
+                    event_ids.add(line)
+        except OSError:
+            event_ids = set()
+    else:
+        try:
+            fieldnames, rows = _read_csv_rows(log_path)
+            if "event_id" in fieldnames:
+                event_ids = {row.get("event_id", "") for row in rows if row.get("event_id", "")}
+            _rebuild_event_id_index(repo_dir, rows)
+            _EVENT_ID_CACHE[idx_path] = event_ids
+            return event_ids
+        except (OSError, csv.Error, UnicodeError):
+            event_ids = set()
+
+    _EVENT_ID_CACHE[idx_path] = event_ids
+    return event_ids
+
+
+def _row_to_current(row: dict[str, str]) -> dict[str, str]:
+    run_id = _csv_cell_str(row.get("run_id", ""))
+    rel = _csv_cell_str(row.get("file", ""))
+    mode = _csv_cell_str(row.get("mode", ""))
+    section_name = _csv_cell_str(row.get("section", ""))
+    turns = _csv_cell_str(row.get("turns", ""))
+    cost = _csv_cell_str(row.get("cost_usd", ""))
+    claude_duration_ms = _csv_cell_str(row.get("claude_duration_ms", ""))
+    stop_reason = _csv_cell_str(row.get("stop_reason", ""))
+
+    try:
+        frames = int(_csv_cell_str(row.get("frames", "0")) or 0)
+    except ValueError:
+        frames = 0
+    try:
+        duration_s_rounded = int(float(_csv_cell_str(row.get("duration_s", "0")) or 0))
+    except ValueError:
+        duration_s_rounded = 0
+
+    success = _csv_cell_str(row.get("success", "False")) == "True"
+
+    schema_version_raw = _csv_cell_str(row.get("schema_version", "0"))
+    try:
+        schema_version = int(schema_version_raw or 0)
+    except ValueError:
+        schema_version = 0
+
+    event_id = _csv_cell_str(row.get("event_id", ""))
+    if not event_id:
+        event_id = _enrichment_event_id(
+            run_id=run_id,
+            rel=rel,
+            mode=mode,
+            frames=frames,
+            duration_s_rounded=duration_s_rounded,
+            success=success,
+            section_name=section_name,
+            turns=turns,
+            cost=cost,
+            claude_duration_ms=claude_duration_ms,
+            stop_reason=stop_reason,
+        )
+
+    return {
+        "schema_version": str(schema_version),
+        "event_id": event_id,
+        "run_id": run_id,
+        "timestamp": _csv_cell_str(row.get("timestamp", "")),
+        "file": rel,
+        "mode": mode,
+        "frames": str(frames),
+        "duration_s": str(duration_s_rounded),
+        "success": "True" if success else "False",
+        "section": section_name,
+        "turns": turns,
+        "cost_usd": cost,
+        "claude_duration_ms": claude_duration_ms,
+        "stop_reason": stop_reason,
+    }
+
+
+def _ensure_enrichment_log_schema(repo_dir: Path, log_path: Path) -> bool:
+    """Ensure enrichment-log.csv is schema-versioned and parseable."""
+    if not log_path.exists():
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        _rewrite_csv_rows(log_path, [])
+        _rebuild_event_id_index(repo_dir, [])
+        return True
+
+    try:
+        header = _read_csv_header(log_path)
+    except (OSError, csv.Error, UnicodeError) as exc:
+        _warn_enrichment_log(repo_dir, f"failed reading header ({exc}); append skipped")
+        return False
+
+    if tuple(header) == ENRICHMENT_LOG_FIELDS:
+        return True
+
+    try:
+        fieldnames, rows = _read_csv_rows(log_path)
+    except (OSError, csv.Error, UnicodeError, TypeError, ValueError) as exc:
+        _warn_enrichment_log(repo_dir, f"failed reading rows ({exc}); append skipped")
+        return False
+
+    if not fieldnames:
+        _rewrite_csv_rows(log_path, [])
+        _rebuild_event_id_index(repo_dir, [])
+        return True
+
+    if tuple(fieldnames) == ENRICHMENT_LOG_FIELDS:
+        return True
+
+    if tuple(fieldnames) == LEGACY_ENRICHMENT_LOG_FIELDS:
+        migrated = [_row_to_current(row) for row in rows]
+        _rewrite_csv_rows(log_path, migrated)
+        _rebuild_event_id_index(repo_dir, migrated)
+        return True
+
+    if set(LEGACY_ENRICHMENT_LOG_FIELDS).issubset(set(fieldnames)):
+        normalized = [_row_to_current(row) for row in rows]
+        _rewrite_csv_rows(log_path, normalized)
+        _rebuild_event_id_index(repo_dir, normalized)
+        _warn_enrichment_log(
+            repo_dir, "normalized non-canonical enrichment log header to schema-v1"
+        )
+        return True
+
+    _warn_enrichment_log(
+        repo_dir,
+        "unsupported enrichment log schema/header; append skipped until file is fixed",
+    )
+    return False
 
 
 def _log_enrichment(
@@ -61,30 +351,77 @@ def _log_enrichment(
     success: bool,
     section_name: str = "",
     claude: ClaudeResult | None = None,
+    run_id: str = "",
 ) -> None:
-    """Append one row to the enrichment log for empirical analysis."""
+    """Append one row to the enrichment log for empirical analysis.
+
+    Invariants:
+    - schema-versioned CSV header
+    - CSV-safe escaping for free-text columns
+    - idempotent append by deterministic event_id
+    """
     log_path = repo_dir / ENRICHMENT_LOG
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    if not log_path.exists():
-        log_path.write_text(
-            "timestamp,file,mode,frames,duration_s,success,section,"
-            "turns,cost_usd,claude_duration_ms,stop_reason\n"
-        )
-    from datetime import datetime
 
-    ts = datetime.now(UTC).isoformat()
-    rel = (
-        str(file_path.relative_to(repo_dir))
-        if file_path.is_relative_to(repo_dir)
-        else str(file_path)
-    )
-    turns = claude.turns if claude else ""
+    rel = _enrichment_rel_path(repo_dir, file_path)
+    turns = str(claude.turns) if claude else ""
     cost = f"{claude.cost_usd:.4f}" if claude else ""
-    claude_dur = claude.duration_ms if claude else ""
+    claude_dur = str(claude.duration_ms) if claude else ""
     stop = claude.stop_reason if claude else ""
-    row = f"{ts},{rel},{mode},{frames},{duration_s:.0f},{success},{section_name},{turns},{cost},{claude_dur},{stop}\n"
-    with open(log_path, "a") as f:
-        f.write(row)
+    duration_s_rounded = int(round(duration_s))
+
+    event_id = _enrichment_event_id(
+        run_id=run_id,
+        rel=rel,
+        mode=mode,
+        frames=frames,
+        duration_s_rounded=duration_s_rounded,
+        success=success,
+        section_name=section_name,
+        turns=turns,
+        cost=cost,
+        claude_duration_ms=claude_dur,
+        stop_reason=stop,
+    )
+
+    row = {
+        "schema_version": str(ENRICHMENT_LOG_SCHEMA_VERSION),
+        "event_id": event_id,
+        "run_id": run_id,
+        "timestamp": datetime.now(UTC).isoformat(),
+        "file": rel,
+        "mode": mode,
+        "frames": str(frames),
+        "duration_s": str(duration_s_rounded),
+        "success": "True" if success else "False",
+        "section": section_name,
+        "turns": turns,
+        "cost_usd": cost,
+        "claude_duration_ms": claude_dur,
+        "stop_reason": stop,
+    }
+
+    with log_path.open("a+", newline="", encoding="utf-8") as lock_f:
+        fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
+        lock_f.flush()
+
+        if not _ensure_enrichment_log_schema(repo_dir, log_path):
+            return
+
+        event_ids = _load_event_id_cache(repo_dir, log_path)
+        if event_id in event_ids:
+            return
+
+        with log_path.open("a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=list(ENRICHMENT_LOG_FIELDS))
+            writer.writerow(row)
+            f.flush()
+
+        idx_path = _event_index_path(repo_dir)
+        with idx_path.open("a", encoding="utf-8") as idx:
+            idx.write(event_id + "\n")
+            idx.flush()
+        event_ids.add(event_id)
 
 
 # ---------------------------------------------------------------------------
@@ -126,16 +463,35 @@ def _exclude_non_enrichable_markdown(files: list[Path]) -> tuple[list[Path], int
     return filtered, len(files) - len(filtered)
 
 
+def _migrate_missing_enrichment_schema_version(md_path: Path, text: str) -> str:
+    """Backfill explicit ``enriched_schema_version`` when missing.
+
+    Migration is body-preserving and idempotent. Missing version is written as ``0``
+    so selector/inspect parity treats legacy pages as ENRICH MUST.
+    """
+    parts = split_frontmatter(text)
+    if parts is None:
+        return text
+    fm_block, body = parts
+    if "enriched_schema_version:" in fm_block:
+        return text
+    if "file_key:" not in fm_block:
+        return text
+
+    new_fm_block = f"{fm_block.rstrip()}\nenriched_schema_version: 0"
+    migrated = f"---\n{new_fm_block}\n---\n{body}"
+    if migrated != text:
+        md_path.write_text(migrated)
+    return migrated
+
+
 def enrichment_info(md_path: Path) -> tuple[bool, int]:
-    """Fast check: does *md_path* need enrichment?
+    """Fast selector for enrichment candidacy and frame-size estimate.
 
     Returns ``(needs_it, frame_count)``.
 
-    Reads the file directly — no subprocess, no Figma API.  Checks:
-
-    * Body still has placeholder rows?       → needs enrichment.
-    * Else has ``enriched_hash`` in fm?      → already enriched → skip.
-    * Counts body table rows for a frame-size estimate.
+    Contract: selector must match ``inspect`` for ENRICH MUST decisions and
+    must migrate legacy files lacking explicit schema version.
     """
     # Inventory artifacts are never page-enrichment targets.
     if _is_non_enrichable_markdown(md_path):
@@ -146,26 +502,33 @@ def enrichment_info(md_path: Path) -> tuple[bool, int]:
     except OSError:
         return False, 0
 
-    # Must have figmaclaw frontmatter to be enrichable
+    # Must have figmaclaw-like frontmatter to be enrichable.
     if "file_key:" not in text:
         return False, 0
 
-    # Count frames from body table rows (| name | `node_id` | desc |)
-    frame_count = 0
-    has_placeholder = False
-    for line in text.splitlines():
-        if line.startswith("| ") and "`" in line and "Node ID" not in line and "---" not in line:
-            frame_count += 1
-        if is_placeholder_row(line):
-            has_placeholder = True
+    text = _migrate_missing_enrichment_schema_version(md_path, text)
 
-    # Placeholder rows are a hard signal that this page still needs enrichment,
-    # even if frontmatter was previously marked enriched.
-    if has_placeholder:
+    # Frame-size estimate from canonical body parser (frame sections only).
+    frame_count = frame_row_count(text)
+    has_unresolved = any(unresolved_row_node_id(line) is not None for line in text.splitlines())
+    has_llm_marker = "<!-- LLM:" in text
+
+    if has_unresolved or has_llm_marker:
         return True, frame_count
 
-    # Fast frontmatter check — enriched files without placeholders can be skipped.
-    if "enriched_hash:" in (text.split("\n---")[0] if "\n---" in text else ""):
+    parts = split_frontmatter(text)
+    fm_block = parts[0] if parts is not None else ""
+
+    # Selector/inspect parity for ENRICH MUST schema upgrades, including legacy
+    # pages where missing field has just been migrated to explicit 0.
+    try:
+        fm = parse_frontmatter(text)
+    except Exception:
+        fm = None
+    if fm is not None and enrichment_schema_status(fm.enriched_schema_version).must_update:
+        return True, frame_count
+
+    if "enriched_hash:" in fm_block:
         return False, 0
 
     return True, frame_count
@@ -190,19 +553,13 @@ def collect_files(
       gets the full CI timeout.
     """
     if target.is_file():
-        files = [target]
-    elif changed_only:
+        return [] if _is_non_enrichable_markdown(target) else [target]
+    if changed_only:
         files = _changed_files(target, glob_pattern)
     else:
         files = sorted(target.glob(glob_pattern))
 
-    files, skipped_non_enrichable = _exclude_non_enrichable_markdown(files)
-    if skipped_non_enrichable:
-        click.echo(
-            (f"[claude-run] skipping {skipped_non_enrichable} non-enrichable markdown artifact(s)"),
-            err=True,
-        )
-
+    files, dropped_non_enrichable = _exclude_non_enrichable_markdown(files)
     if needs_enrichment:
         before = len(files)
         enrichable: list[tuple[Path, int]] = []
@@ -232,7 +589,10 @@ def collect_files(
             msg += f" ({', '.join(parts)})"
         click.echo(msg, err=True)
     else:
-        click.echo(f"[claude-run] {len(files)} files to process", err=True)
+        msg = f"[claude-run] {len(files)} files to process"
+        if dropped_non_enrichable:
+            msg += f" (excluded {dropped_non_enrichable} non-enrichable artifacts)"
+        click.echo(msg, err=True)
     return files
 
 
@@ -242,10 +602,10 @@ def collect_files(
 
 
 def pending_sections(md_path: Path) -> list[dict[str, str | int]]:
-    """Return sections that need enrichment (have pending placeholders).
+    """Return sections that need enrichment (have pending unresolved rows).
 
     Returns ``[{"node_id": ..., "name": ..., "pending_frames": N}]`` for
-    sections with ``(no description yet)`` placeholders.
+    sections with unresolved description markers.
     """
     try:
         text = md_path.read_text()
@@ -257,7 +617,7 @@ def pending_sections(md_path: Path) -> list[dict[str, str | int]]:
     for section, start, end in section_line_ranges(text):
         if not section.node_id:
             continue  # prose sections (Screen Flow) have no node_id
-        pending = sum(1 for line in lines[start:end] if is_placeholder_row(line))
+        pending = sum(1 for line in lines[start:end] if unresolved_row_node_id(line) is not None)
         if pending > 0:
             result.append(
                 {
@@ -280,8 +640,8 @@ def needs_finalization(md_path: Path) -> bool:
     except OSError:
         return False
 
-    # If there are still pending placeholders anywhere, not ready.
-    if f"| {PLACEHOLDER_DESCRIPTION} |" in text:
+    # If there are still pending unresolved rows anywhere, not ready.
+    if any(unresolved_row_node_id(line) is not None for line in text.splitlines()):
         return False
 
     # If already marked as enriched, no need to finalize
@@ -603,6 +963,7 @@ def claude_run_cmd(
     # landed, which is the only honest signal that useful work was done.
     start_sha = head_sha(repo_dir)
     run_start = time.monotonic()
+    run_id = datetime.now(UTC).isoformat()
 
     # Load per-mode rolling histories from the enrichment log. These are
     # "prior knowledge" from past runs; within this run we append to them
@@ -717,6 +1078,7 @@ def claude_run_cmd(
                                 total_pending,
                                 0,
                                 False,
+                                run_id=run_id,
                             )
                             break
                     else:
@@ -770,6 +1132,7 @@ def claude_run_cmd(
                         dur,
                         ok,
                         claude=rc,
+                        run_id=run_id,
                     )
                     if not ok:
                         click.echo(
@@ -832,6 +1195,7 @@ def claude_run_cmd(
                         dur,
                         ok,
                         claude=rc,
+                        run_id=run_id,
                     )
                     if not ok:
                         click.echo(
@@ -885,6 +1249,7 @@ def claude_run_cmd(
                     dur,
                     ok,
                     claude=rc,
+                    run_id=run_id,
                 )
                 if not ok:
                     click.echo(

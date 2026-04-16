@@ -95,6 +95,7 @@ def _build_frontmatter(
     enriched_hash: str | None = None,
     enriched_at: str | None = None,
     enriched_frame_hashes: dict[str, str] | None = None,
+    enriched_schema_version: int = 0,
     component_set_keys: dict[str, str] | None = None,
     raw_frames: dict[str, FrameComposition] | None = None,
     raw_tokens: dict[str, RawTokenCounts] | None = None,
@@ -114,6 +115,7 @@ def _build_frontmatter(
         fm["enriched_at"] = enriched_at
     if enriched_frame_hashes:
         fm["enriched_frame_hashes"] = _FlowDict(enriched_frame_hashes)
+    fm["enriched_schema_version"] = enriched_schema_version
     if component_set_keys:
         fm["component_set_keys"] = _FlowDict(component_set_keys)
     if raw_frames:
@@ -169,6 +171,7 @@ def build_page_frontmatter(
     enriched_hash: str | None = None,
     enriched_at: str | None = None,
     enriched_frame_hashes: dict[str, str] | None = None,
+    enriched_schema_version: int = 0,
     raw_frames: dict[str, FrameComposition] | None = None,
     raw_tokens: dict[str, RawTokenCounts] | None = None,
     frame_sections: dict[str, list[SectionNode]] | None = None,
@@ -200,6 +203,7 @@ def build_page_frontmatter(
         enriched_hash=enriched_hash,
         enriched_at=enriched_at,
         enriched_frame_hashes=enriched_frame_hashes,
+        enriched_schema_version=enriched_schema_version,
         raw_frames=raw_frames,
         raw_tokens=raw_tokens,
         frame_sections=frame_sections,
@@ -214,6 +218,7 @@ def build_component_frontmatter(
     enriched_hash: str | None = None,
     enriched_at: str | None = None,
     enriched_frame_hashes: dict[str, str] | None = None,
+    enriched_schema_version: int = 0,
 ) -> str:
     """Build YAML frontmatter for a component-library section markdown file."""
     frame_ids: list[str] = [f.node_id for f in section.frames]
@@ -227,6 +232,7 @@ def build_component_frontmatter(
         enriched_hash=enriched_hash,
         enriched_at=enriched_at,
         enriched_frame_hashes=enriched_frame_hashes,
+        enriched_schema_version=enriched_schema_version,
     )
 
 
