@@ -28,13 +28,13 @@ from figmaclaw.figma_frontmatter import (
     RawTokenCounts,
     SectionNode,
 )
+from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection
 from figmaclaw.figma_parse import parse_frontmatter
 from figmaclaw.figma_render import (
     build_page_frontmatter,
     page_frame_ids,
     section_frame_ids,
 )
-from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection
 
 
 def _page_with_frames(node_ids: list[str]) -> FigmaPage:
@@ -145,14 +145,8 @@ def test_all_frame_keyed_dicts_pruned_in_one_write():
             **{k: RawTokenCounts(raw=1) for k in bad_keys},
         },
         frame_sections={
-            **{
-                k: [SectionNode(node_id=f"{k}c", name="c", x=0, y=0, w=1, h=1)]
-                for k in ok_keys
-            },
-            **{
-                k: [SectionNode(node_id=f"{k}c", name="c", x=0, y=0, w=1, h=1)]
-                for k in bad_keys
-            },
+            **{k: [SectionNode(node_id=f"{k}c", name="c", x=0, y=0, w=1, h=1)] for k in ok_keys},
+            **{k: [SectionNode(node_id=f"{k}c", name="c", x=0, y=0, w=1, h=1)] for k in bad_keys},
         },
     )
     parsed = _parse(fm_text)

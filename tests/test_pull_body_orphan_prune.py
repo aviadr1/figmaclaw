@@ -23,7 +23,6 @@ from pathlib import Path
 
 from figmaclaw.pull_logic import _prune_orphan_frame_rows, _rewrite_frontmatter_preserving_body
 
-
 BODY_WITH_ORPHAN_ROWS = """
 # Web App / Showcase v2
 
@@ -116,9 +115,7 @@ enriched_schema_version: 0
         "---"
     )
 
-    _rewrite_frontmatter_preserving_body(
-        path, md, new_fm, allowed_frame_ids={"11:1", "11:2"}
-    )
+    _rewrite_frontmatter_preserving_body(path, md, new_fm, allowed_frame_ids={"11:1", "11:2"})
     written = path.read_text()
 
     assert "frames: ['11:1', '11:2']" in written

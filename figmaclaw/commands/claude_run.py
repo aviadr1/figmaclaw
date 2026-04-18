@@ -366,9 +366,7 @@ def _ensure_enrichment_log_schema(repo_dir: Path, log_path: Path) -> bool:
     # caller's row is then appended to the new empty log; prior history
     # is preserved in the .bak file and recoverable by hand if needed.
     archived = log_path.with_name(
-        f"{log_path.stem}.bak."
-        f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
-        f"{log_path.suffix}"
+        f"{log_path.stem}.bak.{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}{log_path.suffix}"
     )
     log_path.rename(archived)
     _rewrite_csv_rows(log_path, [])
@@ -524,9 +522,7 @@ def _migrate_missing_enrichment_schema_version(md_path: Path, text: str) -> str:
     return migrated
 
 
-def enrichment_info(
-    md_path: Path, repo_dir: Path | None = None
-) -> tuple[bool, int]:
+def enrichment_info(md_path: Path, repo_dir: Path | None = None) -> tuple[bool, int]:
     """Fast selector for enrichment candidacy and frame-size estimate.
 
     Returns ``(needs_it, frame_count)``.
@@ -701,9 +697,7 @@ def _tombstoned_ids_for_path(md_path: Path, repo_dir: Path | None) -> set[str]:
     return active_tombstoned_node_ids(fm, repo_dir)
 
 
-def pending_sections(
-    md_path: Path, repo_dir: Path | None = None
-) -> list[dict[str, str | int]]:
+def pending_sections(md_path: Path, repo_dir: Path | None = None) -> list[dict[str, str | int]]:
     """Return sections that need enrichment (have pending unresolved rows).
 
     Returns ``[{"node_id": ..., "name": ..., "pending_frames": N}]`` for
@@ -757,9 +751,7 @@ def pending_frame_node_ids(md_path: Path, repo_dir: Path | None = None) -> set[s
     return pending - _tombstoned_ids_for_path(md_path, repo_dir)
 
 
-def _record_tombstones(
-    md_path: Path, repo_dir: Path, node_ids: set[str]
-) -> int:
+def _record_tombstones(md_path: Path, repo_dir: Path, node_ids: set[str]) -> int:
     """Record unresolvable-frame tombstones for *node_ids* in *md_path*'s frontmatter.
 
     The tombstone value is the current manifest frame_hash for each
@@ -1440,9 +1432,7 @@ def claude_run_cmd(
                             False,
                             run_id=run_id,
                         )
-                        tombstoned = _record_tombstones(
-                            file_path, repo_dir, after_pending_ids
-                        )
+                        tombstoned = _record_tombstones(file_path, repo_dir, after_pending_ids)
                         if tombstoned:
                             click.echo(
                                 f"[claude-run] [{i}/{total}] recorded {tombstoned} tombstone(s) "

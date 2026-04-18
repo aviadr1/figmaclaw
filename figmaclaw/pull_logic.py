@@ -363,9 +363,7 @@ def _prune_orphan_frame_rows(body: str, allowed_frame_ids: set[str]) -> str:
         return body
 
     orphan_line_indices = {
-        row.line_index
-        for row in iter_body_frame_rows(body)
-        if row.node_id not in allowed_frame_ids
+        row.line_index for row in iter_body_frame_rows(body) if row.node_id not in allowed_frame_ids
     }
     if not orphan_line_indices:
         return body

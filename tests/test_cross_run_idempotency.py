@@ -23,9 +23,8 @@ from figmaclaw.commands.claude_run import (
     enrichment_info,
     pending_frame_node_ids,
 )
-from figmaclaw.figma_parse import parse_frontmatter
 from figmaclaw.figma_sync_state import FigmaSyncState, FileEntry, PageEntry
-from figmaclaw.verdict import compute_verdict, EXIT_GREEN
+from figmaclaw.verdict import EXIT_GREEN, compute_verdict
 
 
 def _write_manifest(repo_dir: Path, *, frame_hashes: dict[str, str]) -> None:
@@ -43,7 +42,7 @@ def _write_manifest(repo_dir: Path, *, frame_hashes: dict[str, str]) -> None:
         file_name="Test",
         version="v1",
         last_modified="2026-04-18T00:00:00Z",
-        last_refreshed_at="2026-04-18T00:00:00Z",
+        last_checked_at="2026-04-18T00:00:00Z",
         pages={"1:1": page_entry},
     )
     state.manifest.files["fk"] = file_entry

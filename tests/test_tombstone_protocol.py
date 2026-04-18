@@ -24,21 +24,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from figmaclaw.commands.claude_run import (
     _record_tombstones,
     enrichment_info,
     pending_frame_node_ids,
     pending_sections,
 )
-from figmaclaw.figma_frontmatter import FigmaPageFrontmatter, FrameComposition
+from figmaclaw.figma_frontmatter import FigmaPageFrontmatter
+from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection
 from figmaclaw.figma_parse import parse_frontmatter
 from figmaclaw.figma_render import build_page_frontmatter
 from figmaclaw.figma_sync_state import FigmaSyncState
-from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection
 from figmaclaw.staleness import active_tombstoned_node_ids
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -64,7 +61,7 @@ def _write_manifest(repo_dir: Path, *, frame_hashes: dict[str, str]) -> None:
         file_name="Test",
         version="v1",
         last_modified="2026-04-18T00:00:00Z",
-        last_refreshed_at="2026-04-18T00:00:00Z",
+        last_checked_at="2026-04-18T00:00:00Z",
         pages={"1:1": page_entry},
     )
     state.manifest.files["fk"] = file_entry
@@ -199,9 +196,7 @@ class TestPendingFiltersTombstones:
         pending = pending_frame_node_ids(md, repo_dir=tmp_path)
         assert pending == {"11:1"}
 
-    def test_pending_frame_node_ids_without_repo_dir_is_unchanged(
-        self, tmp_path: Path
-    ) -> None:
+    def test_pending_frame_node_ids_without_repo_dir_is_unchanged(self, tmp_path: Path) -> None:
         """Legacy callers without repo_dir see the pre-tombstone behavior.
 
         Important for callers that don't have manifest access — they get
@@ -218,9 +213,7 @@ class TestPendingFiltersTombstones:
         pending = pending_frame_node_ids(md)
         assert pending == {"11:1"}  # no filtering without repo_dir
 
-    def test_pending_sections_drops_fully_tombstoned_sections(
-        self, tmp_path: Path
-    ) -> None:
+    def test_pending_sections_drops_fully_tombstoned_sections(self, tmp_path: Path) -> None:
         """When every pending frame in a section is tombstoned+matching,
         the section is fully "done" and drops out of pending_sections.
         """
@@ -243,9 +236,7 @@ class TestPendingFiltersTombstones:
 
 
 class TestEnrichmentInfoHonorsTombstones:
-    def test_all_tombstoned_file_is_not_enrichment_candidate(
-        self, tmp_path: Path
-    ) -> None:
+    def test_all_tombstoned_file_is_not_enrichment_candidate(self, tmp_path: Path) -> None:
         """The critical cross-run loop guard: after tombstones land for every
         unresolved row, the selector stops picking the file. This is what
         stops the hourly RED loop in figmaclaw#121.
@@ -290,9 +281,7 @@ class TestEnrichmentInfoHonorsTombstones:
 
 
 class TestRecordTombstones:
-    def test_writes_tombstones_with_current_manifest_hashes(
-        self, tmp_path: Path
-    ) -> None:
+    def test_writes_tombstones_with_current_manifest_hashes(self, tmp_path: Path) -> None:
         _write_manifest(tmp_path, frame_hashes={"11:1": "h1", "11:2": "h2"})
         md = tmp_path / "page.md"
         _write_page(
@@ -320,6 +309,7 @@ class TestRecordTombstones:
         added = _record_tombstones(md, tmp_path, {"11:1", "11:2"})
         assert added == 1
         fm = parse_frontmatter(md.read_text())
+        assert fm is not None
         assert fm.unresolvable_frames == {"11:1": "h1"}
 
     def test_does_not_duplicate_existing_tombstones(self, tmp_path: Path) -> None:
@@ -397,9 +387,7 @@ class TestKeySetInvariantAppliesToTombstones:
 
 
 class TestCrossRunIdempotency:
-    def test_second_run_does_not_reselect_fully_tombstoned_file(
-        self, tmp_path: Path
-    ) -> None:
+    def test_second_run_does_not_reselect_fully_tombstoned_file(self, tmp_path: Path) -> None:
         """End-to-end cross-run shape (figmaclaw#121):
 
             state_0: file has an unresolved body row with no screenshot
