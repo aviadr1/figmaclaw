@@ -117,3 +117,117 @@ Rationale: figmaclaw runs in a CI loop. Any unconditional write — even just a 
 - All imports at file top, never inside functions
 - 100% coverage for new code
 - Exit code 0 = success, exit code 2 = error. Never use exit 1 for business logic.
+
+## Anti-loop engineering policy (figmaclaw#121)
+
+Enrichment runs in a loop (hourly CI). Any bug that causes `claude-run`
+to do the same work over and over costs real money and hides real
+regressions behind RED-forever CI. We learned this the hard way over
+the course of 5+ PRs (#88 #92 #103 #112 #117) that each added
+same-run guards but left cross-run failure modes untouched.
+
+When adding or modifying any enrichment / pull / logging code path,
+review against these three dimensions in addition to the usual unit /
+same-run / schema / body-frontmatter / observability tests:
+
+### 1. Cross-run state invariants
+
+Any guard that prevents retries **within one run** must be paired with
+an invariant that prevents retries **across runs**. Test shape:
+
+```
+state_0 := fixture
+run code against state_0  → produces state_1
+run code against state_1  → produces state_2
+assert state_2 is cheaper/different from state_1,
+       OR state_2 does not re-select work that state_1 already addressed
+```
+
+If your PR adds a loop-break (like a NO-PROGRESS guard), also add a
+cross-run test showing the selector does not reselect the same file
+given the state produced by the previous run. "Same input, same
+expensive output, forever" is the bug shape row 9 YELLOW exists to
+flag.
+
+### 2. Cross-field frontmatter key-set invariants
+
+The frontmatter has multiple frame-keyed dicts: `enriched_frame_hashes`,
+`raw_frames`, `raw_tokens`, `frame_sections`, `unresolvable_frames`.
+The invariant `keys(d) ⊆ frames` must hold for every one of them after
+every write. Enforced centrally in `figma_render._build_frontmatter` —
+the single chokepoint for frontmatter serialization — and defensively
+on parse by `FigmaPageFrontmatter._cap_unresolvable_frames_to_frames`.
+
+**If you add a new frame-keyed field**:
+- Extend `_build_frontmatter` to prune it too
+- Add a test in `tests/test_frontmatter_key_set_invariant.py` asserting
+  orphan keys are dropped on write
+- Do not rely on callers to pre-prune — the chokepoint is the guarantee
+
+### 3. Terminal-state completeness for LLM-dispatched work
+
+Every "pending" state must have a terminal counterpart. If the LLM can
+produce an output that says "I cannot resolve this right now" (e.g.
+`(no screenshot available)`), that output must be recordable as a
+tombstone so we don't re-dispatch the same question on the next run.
+Tombstones auto-invalidate when the underlying content hash changes.
+
+**If you introduce a new "soft-done" row marker**: design the tombstone
+protocol in the same PR. Do not ship a retryable marker without a
+matching terminal state — that guarantees cross-run loops.
+
+### 4. Canonical walker reuse
+
+Body frame-row iteration has exactly one canonical implementation:
+`body_validation.iter_body_frame_rows`. Fence-aware, exact rendered
+header matching, yields `BodyFrameRow` pydantic models with
+`line_index` and `node_id`. Use it for any code that needs to inspect
+or mutate canonical body frame tables.
+
+Don't:
+- re-implement `is_table_separator` / `parse_frame_row` / fence tracking
+  in new code
+- copy loops from existing walkers
+- import `re` in pull / claude-run / write-body code to match row shapes
+
+Do:
+- use `iter_body_frame_rows` for row-by-row work
+- use `body_frame_node_ids` (a thin projection over the iterator) when
+  you only need the node_id list
+- use `section_line_ranges` / `parse_sections` for section-level work
+
+### 5. Log writers — no WARN-and-drop
+
+A log writer that emits `WARN … skipped until file is fixed` but never
+fixes the file silently loses data every run forever. Acceptable
+resolutions, in order of preference:
+
+1. **Migrate** — if the schema is recognizable (including legacy
+   superset/subset cases), migrate in place on the first mismatch.
+   This is the happy path.
+2. **Auto-archive and reset** — if no migration path applies, rename
+   the prior file to `<name>.bak.<UTC-timestamp><ext>` and start a
+   fresh schema-v1 log. History is preserved, the writer heals itself,
+   and subsequent runs append normally. Required: emit a human-readable
+   error line describing the archive event — don't hide the self-heal.
+3. **Hard-fail** — only for critical writers where silently resetting
+   would corrupt load-bearing state. Log writers used for observability
+   do not qualify.
+
+Never accept "warn and forget every run" as a terminal state. The test
+shape that pins this: run 1 with bad input triggers the heal, run 2
+with no new bad input does NOT re-emit the error.
+
+### Review checklist for enrichment / pull / logging PRs
+
+- [ ] Does this PR add a loop-break? If yes, does it have a cross-run
+      test (dimension 1)?
+- [ ] Does this PR touch frontmatter fields? If yes, are frame-keyed
+      dicts pruned at the chokepoint and covered by key-set tests
+      (dimension 2)?
+- [ ] Does this PR introduce a new LLM row marker? If yes, is the
+      tombstone protocol designed in the same PR (dimension 3)?
+- [ ] Does this PR walk the body? If yes, does it use
+      `iter_body_frame_rows` / `section_line_ranges` (dimension 4)?
+- [ ] Does this PR touch a log writer? If yes, does it auto-heal or
+      hard-fail on schema drift (dimension 5)?

@@ -3,9 +3,17 @@
 This module enforces the key safety invariant:
 frontmatter ``frames`` is authoritative, and the body frame tables must
 contain exactly those node IDs (no missing, no extras, no duplicates).
+
+Also exposes :func:`iter_body_frame_rows` — the canonical, fence-aware,
+exact-header-matching walker that yields each frame row's
+``(line_index, node_id)``. It is the single source of truth for callers
+that need to mutate or inspect canonical body frame tables (e.g. pull-time
+orphan pruning — figmaclaw#121).
 """
 
 from __future__ import annotations
+
+from collections.abc import Iterator
 
 import pydantic
 
@@ -16,6 +24,18 @@ from figmaclaw.figma_schema import (
     render_frame_table_header,
     render_variant_table_header,
 )
+
+
+class BodyFrameRow(pydantic.BaseModel):
+    """One parsed canonical frame row with its location in the body.
+
+    Pydantic per figmaclaw CLAUDE.md "Use pydantic, not dataclass".
+    """
+
+    model_config = pydantic.ConfigDict(frozen=True)
+
+    line_index: int
+    node_id: str
 
 
 class BodyValidationResult(pydantic.BaseModel):
@@ -61,8 +81,17 @@ def _duplicate_node_ids(node_ids: list[str]) -> list[str]:
     return duplicates
 
 
-def body_frame_node_ids(body: str) -> list[str]:
-    """Return frame node IDs from canonical figmaclaw tables in frame sections only."""
+def iter_body_frame_rows(body: str) -> Iterator[BodyFrameRow]:
+    """Yield one :class:`BodyFrameRow` per canonical frame row in *body*.
+
+    Canonical = appears inside a frame-section (``## Name (`node_id`)``),
+    under an exact rendered header (frame or variant), outside any fenced
+    code block. This is the strictest body walker — callers that need to
+    inspect or mutate frame rows must use this function rather than
+    re-implementing a walk.
+
+    The order is document order. Line indices are relative to *body*.
+    """
     lines = body.splitlines()
     frame_header, frame_separator = render_frame_table_header()
     variant_header, variant_separator = render_variant_table_header()
@@ -72,7 +101,6 @@ def body_frame_node_ids(body: str) -> list[str]:
         (variant_header, variant_separator),
     }
 
-    # Discover frame-section ranges using heading parser; prose sections have empty node_id.
     section_starts: list[int] = []
     for i, line in enumerate(lines):
         parsed = parse_section_heading(line)
@@ -80,9 +108,7 @@ def body_frame_node_ids(body: str) -> list[str]:
             section_starts.append(i)
 
     if not section_starts:
-        return []
-
-    node_ids: list[str] = []
+        return
 
     for idx, start in enumerate(section_starts):
         end = section_starts[idx + 1] if idx + 1 < len(section_starts) else len(lines)
@@ -99,25 +125,29 @@ def body_frame_node_ids(body: str) -> list[str]:
                 continue
 
             if i + 1 < end and (stripped, lines[i + 1].strip()) in canonical_tables:
-                # Parse canonical frame rows until table ends.
                 i += 2
                 while i < end:
                     row_line = lines[i]
                     row_stripped = row_line.strip()
-                    if row_stripped.startswith("```"):
-                        break
-                    if not row_stripped:
+                    if row_stripped.startswith("```") or not row_stripped:
                         break
                     row = parse_frame_row(row_line)
                     if row is None:
                         break
-                    node_ids.append(row.node_id)
+                    yield BodyFrameRow(line_index=i, node_id=row.node_id)
                     i += 1
                 continue
 
             i += 1
 
-    return node_ids
+
+def body_frame_node_ids(body: str) -> list[str]:
+    """Return frame node IDs from canonical figmaclaw tables in document order.
+
+    Thin wrapper over :func:`iter_body_frame_rows` — single source of truth
+    for canonical body frame-row discovery.
+    """
+    return [row.node_id for row in iter_body_frame_rows(body)]
 
 
 def validate_body_against_frames(body: str, expected_frames: list[str]) -> BodyValidationResult:

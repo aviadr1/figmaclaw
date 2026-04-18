@@ -39,8 +39,11 @@ import pydantic
 from figmaclaw.budget import BudgetDecision, decide_next_batch, load_per_frame_history
 from figmaclaw.figma_md_parse import frame_row_count, section_line_ranges
 from figmaclaw.figma_parse import parse_frontmatter, split_frontmatter
+from figmaclaw.figma_render import rebuild_frontmatter_from_parsed
 from figmaclaw.figma_schema import unresolved_row_node_id
+from figmaclaw.figma_sync_state import FigmaSyncState
 from figmaclaw.schema_status import enrichment_schema_status
+from figmaclaw.staleness import active_tombstoned_node_ids
 from figmaclaw.verdict import (
     EXIT_RED,
     RunVerdict,
@@ -358,11 +361,24 @@ def _ensure_enrichment_log_schema(repo_dir: Path, log_path: Path) -> bool:
         _warn_enrichment_log(repo_dir, "migrated minimal enrichment log header to schema-v1")
         return True
 
+    # Unrecognized schema — no known migration path applies. Rather than
+    # silently skipping appends forever (the figmaclaw#121 incident shape,
+    # where this WARN recurred hourly and the file was never "fixed"),
+    # archive the current log with a UTC timestamp and start fresh. The
+    # caller's row is then appended to the new empty log; prior history
+    # is preserved in the .bak file and recoverable by hand if needed.
+    archived = log_path.with_name(
+        f"{log_path.stem}.bak.{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}{log_path.suffix}"
+    )
+    log_path.rename(archived)
+    _rewrite_csv_rows(log_path, [])
+    _rebuild_event_id_index(repo_dir, [])
     _warn_enrichment_log(
         repo_dir,
-        "unsupported enrichment log schema/header; append skipped until file is fixed",
+        f"unrecognized enrichment log schema (fieldnames={list(fieldnames)}); "
+        f"archived prior log to {archived.name} and started a fresh schema-v1 log",
     )
-    return False
+    return True
 
 
 def _log_enrichment(
@@ -508,13 +524,19 @@ def _migrate_missing_enrichment_schema_version(md_path: Path, text: str) -> str:
     return migrated
 
 
-def enrichment_info(md_path: Path) -> tuple[bool, int]:
+def enrichment_info(md_path: Path, repo_dir: Path | None = None) -> tuple[bool, int]:
     """Fast selector for enrichment candidacy and frame-size estimate.
 
     Returns ``(needs_it, frame_count)``.
 
     Contract: selector must match ``inspect`` for ENRICH MUST decisions and
     must migrate legacy files lacking explicit schema version.
+
+    When *repo_dir* is provided, body rows whose node_id is actively
+    tombstoned (``unresolvable_frames[nid]`` matches current manifest
+    hash) are NOT counted as unresolved — otherwise the selector would
+    keep picking files whose only remaining "pending" rows are ones the
+    LLM has already confirmed unresolvable. See figmaclaw#121.
     """
     # Inventory artifacts are never page-enrichment targets.
     if _is_non_enrichable_markdown(md_path):
@@ -533,7 +555,15 @@ def enrichment_info(md_path: Path) -> tuple[bool, int]:
 
     # Frame-size estimate from canonical body parser (frame sections only).
     frame_count = frame_row_count(text)
-    has_unresolved = any(unresolved_row_node_id(line) is not None for line in text.splitlines())
+    try:
+        fm_for_tombstones = parse_frontmatter(text)
+    except Exception:
+        fm_for_tombstones = None
+    tombstoned = active_tombstoned_node_ids(fm_for_tombstones, repo_dir)
+    has_unresolved = any(
+        (nid := unresolved_row_node_id(line)) is not None and nid not in tombstoned
+        for line in text.splitlines()
+    )
     has_llm_marker = "<!-- LLM:" in text
 
     if has_unresolved or has_llm_marker:
@@ -564,6 +594,7 @@ def collect_files(
     needs_enrichment: bool = False,
     min_frames: int = 0,
     max_frames: int = 0,
+    repo_dir: Path | None = None,
 ) -> list[Path]:
     """Discover files to process, optionally filtering by enrichment status.
 
@@ -589,7 +620,7 @@ def collect_files(
         skipped_small = 0
         skipped_big = 0
         for f in files:
-            needs_it, frame_count = enrichment_info(f)
+            needs_it, frame_count = enrichment_info(f, repo_dir=repo_dir)
             if not needs_it:
                 continue
             if min_frames > 0 and frame_count < min_frames:
@@ -647,11 +678,37 @@ def _pending_sections_with_frame_ids(text: str) -> list[dict[str, str | list[str
     return parsed
 
 
-def pending_sections(md_path: Path) -> list[dict[str, str | int]]:
+def _tombstoned_ids_for_path(md_path: Path, repo_dir: Path | None) -> set[str]:
+    """Read the file's frontmatter and return its active tombstones.
+
+    Thin wrapper around :func:`figmaclaw.staleness.active_tombstoned_node_ids`
+    that takes a path (for callers that already only have the path).
+    Returns empty set when no manifest is available or tombstones are
+    empty — safe to subtract from a pending set unconditionally.
+    """
+    if repo_dir is None:
+        return set()
+    try:
+        text = md_path.read_text()
+    except OSError:
+        return set()
+    try:
+        fm = parse_frontmatter(text)
+    except Exception:
+        return set()
+    return active_tombstoned_node_ids(fm, repo_dir)
+
+
+def pending_sections(md_path: Path, repo_dir: Path | None = None) -> list[dict[str, str | int]]:
     """Return sections that need enrichment (have pending unresolved rows).
 
     Returns ``[{"node_id": ..., "name": ..., "pending_frames": N}]`` for
     sections with unresolved description markers.
+
+    When *repo_dir* is provided, frames with an ACTIVE tombstone (recorded
+    ``unresolvable_frames[nid]`` equals the current manifest hash) are
+    excluded from the pending count — a terminal state means "not
+    pending" until Figma content changes. See figmaclaw#121.
     """
     try:
         text = md_path.read_text()
@@ -659,34 +716,110 @@ def pending_sections(md_path: Path) -> list[dict[str, str | int]]:
         return []
 
     parsed = _pending_sections_with_frame_ids(text)
-    return [
-        {
-            "node_id": str(item["node_id"]),
-            "name": str(item["name"]),
-            "pending_frames": len(item["pending_frame_ids"]),
-        }
-        for item in parsed
-    ]
+    tombstoned = _tombstoned_ids_for_path(md_path, repo_dir)
+    result: list[dict[str, str | int]] = []
+    for item in parsed:
+        pending = [nid for nid in item["pending_frame_ids"] if nid not in tombstoned]
+        if not pending:
+            continue
+        result.append(
+            {
+                "node_id": str(item["node_id"]),
+                "name": str(item["name"]),
+                "pending_frames": len(pending),
+            }
+        )
+    return result
 
 
-def pending_frame_node_ids(md_path: Path) -> set[str]:
-    """Return unresolved frame node IDs pending enrichment for one page."""
+def pending_frame_node_ids(md_path: Path, repo_dir: Path | None = None) -> set[str]:
+    """Return unresolved frame node IDs pending enrichment for one page.
+
+    When *repo_dir* is provided, tombstones whose recorded hash equals
+    the current manifest hash are excluded (terminal state honored).
+    """
     try:
         text = md_path.read_text()
     except OSError:
         return set()
 
     parsed = _pending_sections_with_frame_ids(text)
-    return {
+    pending = {
         node_id
         for item in parsed
         for node_id in item["pending_frame_ids"]
         if isinstance(node_id, str)
     }
+    return pending - _tombstoned_ids_for_path(md_path, repo_dir)
 
 
-def _is_schema_upgrade_only_candidate(md_path: Path) -> bool:
-    """True when file only needs schema bump (no pending rows, no finalization work)."""
+def _record_tombstones(md_path: Path, repo_dir: Path, node_ids: set[str]) -> int:
+    """Record unresolvable-frame tombstones for *node_ids* in *md_path*'s frontmatter.
+
+    The tombstone value is the current manifest frame_hash for each
+    node_id. When the manifest has no entry for a node_id (orphan frame,
+    or never-pulled page), the node is skipped — there's nothing to key
+    the tombstone against, so retry next run is the safe default.
+
+    Returns the number of tombstones actually written. Zero means either
+    no manifest context was available or none of the node_ids had a
+    current hash to anchor to.
+
+    Uses the public :func:`figma_render.rebuild_frontmatter_from_parsed`
+    helper — same ``_build_frontmatter`` chokepoint as
+    ``build_page_frontmatter`` and ``build_component_frontmatter`` — so
+    the key-set invariant from figmaclaw#121 applies: tombstones for
+    node_ids not in ``frames`` are pruned before serialization.
+    """
+    try:
+        text = md_path.read_text()
+    except OSError:
+        return 0
+    fm = parse_frontmatter(text)
+    if fm is None or not fm.file_key or not fm.page_node_id:
+        return 0
+
+    try:
+        state = FigmaSyncState(repo_dir)
+        state.load()
+    except Exception:
+        return 0
+    file_entry = state.manifest.files.get(fm.file_key)
+    if file_entry is None:
+        return 0
+    page_entry = file_entry.pages.get(fm.page_node_id)
+    if page_entry is None:
+        return 0
+    current = page_entry.frame_hashes
+
+    existing = dict(fm.unresolvable_frames or {})
+    before = len(existing)
+    for nid in node_ids:
+        h = current.get(nid)
+        if h is None:
+            continue
+        existing[nid] = h
+    added = len(existing) - before
+    if added == 0:
+        return 0
+
+    new_fm = rebuild_frontmatter_from_parsed(fm, unresolvable_frames=existing)
+    parts = split_frontmatter(text)
+    if parts is None:
+        return 0
+    _, body = parts
+    md_path.write_text(f"{new_fm}\n{body}")
+    return added
+
+
+def _is_schema_upgrade_only_candidate(md_path: Path, repo_dir: Path | None = None) -> bool:
+    """True when file only needs schema bump (no pending rows, no finalization work).
+
+    *repo_dir* is threaded to ``pending_sections`` and ``needs_finalization``
+    so tombstoned frames are not counted as pending. Without this, a file
+    whose only remaining unresolved rows are fully tombstoned would
+    wrongly return False here (selector/dispatcher disagreement).
+    """
     try:
         fm = parse_frontmatter(md_path.read_text())
     except Exception:
@@ -696,13 +829,17 @@ def _is_schema_upgrade_only_candidate(md_path: Path) -> bool:
         return False
     if not enrichment_schema_status(fm.enriched_schema_version).must_update:
         return False
-    if pending_sections(md_path):
+    if pending_sections(md_path, repo_dir=repo_dir):
         return False
-    return not needs_finalization(md_path)
+    return not needs_finalization(md_path, repo_dir=repo_dir)
 
 
-def _is_llm_marker_only_candidate(md_path: Path) -> bool:
-    """True when only unresolved signal is an LLM marker comment."""
+def _is_llm_marker_only_candidate(md_path: Path, repo_dir: Path | None = None) -> bool:
+    """True when only unresolved signal is an LLM marker comment.
+
+    *repo_dir* is threaded so tombstoned rows don't prevent recognition
+    of the marker-only candidate state.
+    """
     try:
         text = md_path.read_text()
     except OSError:
@@ -710,13 +847,18 @@ def _is_llm_marker_only_candidate(md_path: Path) -> bool:
 
     if "<!-- LLM:" not in text:
         return False
-    if pending_sections(md_path):
+    if pending_sections(md_path, repo_dir=repo_dir):
         return False
-    return not needs_finalization(md_path)
+    return not needs_finalization(md_path, repo_dir=repo_dir)
 
 
-def _classify_no_work_candidate(md_path: Path) -> str:
-    """Classify no-work section candidates from a single file snapshot."""
+def _classify_no_work_candidate(md_path: Path, repo_dir: Path | None = None) -> str:
+    """Classify no-work section candidates from a single file snapshot.
+
+    *repo_dir* is currently unused here but accepted for signature parity
+    with the other candidate checks — lets callers thread it uniformly.
+    """
+    _ = repo_dir  # reserved for future tombstone-aware classification
     try:
         text = md_path.read_text()
     except OSError:
@@ -736,19 +878,32 @@ def _classify_no_work_candidate(md_path: Path) -> str:
     return "phantom"
 
 
-def needs_finalization(md_path: Path) -> bool:
+def needs_finalization(md_path: Path, repo_dir: Path | None = None) -> bool:
     """True when all sections are described but the page isn't marked enriched yet.
 
     This means section-by-section enrichment is complete and the finalization
     step (page summary + mermaid + mark-enriched) should run.
+
+    *repo_dir* is threaded so that tombstoned rows are NOT counted as
+    pending — otherwise a file with all unresolved rows tombstoned would
+    never be allowed to finalize.
     """
     try:
         text = md_path.read_text()
     except OSError:
         return False
 
-    # If there are still pending unresolved rows anywhere, not ready.
-    if any(unresolved_row_node_id(line) is not None for line in text.splitlines()):
+    # If there are still pending unresolved rows anywhere (excluding
+    # tombstoned ones), not ready.
+    try:
+        fm = parse_frontmatter(text)
+    except Exception:
+        fm = None
+    tombstoned = active_tombstoned_node_ids(fm, repo_dir)
+    if any(
+        (nid := unresolved_row_node_id(line)) is not None and nid not in tombstoned
+        for line in text.splitlines()
+    ):
         return False
 
     # If already marked as enriched, no need to finalize
@@ -1024,6 +1179,7 @@ def claude_run_cmd(
         needs_enrichment,
         min_frames=min_frames,
         max_frames=max_frames,
+        repo_dir=repo_dir,
     )
     if max_files > 0 and len(files) > max_files:
         click.echo(f"[claude-run] limiting to {max_files}/{len(files)} files", err=True)
@@ -1036,10 +1192,10 @@ def claude_run_cmd(
     if dry_run:
         click.echo("[claude-run] DRY RUN — files that would be passed to claude:")
         for f in files:
-            _, fc = enrichment_info(f)
+            _, fc = enrichment_info(f, repo_dir=repo_dir)
             if section_mode and fc > SECTION_THRESHOLD:
-                sections = pending_sections(f)
-                fin = needs_finalization(f)
+                sections = pending_sections(f, repo_dir=repo_dir)
+                fin = needs_finalization(f, repo_dir=repo_dir)
                 click.echo(
                     f"  {f} ({fc} frames, section-mode: {len(sections)} pending sections, finalize={fin})"
                 )
@@ -1061,9 +1217,11 @@ def claude_run_cmd(
     work_attempted = 0
     errors = 0
     skipped_no_work = 0
+    stuck = 0
     budget_exhausted = False
     budget_stop_reason: str | None = None
     phantom_files: list[str] = []
+    stuck_files: list[str] = []
     dispatch_crashed = False
 
     # Sha snapshot before any work — used to count commits that actually
@@ -1120,7 +1278,7 @@ def claude_run_cmd(
             subprocess.run(["git", "pull", "--no-rebase"], capture_output=True)
 
             # Re-check after pull — file may now have enriched_hash
-            needs_it, frame_count = enrichment_info(file_path)
+            needs_it, frame_count = enrichment_info(file_path, repo_dir=repo_dir)
             if not needs_it:
                 click.echo(
                     f"[claude-run] [{i}/{total}] skip (already enriched): {file_path}",
@@ -1132,11 +1290,11 @@ def claude_run_cmd(
                 # Batch mode: describe up to 80 pending frames per Claude invocation
                 # using write-descriptions (cross-section, mechanical row updates).
                 batch_template = _prompt_path("figma-sections-batch.md").read_text()
-                sections = pending_sections(file_path)
-                fin_needed = needs_finalization(file_path)
+                sections = pending_sections(file_path, repo_dir=repo_dir)
+                fin_needed = needs_finalization(file_path, repo_dir=repo_dir)
 
                 if not sections and not fin_needed:
-                    candidate = _classify_no_work_candidate(file_path)
+                    candidate = _classify_no_work_candidate(file_path, repo_dir=repo_dir)
                     if candidate == "schema-only":
                         click.echo(
                             f"[claude-run] [{i}/{total}] skip (schema-only candidate): {file_path}",
@@ -1194,7 +1352,7 @@ def claude_run_cmd(
                 while sections:
                     chunk_num += 1
                     total_pending = sum(int(s["pending_frames"]) for s in sections)
-                    before_pending_ids = pending_frame_node_ids(file_path)
+                    before_pending_ids = pending_frame_node_ids(file_path, repo_dir=repo_dir)
 
                     # figmaclaw#26: adaptive budget check BEFORE the expensive call
                     decision = _budget_check(total_pending, mode="batch")
@@ -1264,8 +1422,8 @@ def claude_run_cmd(
                     # If unresolved frame IDs didn't change, this run made no
                     # progress on this file; stop immediately to avoid loops.
                     subprocess.run(["git", "pull", "--no-rebase"], capture_output=True)
-                    sections = pending_sections(file_path)
-                    after_pending_ids = pending_frame_node_ids(file_path)
+                    sections = pending_sections(file_path, repo_dir=repo_dir)
+                    after_pending_ids = pending_frame_node_ids(file_path, repo_dir=repo_dir)
                     if after_pending_ids and after_pending_ids == before_pending_ids:
                         click.echo(
                             f"[claude-run] [{i}/{total}] NO-PROGRESS: unresolved frame set "
@@ -1283,13 +1441,23 @@ def claude_run_cmd(
                             False,
                             run_id=run_id,
                         )
+                        tombstoned = _record_tombstones(file_path, repo_dir, after_pending_ids)
+                        if tombstoned:
+                            click.echo(
+                                f"[claude-run] [{i}/{total}] recorded {tombstoned} tombstone(s) "
+                                f"in unresolvable_frames — these frames will be skipped on "
+                                f"future runs until their Figma content hash changes.",
+                                err=True,
+                            )
+                        stuck += 1
+                        stuck_files.append(str(file_path))
                         break
 
                 if budget_exhausted:
                     break  # out of outer for
 
                 # All frames described → finalize (page summary + intros + mermaid)
-                if needs_finalization(file_path):
+                if needs_finalization(file_path, repo_dir=repo_dir):
                     decision = _budget_check(frame_count, mode="finalize")
                     click.echo(decision.reason, err=True)
                     if not decision.should_start:
@@ -1421,6 +1589,7 @@ def claude_run_cmd(
         errors=errors,
         budget_exhausted=budget_exhausted,
         skipped_no_work=skipped_no_work,
+        stuck=stuck,
     )
     if dispatch_crashed:
         verdict = RunVerdict(
@@ -1433,7 +1602,7 @@ def claude_run_cmd(
         f"[claude-run] Done: files_selected={files_selected} "
         f"work_attempted={work_attempted} commits_made={commits_made} "
         f"errors={errors} budget_exhausted={str(budget_exhausted).lower()} "
-        f"skipped_no_work={skipped_no_work}",
+        f"skipped_no_work={skipped_no_work} stuck={stuck}",
         err=True,
     )
     click.echo(f"[claude-run] Verdict ({verdict.row}): {verdict.label}", err=True)
@@ -1446,7 +1615,9 @@ def claude_run_cmd(
         errors=errors,
         budget_exhausted=budget_exhausted,
         skipped_no_work=skipped_no_work,
+        stuck=stuck,
         phantom_files=phantom_files or None,
+        stuck_files=stuck_files or None,
         budget_stop_reason=budget_stop_reason,
     )
     write_step_summary(summary)

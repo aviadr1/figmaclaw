@@ -790,12 +790,18 @@ class TestClaudeRunExecutionBranches:
         md = tmp_path / "page.md"
         self._write_placeholder_page(md)
 
-        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p: (True, 120))
-        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p: [])
-        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p: False)
-        monkeypatch.setattr(claude_run_mod, "_is_schema_upgrade_only_candidate", lambda _p: False)
-        monkeypatch.setattr(claude_run_mod, "_is_llm_marker_only_candidate", lambda _p: False)
-        monkeypatch.setattr(claude_run_mod, "_classify_no_work_candidate", lambda _p: "phantom")
+        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p, **_kw: (True, 120))
+        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p, **_kw: [])
+        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p, **_kw: False)
+        monkeypatch.setattr(
+            claude_run_mod, "_is_schema_upgrade_only_candidate", lambda _p, **_kw: False
+        )
+        monkeypatch.setattr(
+            claude_run_mod, "_is_llm_marker_only_candidate", lambda _p, **_kw: False
+        )
+        monkeypatch.setattr(
+            claude_run_mod, "_classify_no_work_candidate", lambda _p, **_kw: "phantom"
+        )
         monkeypatch.setattr(
             claude_run_mod.subprocess,
             "run",
@@ -842,11 +848,13 @@ class TestClaudeRunExecutionBranches:
             )
         )
 
-        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p: (True, 120))
-        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p: [])
-        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p: False)
-        monkeypatch.setattr(claude_run_mod, "_is_schema_upgrade_only_candidate", lambda _p: False)
-        monkeypatch.setattr(claude_run_mod, "_is_llm_marker_only_candidate", lambda _p: True)
+        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p, **_kw: (True, 120))
+        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p, **_kw: [])
+        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p, **_kw: False)
+        monkeypatch.setattr(
+            claude_run_mod, "_is_schema_upgrade_only_candidate", lambda _p, **_kw: False
+        )
+        monkeypatch.setattr(claude_run_mod, "_is_llm_marker_only_candidate", lambda _p, **_kw: True)
         monkeypatch.setattr(
             claude_run_mod.subprocess,
             "run",
@@ -892,9 +900,9 @@ class TestClaudeRunExecutionBranches:
             )
         )
 
-        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p: (True, 120))
-        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p: [])
-        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p: False)
+        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p, **_kw: (True, 120))
+        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p, **_kw: [])
+        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p, **_kw: False)
         monkeypatch.setattr(
             claude_run_mod.subprocess,
             "run",
@@ -941,11 +949,15 @@ class TestClaudeRunExecutionBranches:
             )
         )
 
-        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p: (True, 120))
-        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p: [])
-        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p: False)
-        monkeypatch.setattr(claude_run_mod, "_is_schema_upgrade_only_candidate", lambda _p: True)
-        monkeypatch.setattr(claude_run_mod, "_is_llm_marker_only_candidate", lambda _p: False)
+        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p, **_kw: (True, 120))
+        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p, **_kw: [])
+        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p, **_kw: False)
+        monkeypatch.setattr(
+            claude_run_mod, "_is_schema_upgrade_only_candidate", lambda _p, **_kw: True
+        )
+        monkeypatch.setattr(
+            claude_run_mod, "_is_llm_marker_only_candidate", lambda _p, **_kw: False
+        )
         monkeypatch.setattr(
             claude_run_mod.subprocess,
             "run",
@@ -980,10 +992,12 @@ class TestClaudeRunExecutionBranches:
         sections = [{"node_id": "10:1", "name": "Auth", "pending_frames": 2}]
         pending = [sections, sections]
 
-        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p: (True, 120))
-        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p: pending.pop(0))
-        monkeypatch.setattr(claude_run_mod, "pending_frame_node_ids", lambda _p: {"11:1", "11:2"})
-        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p: False)
+        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p, **_kw: (True, 120))
+        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p, **_kw: pending.pop(0))
+        monkeypatch.setattr(
+            claude_run_mod, "pending_frame_node_ids", lambda _p, **_kw: {"11:1", "11:2"}
+        )
+        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p, **_kw: False)
         monkeypatch.setattr(
             claude_run_mod,
             "decide_next_batch",
@@ -1032,12 +1046,18 @@ class TestClaudeRunExecutionBranches:
         monkeypatch.setattr(
             claude_run_mod, "collect_files", lambda *args, **kwargs: [page_a, page_b]
         )
-        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p: (True, 120))
-        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p: [])
-        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p: False)
-        monkeypatch.setattr(claude_run_mod, "_is_schema_upgrade_only_candidate", lambda _p: False)
-        monkeypatch.setattr(claude_run_mod, "_is_llm_marker_only_candidate", lambda _p: False)
-        monkeypatch.setattr(claude_run_mod, "_classify_no_work_candidate", lambda _p: "phantom")
+        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p, **_kw: (True, 120))
+        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p, **_kw: [])
+        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p, **_kw: False)
+        monkeypatch.setattr(
+            claude_run_mod, "_is_schema_upgrade_only_candidate", lambda _p, **_kw: False
+        )
+        monkeypatch.setattr(
+            claude_run_mod, "_is_llm_marker_only_candidate", lambda _p, **_kw: False
+        )
+        monkeypatch.setattr(
+            claude_run_mod, "_classify_no_work_candidate", lambda _p, **_kw: "phantom"
+        )
         monkeypatch.setattr(
             claude_run_mod.subprocess,
             "run",
@@ -1067,7 +1087,7 @@ class TestClaudeRunExecutionBranches:
         md = tmp_path / "page.md"
         self._write_placeholder_page(md)
 
-        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p: (True, 1))
+        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p, **_kw: (True, 1))
         monkeypatch.setattr(
             claude_run_mod,
             "decide_next_batch",
@@ -1526,8 +1546,16 @@ def test_log_migrates_real_world_linear_git_legacy_fixture(tmp_path: Path) -> No
     assert rows[-1]["event_id"] != ""
 
 
-def test_log_unknown_header_is_observable_and_skips_append(tmp_path: Path) -> None:
-    """Unsupported header must not crash and must emit an error marker."""
+def test_log_unknown_header_self_heals_by_archiving_and_starting_fresh(
+    tmp_path: Path,
+) -> None:
+    """Unsupported header must not become a silent-drop terminal state.
+
+    Contract (figmaclaw#121 anti-loop policy #5): if schema migration is
+    possible, auto-heal; if not, archive the prior file with a timestamp
+    and start a fresh schema-v1 log. Never leave the writer in a "warn
+    and skip forever" loop where every run loses its data.
+    """
     log_path = tmp_path / claude_run_mod.ENRICHMENT_LOG
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.write_text("foo,bar,baz\n1,2,3\n", encoding="utf-8")
@@ -1538,9 +1566,58 @@ def test_log_unknown_header_is_observable_and_skips_append(tmp_path: Path) -> No
 
     claude_run_mod._log_enrichment(tmp_path, md, "batch", 1, 1.0, True, run_id="run-x")
 
+    # 1. A loud error line is emitted so humans can notice the archive event
     err = tmp_path / claude_run_mod.ENRICHMENT_LOG_ERROR
     assert err.exists()
-    assert "unsupported enrichment log schema/header" in err.read_text(encoding="utf-8")
+    err_text = err.read_text(encoding="utf-8")
+    assert "unrecognized enrichment log schema" in err_text
+    assert "archived prior log" in err_text
+
+    # 2. The prior log was archived with a .bak. prefix (not deleted)
+    log_dir = log_path.parent
+    backups = list(log_dir.glob(f"{log_path.stem}.bak.*{log_path.suffix}"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == "foo,bar,baz\n1,2,3\n"
+
+    # 3. A fresh schema-v1 log replaced it, and the caller's row landed
+    with log_path.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+    assert tuple(reader.fieldnames or ()) == claude_run_mod.ENRICHMENT_LOG_FIELDS
+    assert len(rows) == 1
+    assert rows[0]["mode"] == "batch"
+    assert rows[0]["frames"] == "1"
+
+
+def test_log_unknown_header_second_run_does_not_warn_again(tmp_path: Path) -> None:
+    """After self-healing on run N, run N+1 must NOT re-emit the error.
+
+    This is the cross-run idempotency shape from CLAUDE.md policy #1:
+    a fix-once event should not be a fix-every-run event. If the warn
+    recurred forever we'd still be silently losing signal.
+    """
+    log_path = tmp_path / claude_run_mod.ENRICHMENT_LOG
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text("foo,bar,baz\n1,2,3\n", encoding="utf-8")
+
+    md = tmp_path / "figma" / "pages" / "a.md"
+    md.parent.mkdir(parents=True, exist_ok=True)
+    md.write_text("---\nfile_key: a\n---\n")
+
+    # Run 1 — archives + appends
+    claude_run_mod._log_enrichment(tmp_path, md, "batch", 1, 1.0, True, run_id="run-1")
+    err = tmp_path / claude_run_mod.ENRICHMENT_LOG_ERROR
+    err_len_after_run1 = len(err.read_text(encoding="utf-8"))
+
+    # Run 2 — clean log, should append without any new error line
+    claude_run_mod._log_enrichment(tmp_path, md, "batch", 2, 2.0, True, run_id="run-2")
+
+    assert len(err.read_text(encoding="utf-8")) == err_len_after_run1
+
+    with log_path.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+    assert len(rows) == 2
 
 
 def test_log_malformed_legacy_csv_is_observable_and_does_not_crash(tmp_path: Path) -> None:

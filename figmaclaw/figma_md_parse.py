@@ -89,10 +89,23 @@ class ParsedSection:
 
 
 def _collect_frames_in_range(lines: list[str], start: int, end: int) -> list[ParsedFrame]:
-    """Collect parsed frame rows inside one line range."""
+    """Collect parsed frame rows inside one line range.
+
+    Tracks fenced code blocks (``` ``` ```), matching the fence-awareness in
+    :func:`figmaclaw.body_validation.iter_body_frame_rows` so both
+    canonical body walkers agree on what counts as a frame row. See the
+    figmaclaw#121 anti-loop policy #4 (canonical walker reuse).
+    """
     in_table = False
+    in_fence = False
     frames: list[ParsedFrame] = []
     for line in lines[start:end]:
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            in_table = False
+            continue
+        if in_fence:
+            continue
         if is_table_separator(line):
             in_table = True
             continue

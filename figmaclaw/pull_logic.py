@@ -45,6 +45,7 @@ from pathlib import Path
 import httpx
 from pydantic import BaseModel, Field
 
+from figmaclaw.body_validation import iter_body_frame_rows
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_frontmatter import (
     CURRENT_PULL_SCHEMA_VERSION,
@@ -54,7 +55,7 @@ from figmaclaw.figma_frontmatter import (
 )
 from figmaclaw.figma_hash import compute_frame_hashes, compute_page_hash
 from figmaclaw.figma_models import FigmaPage, FigmaSection, from_page_node
-from figmaclaw.figma_parse import parse_flows, parse_frontmatter
+from figmaclaw.figma_parse import parse_flows, parse_frontmatter, split_frontmatter
 from figmaclaw.figma_paths import (
     census_path,
     component_path,
@@ -66,8 +67,10 @@ from figmaclaw.figma_paths import (
 from figmaclaw.figma_render import (
     build_component_frontmatter,
     build_page_frontmatter,
+    page_frame_ids,
     render_component_section,
     scaffold_page,
+    section_frame_ids,
 )
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
 from figmaclaw.figma_utils import write_json_if_changed
@@ -234,6 +237,7 @@ def update_page_frontmatter(
     enriched_at = existing_fm.enriched_at if existing_fm else None
     enriched_frame_hashes = existing_fm.enriched_frame_hashes if existing_fm else None
     enriched_schema_version = existing_fm.enriched_schema_version if existing_fm else 0
+    unresolvable_frames = existing_fm.unresolvable_frames if existing_fm else None
 
     new_fm = build_page_frontmatter(
         page,
@@ -244,8 +248,11 @@ def update_page_frontmatter(
         raw_frames=raw_frames,
         raw_tokens=raw_tokens,
         frame_sections=frame_sections,
+        unresolvable_frames=unresolvable_frames or None,
     )
-    _rewrite_frontmatter_preserving_body(out_path, md_text, new_fm)
+    _rewrite_frontmatter_preserving_body(
+        out_path, md_text, new_fm, allowed_frame_ids=set(page_frame_ids(page))
+    )
     return out_path
 
 
@@ -286,6 +293,7 @@ def update_component_frontmatter(
     enriched_at = existing_fm.enriched_at if existing_fm else None
     enriched_frame_hashes = existing_fm.enriched_frame_hashes if existing_fm else None
     enriched_schema_version = existing_fm.enriched_schema_version if existing_fm else 0
+    unresolvable_frames = existing_fm.unresolvable_frames if existing_fm else None
 
     new_fm = build_component_frontmatter(
         section,
@@ -295,19 +303,73 @@ def update_component_frontmatter(
         enriched_at=enriched_at,
         enriched_frame_hashes=enriched_frame_hashes or None,
         enriched_schema_version=enriched_schema_version,
+        unresolvable_frames=unresolvable_frames or None,
     )
-    _rewrite_frontmatter_preserving_body(out_path, md_text, new_fm)
+    _rewrite_frontmatter_preserving_body(
+        out_path, md_text, new_fm, allowed_frame_ids=set(section_frame_ids(section))
+    )
     return out_path
 
 
-def _rewrite_frontmatter_preserving_body(out_path: Path, md_text: str, new_fm: str) -> None:
-    """Rewrite frontmatter while preserving markdown body byte-for-byte."""
-    from figmaclaw.figma_parse import split_frontmatter
+def _rewrite_frontmatter_preserving_body(
+    out_path: Path,
+    md_text: str,
+    new_fm: str,
+    *,
+    allowed_frame_ids: set[str] | None = None,
+) -> None:
+    """Rewrite frontmatter and structurally prune orphan frame rows from body.
 
+    Frontmatter is replaced wholesale. Body prose is preserved verbatim — we
+    do NOT parse or rewrite prose. The only body edit this function performs
+    is surgical removal of canonical frame *rows* whose node_id is not in
+    *allowed_frame_ids*. Table headers, separators, prose, section headings,
+    and Mermaid blocks are untouched.
+
+    *allowed_frame_ids* is the authoritative set of frame node_ids for the
+    page — callers get it from :func:`figma_render.page_frame_ids` (screen
+    pages) or :func:`figma_render.section_frame_ids` (component sections).
+    None means "do not prune" (used by code paths that don't own the
+    authoritative frame list, e.g. legacy call sites).
+
+    This is a structural operation, not a prose rewrite: a row whose node_id
+    points to a frame that no longer exists cannot possibly be correct, so
+    dropping it is the narrow exception to the "code never rewrites body"
+    rule. See figmaclaw#121 — orphan rows left behind by a shrinking pull are
+    what drive cross-run enrichment loops.
+    """
     parts = split_frontmatter(md_text)
     assert parts is not None, f"Failed to parse frontmatter from {out_path}"
     _, body = parts
+
+    if allowed_frame_ids is not None:
+        body = _prune_orphan_frame_rows(body, allowed_frame_ids)
+
     out_path.write_text(f"{new_fm}\n{body}")
+
+
+def _prune_orphan_frame_rows(body: str, allowed_frame_ids: set[str]) -> str:
+    """Remove canonical frame rows whose node_id is not in *allowed_frame_ids*.
+
+    Uses :func:`figmaclaw.body_validation.iter_body_frame_rows` — the single
+    canonical body frame-row walker (fence-aware, exact-header match). Prose,
+    section headings, table headers, separators, and Mermaid blocks are
+    preserved verbatim because they are not yielded by the walker.
+
+    Returns *body* unchanged when *allowed_frame_ids* is empty (nothing to
+    enforce against).
+    """
+    if not allowed_frame_ids:
+        return body
+
+    orphan_line_indices = {
+        row.line_index for row in iter_body_frame_rows(body) if row.node_id not in allowed_frame_ids
+    }
+    if not orphan_line_indices:
+        return body
+
+    lines = body.splitlines(keepends=True)
+    return "".join(line for i, line in enumerate(lines) if i not in orphan_line_indices)
 
 
 def _aggregate_issues(issues: list) -> list[dict]:

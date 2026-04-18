@@ -38,7 +38,12 @@ from __future__ import annotations
 
 import yaml
 
-from figmaclaw.figma_frontmatter import FrameComposition, RawTokenCounts, SectionNode
+from figmaclaw.figma_frontmatter import (
+    FigmaPageFrontmatter,
+    FrameComposition,
+    RawTokenCounts,
+    SectionNode,
+)
 from figmaclaw.figma_models import FigmaPage, FigmaSection
 from figmaclaw.figma_schema import (
     PLACEHOLDER_DESCRIPTION,
@@ -85,6 +90,17 @@ _FrontmatterDumper.add_representer(
 )
 
 
+def _prune_to_allowed(d: dict | None, allowed: set[str]) -> dict | None:
+    """Return *d* restricted to keys in *allowed*, or None if *d* is falsy.
+
+    Enforces the frame-keyed key-set invariant at the single frontmatter
+    write chokepoint (``_build_frontmatter``). See figmaclaw#121.
+    """
+    if not d:
+        return d
+    return {k: v for k, v in d.items() if k in allowed}
+
+
 def _build_frontmatter(
     file_key: str,
     page_node_id: str,
@@ -100,8 +116,28 @@ def _build_frontmatter(
     raw_frames: dict[str, FrameComposition] | None = None,
     raw_tokens: dict[str, RawTokenCounts] | None = None,
     frame_sections: dict[str, list[SectionNode]] | None = None,
+    unresolvable_frames: dict[str, str] | None = None,
 ) -> str:
-    """Render compact YAML frontmatter block (between --- markers)."""
+    """Render compact YAML frontmatter block (between --- markers).
+
+    Enforces the frame-keyed key-set invariant: any frame-keyed dict
+    (``enriched_frame_hashes``, ``raw_frames``, ``raw_tokens``, ``frame_sections``)
+    is pruned to ``⊆ frame_ids`` before rendering. This is the single chokepoint
+    for frontmatter writes — orphan frame-keyed entries cannot survive a
+    round-trip through this function, regardless of caller correctness.
+
+    Rationale: see figmaclaw#121 (cross-run enrichment loops). Orphan entries
+    in ``enriched_frame_hashes`` that survived a shrinking ``frames`` list in
+    ``pull`` caused hourly CI failures on stuck files the selector kept
+    reselecting across runs.
+    """
+    allowed_frame_ids = set(frame_ids)
+    enriched_frame_hashes = _prune_to_allowed(enriched_frame_hashes, allowed_frame_ids)
+    raw_frames = _prune_to_allowed(raw_frames, allowed_frame_ids)
+    raw_tokens = _prune_to_allowed(raw_tokens, allowed_frame_ids)
+    frame_sections = _prune_to_allowed(frame_sections, allowed_frame_ids)
+    unresolvable_frames = _prune_to_allowed(unresolvable_frames, allowed_frame_ids)
+
     fm: dict = {"file_key": file_key, "page_node_id": page_node_id}
     if section_node_id:
         fm["section_node_id"] = section_node_id
@@ -115,6 +151,8 @@ def _build_frontmatter(
         fm["enriched_at"] = enriched_at
     if enriched_frame_hashes:
         fm["enriched_frame_hashes"] = _FlowDict(enriched_frame_hashes)
+    if unresolvable_frames:
+        fm["unresolvable_frames"] = _FlowDict(unresolvable_frames)
     fm["enriched_schema_version"] = enriched_schema_version
     if component_set_keys:
         fm["component_set_keys"] = _FlowDict(component_set_keys)
@@ -165,6 +203,31 @@ def _build_frontmatter(
     return f"---\n{body}\n---"
 
 
+def page_frame_ids(page: FigmaPage) -> list[str]:
+    """Return the node_ids of every frame in *page*'s screen (non-component) sections.
+
+    Single source of truth for "what are the authoritative frame IDs for
+    this page" — used by :func:`build_page_frontmatter` to render the
+    ``frames`` list and by pull-time body pruning to know which body rows
+    are orphans. Avoids the "extract frame IDs from page" loop being
+    re-implemented at every call site.
+    """
+    return [
+        frame.node_id
+        for section in page.sections
+        if not section.is_component_library
+        for frame in section.frames
+    ]
+
+
+def section_frame_ids(section: FigmaSection) -> list[str]:
+    """Return the node_ids of every frame in a component library *section*.
+
+    Mirror of :func:`page_frame_ids` for the component-section case.
+    """
+    return [frame.node_id for frame in section.frames]
+
+
 def build_page_frontmatter(
     page: FigmaPage,
     *,
@@ -175,6 +238,7 @@ def build_page_frontmatter(
     raw_frames: dict[str, FrameComposition] | None = None,
     raw_tokens: dict[str, RawTokenCounts] | None = None,
     frame_sections: dict[str, list[SectionNode]] | None = None,
+    unresolvable_frames: dict[str, str] | None = None,
 ) -> str:
     """Build the YAML frontmatter block for a screen page from a FigmaPage model.
 
@@ -189,16 +253,18 @@ def build_page_frontmatter(
     and per-section direct-child inventory (instances/raw_count + stable
     instance_component_ids). Used by build-context and coverage queries
     without extra API calls.
+
+    unresolvable_frames: tombstones (node_id → frame_hash at tombstone time)
+    for frames the LLM has confirmed it cannot describe at that content
+    hash. See FigmaPageFrontmatter.unresolvable_frames for the full
+    contract. None means no tombstones are being written; existing ones
+    carried via the caller are preserved (the chokepoint prunes orphans).
     """
-    screen_sections = [s for s in page.sections if not s.is_component_library]
-    frame_ids: list[str] = [
-        frame.node_id for section in screen_sections for frame in section.frames
-    ]
     return _build_frontmatter(
         file_key=page.file_key,
         page_node_id=page.page_node_id,
         section_node_id=None,
-        frame_ids=frame_ids,
+        frame_ids=page_frame_ids(page),
         flows=page.flows,
         enriched_hash=enriched_hash,
         enriched_at=enriched_at,
@@ -207,6 +273,46 @@ def build_page_frontmatter(
         raw_frames=raw_frames,
         raw_tokens=raw_tokens,
         frame_sections=frame_sections,
+        unresolvable_frames=unresolvable_frames,
+    )
+
+
+def rebuild_frontmatter_from_parsed(
+    fm: FigmaPageFrontmatter,
+    *,
+    unresolvable_frames: dict[str, str] | None = None,
+) -> str:
+    """Rebuild YAML frontmatter from an existing parsed :class:`FigmaPageFrontmatter`.
+
+    Use this when you have a parsed frontmatter model in hand and need to
+    persist a small change (e.g. recording a tombstone in
+    ``unresolvable_frames``) without reconstructing a full
+    :class:`FigmaPage` model. Every field from *fm* is preserved and
+    flows through the same :func:`_build_frontmatter` chokepoint that
+    :func:`build_page_frontmatter` and :func:`build_component_frontmatter`
+    use, so the frame-keyed key-set invariant (figmaclaw#121) is
+    enforced uniformly.
+
+    When *unresolvable_frames* is None, the existing tombstones on *fm*
+    are preserved; pass an explicit dict to override.
+    """
+    return _build_frontmatter(
+        file_key=fm.file_key,
+        page_node_id=fm.page_node_id,
+        section_node_id=fm.section_node_id,
+        frame_ids=fm.frames,
+        flows=[(src, dst) for src, dst in fm.flows],
+        enriched_hash=fm.enriched_hash,
+        enriched_at=fm.enriched_at,
+        enriched_frame_hashes=fm.enriched_frame_hashes or None,
+        enriched_schema_version=fm.enriched_schema_version,
+        component_set_keys=fm.component_set_keys or None,
+        raw_frames=fm.raw_frames or None,
+        raw_tokens=fm.raw_tokens or None,
+        frame_sections=fm.frame_sections or None,
+        unresolvable_frames=unresolvable_frames
+        if unresolvable_frames is not None
+        else (fm.unresolvable_frames or None),
     )
 
 
@@ -219,20 +325,21 @@ def build_component_frontmatter(
     enriched_at: str | None = None,
     enriched_frame_hashes: dict[str, str] | None = None,
     enriched_schema_version: int = 0,
+    unresolvable_frames: dict[str, str] | None = None,
 ) -> str:
     """Build YAML frontmatter for a component-library section markdown file."""
-    frame_ids: list[str] = [f.node_id for f in section.frames]
     return _build_frontmatter(
         file_key=page.file_key,
         page_node_id=page.page_node_id,
         section_node_id=section.node_id,
-        frame_ids=frame_ids,
+        frame_ids=section_frame_ids(section),
         flows=[],
         component_set_keys=component_set_keys,
         enriched_hash=enriched_hash,
         enriched_at=enriched_at,
         enriched_frame_hashes=enriched_frame_hashes,
         enriched_schema_version=enriched_schema_version,
+        unresolvable_frames=unresolvable_frames,
     )
 
 
