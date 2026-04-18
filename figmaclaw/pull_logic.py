@@ -237,6 +237,7 @@ def update_page_frontmatter(
     enriched_at = existing_fm.enriched_at if existing_fm else None
     enriched_frame_hashes = existing_fm.enriched_frame_hashes if existing_fm else None
     enriched_schema_version = existing_fm.enriched_schema_version if existing_fm else 0
+    unresolvable_frames = existing_fm.unresolvable_frames if existing_fm else None
 
     new_fm = build_page_frontmatter(
         page,
@@ -247,6 +248,7 @@ def update_page_frontmatter(
         raw_frames=raw_frames,
         raw_tokens=raw_tokens,
         frame_sections=frame_sections,
+        unresolvable_frames=unresolvable_frames or None,
     )
     _rewrite_frontmatter_preserving_body(
         out_path, md_text, new_fm, allowed_frame_ids=set(page_frame_ids(page))
@@ -291,6 +293,7 @@ def update_component_frontmatter(
     enriched_at = existing_fm.enriched_at if existing_fm else None
     enriched_frame_hashes = existing_fm.enriched_frame_hashes if existing_fm else None
     enriched_schema_version = existing_fm.enriched_schema_version if existing_fm else 0
+    unresolvable_frames = existing_fm.unresolvable_frames if existing_fm else None
 
     new_fm = build_component_frontmatter(
         section,
@@ -300,6 +303,7 @@ def update_component_frontmatter(
         enriched_at=enriched_at,
         enriched_frame_hashes=enriched_frame_hashes or None,
         enriched_schema_version=enriched_schema_version,
+        unresolvable_frames=unresolvable_frames or None,
     )
     _rewrite_frontmatter_preserving_body(
         out_path, md_text, new_fm, allowed_frame_ids=set(section_frame_ids(section))

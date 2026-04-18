@@ -790,12 +790,12 @@ class TestClaudeRunExecutionBranches:
         md = tmp_path / "page.md"
         self._write_placeholder_page(md)
 
-        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p: (True, 120))
-        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p: [])
-        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p: False)
-        monkeypatch.setattr(claude_run_mod, "_is_schema_upgrade_only_candidate", lambda _p: False)
-        monkeypatch.setattr(claude_run_mod, "_is_llm_marker_only_candidate", lambda _p: False)
-        monkeypatch.setattr(claude_run_mod, "_classify_no_work_candidate", lambda _p: "phantom")
+        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p, **_kw: (True, 120))
+        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p, **_kw: [])
+        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p, **_kw: False)
+        monkeypatch.setattr(claude_run_mod, "_is_schema_upgrade_only_candidate", lambda _p, **_kw: False)
+        monkeypatch.setattr(claude_run_mod, "_is_llm_marker_only_candidate", lambda _p, **_kw: False)
+        monkeypatch.setattr(claude_run_mod, "_classify_no_work_candidate", lambda _p, **_kw: "phantom")
         monkeypatch.setattr(
             claude_run_mod.subprocess,
             "run",
@@ -842,11 +842,11 @@ class TestClaudeRunExecutionBranches:
             )
         )
 
-        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p: (True, 120))
-        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p: [])
-        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p: False)
-        monkeypatch.setattr(claude_run_mod, "_is_schema_upgrade_only_candidate", lambda _p: False)
-        monkeypatch.setattr(claude_run_mod, "_is_llm_marker_only_candidate", lambda _p: True)
+        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p, **_kw: (True, 120))
+        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p, **_kw: [])
+        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p, **_kw: False)
+        monkeypatch.setattr(claude_run_mod, "_is_schema_upgrade_only_candidate", lambda _p, **_kw: False)
+        monkeypatch.setattr(claude_run_mod, "_is_llm_marker_only_candidate", lambda _p, **_kw: True)
         monkeypatch.setattr(
             claude_run_mod.subprocess,
             "run",
@@ -892,9 +892,9 @@ class TestClaudeRunExecutionBranches:
             )
         )
 
-        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p: (True, 120))
-        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p: [])
-        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p: False)
+        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p, **_kw: (True, 120))
+        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p, **_kw: [])
+        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p, **_kw: False)
         monkeypatch.setattr(
             claude_run_mod.subprocess,
             "run",
@@ -941,11 +941,11 @@ class TestClaudeRunExecutionBranches:
             )
         )
 
-        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p: (True, 120))
-        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p: [])
-        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p: False)
-        monkeypatch.setattr(claude_run_mod, "_is_schema_upgrade_only_candidate", lambda _p: True)
-        monkeypatch.setattr(claude_run_mod, "_is_llm_marker_only_candidate", lambda _p: False)
+        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p, **_kw: (True, 120))
+        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p, **_kw: [])
+        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p, **_kw: False)
+        monkeypatch.setattr(claude_run_mod, "_is_schema_upgrade_only_candidate", lambda _p, **_kw: True)
+        monkeypatch.setattr(claude_run_mod, "_is_llm_marker_only_candidate", lambda _p, **_kw: False)
         monkeypatch.setattr(
             claude_run_mod.subprocess,
             "run",
@@ -980,10 +980,10 @@ class TestClaudeRunExecutionBranches:
         sections = [{"node_id": "10:1", "name": "Auth", "pending_frames": 2}]
         pending = [sections, sections]
 
-        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p: (True, 120))
-        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p: pending.pop(0))
-        monkeypatch.setattr(claude_run_mod, "pending_frame_node_ids", lambda _p: {"11:1", "11:2"})
-        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p: False)
+        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p, **_kw: (True, 120))
+        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p, **_kw: pending.pop(0))
+        monkeypatch.setattr(claude_run_mod, "pending_frame_node_ids", lambda _p, **_kw: {"11:1", "11:2"})
+        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p, **_kw: False)
         monkeypatch.setattr(
             claude_run_mod,
             "decide_next_batch",
@@ -1032,12 +1032,12 @@ class TestClaudeRunExecutionBranches:
         monkeypatch.setattr(
             claude_run_mod, "collect_files", lambda *args, **kwargs: [page_a, page_b]
         )
-        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p: (True, 120))
-        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p: [])
-        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p: False)
-        monkeypatch.setattr(claude_run_mod, "_is_schema_upgrade_only_candidate", lambda _p: False)
-        monkeypatch.setattr(claude_run_mod, "_is_llm_marker_only_candidate", lambda _p: False)
-        monkeypatch.setattr(claude_run_mod, "_classify_no_work_candidate", lambda _p: "phantom")
+        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p, **_kw: (True, 120))
+        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p, **_kw: [])
+        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p, **_kw: False)
+        monkeypatch.setattr(claude_run_mod, "_is_schema_upgrade_only_candidate", lambda _p, **_kw: False)
+        monkeypatch.setattr(claude_run_mod, "_is_llm_marker_only_candidate", lambda _p, **_kw: False)
+        monkeypatch.setattr(claude_run_mod, "_classify_no_work_candidate", lambda _p, **_kw: "phantom")
         monkeypatch.setattr(
             claude_run_mod.subprocess,
             "run",
@@ -1067,7 +1067,7 @@ class TestClaudeRunExecutionBranches:
         md = tmp_path / "page.md"
         self._write_placeholder_page(md)
 
-        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p: (True, 1))
+        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p, **_kw: (True, 1))
         monkeypatch.setattr(
             claude_run_mod,
             "decide_next_batch",

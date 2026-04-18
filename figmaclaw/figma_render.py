@@ -111,6 +111,7 @@ def _build_frontmatter(
     raw_frames: dict[str, FrameComposition] | None = None,
     raw_tokens: dict[str, RawTokenCounts] | None = None,
     frame_sections: dict[str, list[SectionNode]] | None = None,
+    unresolvable_frames: dict[str, str] | None = None,
 ) -> str:
     """Render compact YAML frontmatter block (between --- markers).
 
@@ -130,6 +131,7 @@ def _build_frontmatter(
     raw_frames = _prune_to_allowed(raw_frames, allowed_frame_ids)
     raw_tokens = _prune_to_allowed(raw_tokens, allowed_frame_ids)
     frame_sections = _prune_to_allowed(frame_sections, allowed_frame_ids)
+    unresolvable_frames = _prune_to_allowed(unresolvable_frames, allowed_frame_ids)
 
     fm: dict = {"file_key": file_key, "page_node_id": page_node_id}
     if section_node_id:
@@ -144,6 +146,8 @@ def _build_frontmatter(
         fm["enriched_at"] = enriched_at
     if enriched_frame_hashes:
         fm["enriched_frame_hashes"] = _FlowDict(enriched_frame_hashes)
+    if unresolvable_frames:
+        fm["unresolvable_frames"] = _FlowDict(unresolvable_frames)
     fm["enriched_schema_version"] = enriched_schema_version
     if component_set_keys:
         fm["component_set_keys"] = _FlowDict(component_set_keys)
@@ -229,6 +233,7 @@ def build_page_frontmatter(
     raw_frames: dict[str, FrameComposition] | None = None,
     raw_tokens: dict[str, RawTokenCounts] | None = None,
     frame_sections: dict[str, list[SectionNode]] | None = None,
+    unresolvable_frames: dict[str, str] | None = None,
 ) -> str:
     """Build the YAML frontmatter block for a screen page from a FigmaPage model.
 
@@ -243,6 +248,12 @@ def build_page_frontmatter(
     and per-section direct-child inventory (instances/raw_count + stable
     instance_component_ids). Used by build-context and coverage queries
     without extra API calls.
+
+    unresolvable_frames: tombstones (node_id → frame_hash at tombstone time)
+    for frames the LLM has confirmed it cannot describe at that content
+    hash. See FigmaPageFrontmatter.unresolvable_frames for the full
+    contract. None means no tombstones are being written; existing ones
+    carried via the caller are preserved (the chokepoint prunes orphans).
     """
     return _build_frontmatter(
         file_key=page.file_key,
@@ -257,6 +268,7 @@ def build_page_frontmatter(
         raw_frames=raw_frames,
         raw_tokens=raw_tokens,
         frame_sections=frame_sections,
+        unresolvable_frames=unresolvable_frames,
     )
 
 
@@ -269,6 +281,7 @@ def build_component_frontmatter(
     enriched_at: str | None = None,
     enriched_frame_hashes: dict[str, str] | None = None,
     enriched_schema_version: int = 0,
+    unresolvable_frames: dict[str, str] | None = None,
 ) -> str:
     """Build YAML frontmatter for a component-library section markdown file."""
     return _build_frontmatter(
@@ -282,6 +295,7 @@ def build_component_frontmatter(
         enriched_at=enriched_at,
         enriched_frame_hashes=enriched_frame_hashes,
         enriched_schema_version=enriched_schema_version,
+        unresolvable_frames=unresolvable_frames,
     )
 
 

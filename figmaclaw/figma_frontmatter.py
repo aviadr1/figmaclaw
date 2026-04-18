@@ -188,6 +188,25 @@ class FigmaPageFrontmatter(BaseModel):
     # extra REST API calls. See figmaclaw issues #35 and #38.
     frame_sections: dict[str, list[SectionNode]] = Field(default_factory=dict)
 
+    # unresolvable_frames: terminal-state tombstones for frames the LLM
+    # has confirmed it cannot describe at the current content hash (e.g.
+    # because no screenshot is available and the raw composition doesn't
+    # give enough context). Maps node_id → frame_hash at the time the
+    # tombstone was recorded.
+    #
+    # Contract:
+    # - A node_id appears here AT MOST when the same-run NO-PROGRESS guard
+    #   fires on it (figmaclaw#117) — i.e. the LLM tried to resolve the row
+    #   and failed.
+    # - A body row for a tombstoned node_id is treated as NOT pending by
+    #   ``pending_frame_node_ids`` *while* its current manifest hash equals
+    #   the recorded tombstone hash. When Figma content changes and the
+    #   hash moves, the tombstone auto-invalidates and the row becomes
+    #   pending again (one retry per content change).
+    # - Pruned to ``⊆ frames`` by the frontmatter-write chokepoint, same
+    #   as every other frame-keyed dict (figmaclaw#121).
+    unresolvable_frames: dict[str, str] = Field(default_factory=dict)
+
     @model_validator(mode="before")
     @classmethod
     def _normalize_frames(cls, data: Any) -> Any:
