@@ -1061,9 +1061,11 @@ def claude_run_cmd(
     work_attempted = 0
     errors = 0
     skipped_no_work = 0
+    stuck = 0
     budget_exhausted = False
     budget_stop_reason: str | None = None
     phantom_files: list[str] = []
+    stuck_files: list[str] = []
     dispatch_crashed = False
 
     # Sha snapshot before any work — used to count commits that actually
@@ -1283,6 +1285,8 @@ def claude_run_cmd(
                             False,
                             run_id=run_id,
                         )
+                        stuck += 1
+                        stuck_files.append(str(file_path))
                         break
 
                 if budget_exhausted:
@@ -1421,6 +1425,7 @@ def claude_run_cmd(
         errors=errors,
         budget_exhausted=budget_exhausted,
         skipped_no_work=skipped_no_work,
+        stuck=stuck,
     )
     if dispatch_crashed:
         verdict = RunVerdict(
@@ -1433,7 +1438,7 @@ def claude_run_cmd(
         f"[claude-run] Done: files_selected={files_selected} "
         f"work_attempted={work_attempted} commits_made={commits_made} "
         f"errors={errors} budget_exhausted={str(budget_exhausted).lower()} "
-        f"skipped_no_work={skipped_no_work}",
+        f"skipped_no_work={skipped_no_work} stuck={stuck}",
         err=True,
     )
     click.echo(f"[claude-run] Verdict ({verdict.row}): {verdict.label}", err=True)
@@ -1446,7 +1451,9 @@ def claude_run_cmd(
         errors=errors,
         budget_exhausted=budget_exhausted,
         skipped_no_work=skipped_no_work,
+        stuck=stuck,
         phantom_files=phantom_files or None,
+        stuck_files=stuck_files or None,
         budget_stop_reason=budget_stop_reason,
     )
     write_step_summary(summary)
