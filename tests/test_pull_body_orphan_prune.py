@@ -116,7 +116,9 @@ enriched_schema_version: 0
         "---"
     )
 
-    _rewrite_frontmatter_preserving_body(path, md, new_fm)
+    _rewrite_frontmatter_preserving_body(
+        path, md, new_fm, allowed_frame_ids={"11:1", "11:2"}
+    )
     written = path.read_text()
 
     assert "frames: ['11:1', '11:2']" in written
@@ -155,7 +157,12 @@ enriched_schema_version: 0
         "---"
     )
 
-    _rewrite_frontmatter_preserving_body(path, md, new_fm)
+    _rewrite_frontmatter_preserving_body(
+        path,
+        md,
+        new_fm,
+        allowed_frame_ids={"11:1", "11:2", "DEAD:1", "DEAD:2"},
+    )
     written = path.read_text()
 
     _, _, body_after = written.partition("---\n")

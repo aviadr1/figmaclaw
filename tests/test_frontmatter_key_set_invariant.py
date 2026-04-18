@@ -29,7 +29,11 @@ from figmaclaw.figma_frontmatter import (
     SectionNode,
 )
 from figmaclaw.figma_parse import parse_frontmatter
-from figmaclaw.figma_render import build_page_frontmatter
+from figmaclaw.figma_render import (
+    build_page_frontmatter,
+    page_frame_ids,
+    section_frame_ids,
+)
 from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection
 
 
@@ -186,3 +190,24 @@ def test_pruning_is_no_op_when_all_keys_valid():
     parsed = _parse(fm_text)
 
     assert parsed.enriched_frame_hashes == clean
+
+
+def test_page_frame_ids_is_single_source_of_truth():
+    """page_frame_ids is the canonical extractor — the rendered frontmatter
+    must agree with it exactly. Pinning this prevents future callers from
+    re-implementing the "walk page → screen sections → frames" loop.
+    """
+    page = _page_with_frames(["11:1", "11:2", "11:3"])
+    fm_text = build_page_frontmatter(page)
+    parsed = _parse(fm_text)
+    assert parsed.frames == page_frame_ids(page)
+
+
+def test_section_frame_ids_is_single_source_of_truth():
+    """section_frame_ids is the canonical extractor for component sections."""
+    section = FigmaSection(
+        node_id="10:10",
+        name="Component",
+        frames=[FigmaFrame(node_id=nid, name=f"F-{nid}") for nid in ["30:1", "30:2"]],
+    )
+    assert section_frame_ids(section) == ["30:1", "30:2"]

@@ -194,6 +194,31 @@ def _build_frontmatter(
     return f"---\n{body}\n---"
 
 
+def page_frame_ids(page: FigmaPage) -> list[str]:
+    """Return the node_ids of every frame in *page*'s screen (non-component) sections.
+
+    Single source of truth for "what are the authoritative frame IDs for
+    this page" — used by :func:`build_page_frontmatter` to render the
+    ``frames`` list and by pull-time body pruning to know which body rows
+    are orphans. Avoids the "extract frame IDs from page" loop being
+    re-implemented at every call site.
+    """
+    return [
+        frame.node_id
+        for section in page.sections
+        if not section.is_component_library
+        for frame in section.frames
+    ]
+
+
+def section_frame_ids(section: FigmaSection) -> list[str]:
+    """Return the node_ids of every frame in a component library *section*.
+
+    Mirror of :func:`page_frame_ids` for the component-section case.
+    """
+    return [frame.node_id for frame in section.frames]
+
+
 def build_page_frontmatter(
     page: FigmaPage,
     *,
@@ -219,15 +244,11 @@ def build_page_frontmatter(
     instance_component_ids). Used by build-context and coverage queries
     without extra API calls.
     """
-    screen_sections = [s for s in page.sections if not s.is_component_library]
-    frame_ids: list[str] = [
-        frame.node_id for section in screen_sections for frame in section.frames
-    ]
     return _build_frontmatter(
         file_key=page.file_key,
         page_node_id=page.page_node_id,
         section_node_id=None,
-        frame_ids=frame_ids,
+        frame_ids=page_frame_ids(page),
         flows=page.flows,
         enriched_hash=enriched_hash,
         enriched_at=enriched_at,
@@ -250,12 +271,11 @@ def build_component_frontmatter(
     enriched_schema_version: int = 0,
 ) -> str:
     """Build YAML frontmatter for a component-library section markdown file."""
-    frame_ids: list[str] = [f.node_id for f in section.frames]
     return _build_frontmatter(
         file_key=page.file_key,
         page_node_id=page.page_node_id,
         section_node_id=section.node_id,
-        frame_ids=frame_ids,
+        frame_ids=section_frame_ids(section),
         flows=[],
         component_set_keys=component_set_keys,
         enriched_hash=enriched_hash,

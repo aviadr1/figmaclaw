@@ -67,8 +67,10 @@ from figmaclaw.figma_paths import (
 from figmaclaw.figma_render import (
     build_component_frontmatter,
     build_page_frontmatter,
+    page_frame_ids,
     render_component_section,
     scaffold_page,
+    section_frame_ids,
 )
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
 from figmaclaw.figma_utils import write_json_if_changed
@@ -246,7 +248,9 @@ def update_page_frontmatter(
         raw_tokens=raw_tokens,
         frame_sections=frame_sections,
     )
-    _rewrite_frontmatter_preserving_body(out_path, md_text, new_fm)
+    _rewrite_frontmatter_preserving_body(
+        out_path, md_text, new_fm, allowed_frame_ids=set(page_frame_ids(page))
+    )
     return out_path
 
 
@@ -297,18 +301,32 @@ def update_component_frontmatter(
         enriched_frame_hashes=enriched_frame_hashes or None,
         enriched_schema_version=enriched_schema_version,
     )
-    _rewrite_frontmatter_preserving_body(out_path, md_text, new_fm)
+    _rewrite_frontmatter_preserving_body(
+        out_path, md_text, new_fm, allowed_frame_ids=set(section_frame_ids(section))
+    )
     return out_path
 
 
-def _rewrite_frontmatter_preserving_body(out_path: Path, md_text: str, new_fm: str) -> None:
+def _rewrite_frontmatter_preserving_body(
+    out_path: Path,
+    md_text: str,
+    new_fm: str,
+    *,
+    allowed_frame_ids: set[str] | None = None,
+) -> None:
     """Rewrite frontmatter and structurally prune orphan frame rows from body.
 
     Frontmatter is replaced wholesale. Body prose is preserved verbatim — we
     do NOT parse or rewrite prose. The only body edit this function performs
-    is surgical removal of canonical frame *rows* whose node_id is no longer
-    in the new frontmatter's ``frames`` list. Table headers, separators,
-    prose, section headings, and Mermaid blocks are untouched.
+    is surgical removal of canonical frame *rows* whose node_id is not in
+    *allowed_frame_ids*. Table headers, separators, prose, section headings,
+    and Mermaid blocks are untouched.
+
+    *allowed_frame_ids* is the authoritative set of frame node_ids for the
+    page — callers get it from :func:`figma_render.page_frame_ids` (screen
+    pages) or :func:`figma_render.section_frame_ids` (component sections).
+    None means "do not prune" (used by code paths that don't own the
+    authoritative frame list, e.g. legacy call sites).
 
     This is a structural operation, not a prose rewrite: a row whose node_id
     points to a frame that no longer exists cannot possibly be correct, so
@@ -320,9 +338,8 @@ def _rewrite_frontmatter_preserving_body(out_path: Path, md_text: str, new_fm: s
     assert parts is not None, f"Failed to parse frontmatter from {out_path}"
     _, body = parts
 
-    new_fm_parsed = parse_frontmatter(f"{new_fm}\n\n# body\n")
-    allowed_frame_ids = set(new_fm_parsed.frames) if new_fm_parsed else set()
-    body = _prune_orphan_frame_rows(body, allowed_frame_ids)
+    if allowed_frame_ids is not None:
+        body = _prune_orphan_frame_rows(body, allowed_frame_ids)
 
     out_path.write_text(f"{new_fm}\n{body}")
 
