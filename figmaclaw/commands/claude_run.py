@@ -42,6 +42,7 @@ from figmaclaw.figma_parse import parse_frontmatter, split_frontmatter
 from figmaclaw.figma_render import rebuild_frontmatter_from_parsed
 from figmaclaw.figma_schema import unresolved_row_node_id
 from figmaclaw.figma_sync_state import FigmaSyncState
+from figmaclaw.normalize import normalize_page_file
 from figmaclaw.schema_status import enrichment_schema_status
 from figmaclaw.staleness import active_tombstoned_node_ids
 from figmaclaw.verdict import (
@@ -502,26 +503,13 @@ def _exclude_non_enrichable_markdown(files: list[Path]) -> tuple[list[Path], int
     return filtered, len(files) - len(filtered)
 
 
-def _migrate_missing_enrichment_schema_version(md_path: Path, text: str) -> str:
-    """Backfill explicit ``enriched_schema_version`` when missing.
-
-    Migration is body-preserving and idempotent. Missing version is written as ``0``
-    so selector/inspect parity treats legacy pages as ENRICH MUST.
-    """
-    parts = split_frontmatter(text)
-    if parts is None:
-        return text
-    fm_block, body = parts
-    if "enriched_schema_version:" in fm_block:
-        return text
-    if "file_key:" not in fm_block:
-        return text
-
-    new_fm_block = f"{fm_block.rstrip()}\nenriched_schema_version: 0"
-    migrated = f"---\n{new_fm_block}\n---\n{body}"
-    if migrated != text:
-        md_path.write_text(migrated)
-    return migrated
+# Note: the former ``_migrate_missing_enrichment_schema_version`` helper
+# was subsumed by :func:`figmaclaw.normalize.normalize_page_file`, which
+# applies the same schema-version backfill plus every other structural
+# invariant (frame-keyed dict key-set, body orphan row prune). See
+# figmaclaw#123. Callers that used to invoke the migration directly
+# should call ``normalize_page_file`` instead — it's the single canonical
+# "heal on encounter" entry point.
 
 
 def enrichment_info(md_path: Path, repo_dir: Path | None = None) -> tuple[bool, int]:
@@ -542,6 +530,12 @@ def enrichment_info(md_path: Path, repo_dir: Path | None = None) -> tuple[bool, 
     if _is_non_enrichable_markdown(md_path):
         return False, 0
 
+    # Heal on encounter (figmaclaw#123): canonical entry point applies
+    # every structural invariant — schema-version backfill, frame-keyed
+    # dict key-set, body orphan row prune — before any selector logic
+    # runs. Idempotent; a normalized file passes through unchanged.
+    normalize_page_file(md_path)
+
     try:
         text = md_path.read_text()
     except OSError:
@@ -550,8 +544,6 @@ def enrichment_info(md_path: Path, repo_dir: Path | None = None) -> tuple[bool, 
     # Must have figmaclaw-like frontmatter to be enrichable.
     if "file_key:" not in text:
         return False, 0
-
-    text = _migrate_missing_enrichment_schema_version(md_path, text)
 
     # Frame-size estimate from canonical body parser (frame sections only).
     frame_count = frame_row_count(text)
