@@ -218,6 +218,31 @@ Never accept "warn and forget every run" as a terminal state. The test
 shape that pins this: run 1 with bad input triggers the heal, run 2
 with no new bad input does NOT re-emit the error.
 
+### 6. Invariants heal at every entry, not only at write
+
+A structural invariant that fires only when WE write a file leaves
+files written by older figmaclaw versions, hand-edited files, or
+merge-conflict resolutions in a violating state. Readers that only
+read (no write) will encounter these files and see inconsistent state.
+
+**Every selection/entry boundary must call `normalize_page_file`** (or
+go through something that does — e.g. `enrichment_info`) as its first
+step. The function is the one canonical "heal on encounter" entry
+point; it composes the same helpers the write paths use, so there's
+no second implementation to drift.
+
+Known entry points (keep the test in
+`tests/test_entry_point_heals.py` updated when adding a new one):
+- `claude_run.enrichment_info` — calls `normalize_page_file` at top
+- `pull.*` — goes through `_build_frontmatter` chokepoint on write
+- Direct `normalize_page_file` (CLI, scripted use)
+
+If you add a new code path that reads a page `.md`, register it in
+`_HEALING_ENTRY_POINTS` in the parametric test. Either it heals and
+the test passes, or you have to explain in comments why your path
+specifically doesn't need to heal. Silent exceptions to this rule
+reintroduce the figmaclaw#121 / #123 category.
+
 ### Review checklist for enrichment / pull / logging PRs
 
 - [ ] Does this PR add a loop-break? If yes, does it have a cross-run
@@ -231,3 +256,6 @@ with no new bad input does NOT re-emit the error.
       `iter_body_frame_rows` / `section_line_ranges` (dimension 4)?
 - [ ] Does this PR touch a log writer? If yes, does it auto-heal or
       hard-fail on schema drift (dimension 5)?
+- [ ] Does this PR add a new selection/entry boundary that reads a
+      page `.md`? If yes, is it registered in `_HEALING_ENTRY_POINTS`
+      and does it call `normalize_page_file` (dimension 6)?

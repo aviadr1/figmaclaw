@@ -19,6 +19,7 @@ from figmaclaw.figma_utils import parse_since
 from figmaclaw.git_utils import git_commit, git_push
 from figmaclaw.prune_utils import prune_file_artifacts_from_manifest
 from figmaclaw.pull_logic import PullResult, pull_file
+from figmaclaw.schema_status import is_pull_schema_stale
 from figmaclaw.status_markers import COMMIT_MSG_PREFIX, HAS_MORE_TRUE
 
 
@@ -369,11 +370,21 @@ async def _run(
             #     skip — if it's not reachable via the listing, it can't have changed
             #   - listing_lm == stored → last_modified unchanged; skip
             #   - listing_lm != stored → file changed; proceed to get_file_meta
+            #
+            # Exception (figmaclaw#123): a tracked file whose
+            # ``pull_schema_version`` is below CURRENT must be pulled even
+            # if Figma reports it unchanged — otherwise schema bumps never
+            # reach files that are idle on the Figma side. Before this
+            # escape hatch, the linear-git showcase-v2 stuck case sat in
+            # a listing-match skip forever and the v7 refresh never fired.
             if not force and listing_last_modified is not None:
                 listing_lm = listing_last_modified.get(key)
                 stored_entry = state.manifest.files.get(key)
                 stored_lm = stored_entry.last_modified if stored_entry else ""
-                if listing_lm is None or stored_lm == listing_lm:
+                stored_schema = stored_entry.pull_schema_version if stored_entry else 0
+                schema_needs_refresh = is_pull_schema_stale(stored_schema)
+                unchanged_on_figma = listing_lm is None or stored_lm == listing_lm
+                if unchanged_on_figma and not schema_needs_refresh:
                     obs.files_skipped_prefilter += 1
                     obs.file_end(key, "listing_prefilter_skip", file_start)
                     continue

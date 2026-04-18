@@ -881,10 +881,18 @@ async def test_pull_file_parallel_fetch_handles_individual_page_errors(tmp_path:
 
 
 def _make_state_with_file(tmp_path: Path, file_key: str, last_modified: str) -> FigmaSyncState:
+    from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
+
     state = FigmaSyncState(tmp_path)
     state.load()
     state.add_tracked_file(file_key, "My File")
     state.manifest.files[file_key].last_modified = last_modified
+    # Default to CURRENT schema so "unchanged file is skipped" tests are
+    # meaningful — a file at an older schema is intentionally pulled
+    # regardless of Figma activity (figmaclaw#123). Tests that want to
+    # exercise the schema-stale escape must set this to an older value
+    # explicitly.
+    state.manifest.files[file_key].pull_schema_version = CURRENT_PULL_SCHEMA_VERSION
     return state
 
 
@@ -991,6 +999,53 @@ async def test_pull_cmd_skips_unchanged_files_via_listing(tmp_path: Path):
         await _run("key", tmp_path, None, False, None, False, 10, "team123", "all")
 
     mock_client.get_file_meta.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pull_cmd_bypasses_listing_prefilter_for_schema_stale_file(
+    tmp_path: Path,
+) -> None:
+    """INVARIANT (figmaclaw#123): a tracked file whose stored pull_schema_version
+    is below CURRENT must be pulled even when Figma reports it as unchanged.
+
+    Without this escape hatch, a schema bump (e.g. v6→v7) only propagates
+    to files that happen to be modified in Figma. Idle files stay at the
+    old schema forever — which is what left the linear-git stuck files
+    unhealed after figmaclaw#122 merged.
+    """
+    from figmaclaw.commands.pull import _run
+    from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
+
+    state = _make_state_with_file(tmp_path, "fileA", "2026-03-01T00:00:00Z")
+    # Simulate stored schema below CURRENT.
+    state.manifest.files["fileA"].pull_schema_version = CURRENT_PULL_SCHEMA_VERSION - 1
+    state.save()
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.list_team_projects = AsyncMock(return_value=[ProjectSummary(id="p1", name="Web")])
+    mock_client.list_project_files = AsyncMock(
+        return_value=[
+            # listing reports the same last_modified as stored (unchanged on Figma).
+            FileSummary(key="fileA", name="App", last_modified="2026-03-01T00:00:00Z"),
+        ]
+    )
+    mock_client.get_file_meta = AsyncMock(
+        return_value={
+            "version": "v2",
+            "lastModified": "2026-03-01T00:00:00Z",
+            "name": "App",
+            "document": {"children": []},
+        }
+    )
+
+    with patch("figmaclaw.commands.pull.FigmaClient", return_value=mock_client):
+        await _run("key", tmp_path, None, False, None, False, 10, "team123", "all")
+
+    # The schema-stale escape must have bypassed the pre-filter skip;
+    # get_file_meta is called because pull_file proceeded.
+    mock_client.get_file_meta.assert_called_once_with("fileA")
 
 
 @pytest.mark.asyncio
