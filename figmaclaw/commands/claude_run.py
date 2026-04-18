@@ -39,7 +39,9 @@ import pydantic
 from figmaclaw.budget import BudgetDecision, decide_next_batch, load_per_frame_history
 from figmaclaw.figma_md_parse import frame_row_count, section_line_ranges
 from figmaclaw.figma_parse import parse_frontmatter, split_frontmatter
+from figmaclaw.figma_render import rebuild_frontmatter_from_parsed
 from figmaclaw.figma_schema import unresolved_row_node_id
+from figmaclaw.figma_sync_state import FigmaSyncState
 from figmaclaw.schema_status import enrichment_schema_status
 from figmaclaw.staleness import active_tombstoned_node_ids
 from figmaclaw.verdict import (
@@ -763,13 +765,12 @@ def _record_tombstones(md_path: Path, repo_dir: Path, node_ids: set[str]) -> int
     no manifest context was available or none of the node_ids had a
     current hash to anchor to.
 
-    Uses the canonical frontmatter write path (``build_page_frontmatter``
-    + ``_rewrite_frontmatter_preserving_body``) so the key-set invariant
-    from figmaclaw#121 applies: tombstones for node_ids not in ``frames``
-    are pruned by the chokepoint before serialization.
+    Uses the public :func:`figma_render.rebuild_frontmatter_from_parsed`
+    helper — same ``_build_frontmatter`` chokepoint as
+    ``build_page_frontmatter`` and ``build_component_frontmatter`` — so
+    the key-set invariant from figmaclaw#121 applies: tombstones for
+    node_ids not in ``frames`` are pruned before serialization.
     """
-    from figmaclaw.figma_sync_state import FigmaSyncState
-
     try:
         text = md_path.read_text()
     except OSError:
@@ -802,27 +803,7 @@ def _record_tombstones(md_path: Path, repo_dir: Path, node_ids: set[str]) -> int
     if added == 0:
         return 0
 
-    # Rewrite just the frontmatter via the canonical builder — no body
-    # mutation. ``frames`` set is the page's authoritative frame list,
-    # so the chokepoint prunes any tombstone for a node not in frames.
-    from figmaclaw.figma_render import _build_frontmatter
-
-    new_fm = _build_frontmatter(
-        file_key=fm.file_key,
-        page_node_id=fm.page_node_id,
-        section_node_id=fm.section_node_id,
-        frame_ids=fm.frames,
-        flows=[(src, dst) for src, dst in fm.flows],
-        enriched_hash=fm.enriched_hash,
-        enriched_at=fm.enriched_at,
-        enriched_frame_hashes=fm.enriched_frame_hashes or None,
-        enriched_schema_version=fm.enriched_schema_version,
-        component_set_keys=fm.component_set_keys or None,
-        raw_frames=fm.raw_frames or None,
-        raw_tokens=fm.raw_tokens or None,
-        frame_sections=fm.frame_sections or None,
-        unresolvable_frames=existing,
-    )
+    new_fm = rebuild_frontmatter_from_parsed(fm, unresolvable_frames=existing)
     parts = split_frontmatter(text)
     if parts is None:
         return 0
@@ -831,8 +812,14 @@ def _record_tombstones(md_path: Path, repo_dir: Path, node_ids: set[str]) -> int
     return added
 
 
-def _is_schema_upgrade_only_candidate(md_path: Path) -> bool:
-    """True when file only needs schema bump (no pending rows, no finalization work)."""
+def _is_schema_upgrade_only_candidate(md_path: Path, repo_dir: Path | None = None) -> bool:
+    """True when file only needs schema bump (no pending rows, no finalization work).
+
+    *repo_dir* is threaded to ``pending_sections`` and ``needs_finalization``
+    so tombstoned frames are not counted as pending. Without this, a file
+    whose only remaining unresolved rows are fully tombstoned would
+    wrongly return False here (selector/dispatcher disagreement).
+    """
     try:
         fm = parse_frontmatter(md_path.read_text())
     except Exception:
@@ -842,13 +829,17 @@ def _is_schema_upgrade_only_candidate(md_path: Path) -> bool:
         return False
     if not enrichment_schema_status(fm.enriched_schema_version).must_update:
         return False
-    if pending_sections(md_path):
+    if pending_sections(md_path, repo_dir=repo_dir):
         return False
-    return not needs_finalization(md_path)
+    return not needs_finalization(md_path, repo_dir=repo_dir)
 
 
-def _is_llm_marker_only_candidate(md_path: Path) -> bool:
-    """True when only unresolved signal is an LLM marker comment."""
+def _is_llm_marker_only_candidate(md_path: Path, repo_dir: Path | None = None) -> bool:
+    """True when only unresolved signal is an LLM marker comment.
+
+    *repo_dir* is threaded so tombstoned rows don't prevent recognition
+    of the marker-only candidate state.
+    """
     try:
         text = md_path.read_text()
     except OSError:
@@ -856,13 +847,18 @@ def _is_llm_marker_only_candidate(md_path: Path) -> bool:
 
     if "<!-- LLM:" not in text:
         return False
-    if pending_sections(md_path):
+    if pending_sections(md_path, repo_dir=repo_dir):
         return False
-    return not needs_finalization(md_path)
+    return not needs_finalization(md_path, repo_dir=repo_dir)
 
 
-def _classify_no_work_candidate(md_path: Path) -> str:
-    """Classify no-work section candidates from a single file snapshot."""
+def _classify_no_work_candidate(md_path: Path, repo_dir: Path | None = None) -> str:
+    """Classify no-work section candidates from a single file snapshot.
+
+    *repo_dir* is currently unused here but accepted for signature parity
+    with the other candidate checks — lets callers thread it uniformly.
+    """
+    _ = repo_dir  # reserved for future tombstone-aware classification
     try:
         text = md_path.read_text()
     except OSError:
@@ -882,19 +878,32 @@ def _classify_no_work_candidate(md_path: Path) -> str:
     return "phantom"
 
 
-def needs_finalization(md_path: Path) -> bool:
+def needs_finalization(md_path: Path, repo_dir: Path | None = None) -> bool:
     """True when all sections are described but the page isn't marked enriched yet.
 
     This means section-by-section enrichment is complete and the finalization
     step (page summary + mermaid + mark-enriched) should run.
+
+    *repo_dir* is threaded so that tombstoned rows are NOT counted as
+    pending — otherwise a file with all unresolved rows tombstoned would
+    never be allowed to finalize.
     """
     try:
         text = md_path.read_text()
     except OSError:
         return False
 
-    # If there are still pending unresolved rows anywhere, not ready.
-    if any(unresolved_row_node_id(line) is not None for line in text.splitlines()):
+    # If there are still pending unresolved rows anywhere (excluding
+    # tombstoned ones), not ready.
+    try:
+        fm = parse_frontmatter(text)
+    except Exception:
+        fm = None
+    tombstoned = active_tombstoned_node_ids(fm, repo_dir)
+    if any(
+        (nid := unresolved_row_node_id(line)) is not None and nid not in tombstoned
+        for line in text.splitlines()
+    ):
         return False
 
     # If already marked as enriched, no need to finalize
@@ -1186,7 +1195,7 @@ def claude_run_cmd(
             _, fc = enrichment_info(f, repo_dir=repo_dir)
             if section_mode and fc > SECTION_THRESHOLD:
                 sections = pending_sections(f, repo_dir=repo_dir)
-                fin = needs_finalization(f)
+                fin = needs_finalization(f, repo_dir=repo_dir)
                 click.echo(
                     f"  {f} ({fc} frames, section-mode: {len(sections)} pending sections, finalize={fin})"
                 )
@@ -1269,7 +1278,7 @@ def claude_run_cmd(
             subprocess.run(["git", "pull", "--no-rebase"], capture_output=True)
 
             # Re-check after pull — file may now have enriched_hash
-            needs_it, frame_count = enrichment_info(file_path)
+            needs_it, frame_count = enrichment_info(file_path, repo_dir=repo_dir)
             if not needs_it:
                 click.echo(
                     f"[claude-run] [{i}/{total}] skip (already enriched): {file_path}",
@@ -1282,10 +1291,10 @@ def claude_run_cmd(
                 # using write-descriptions (cross-section, mechanical row updates).
                 batch_template = _prompt_path("figma-sections-batch.md").read_text()
                 sections = pending_sections(file_path, repo_dir=repo_dir)
-                fin_needed = needs_finalization(file_path)
+                fin_needed = needs_finalization(file_path, repo_dir=repo_dir)
 
                 if not sections and not fin_needed:
-                    candidate = _classify_no_work_candidate(file_path)
+                    candidate = _classify_no_work_candidate(file_path, repo_dir=repo_dir)
                     if candidate == "schema-only":
                         click.echo(
                             f"[claude-run] [{i}/{total}] skip (schema-only candidate): {file_path}",
@@ -1448,7 +1457,7 @@ def claude_run_cmd(
                     break  # out of outer for
 
                 # All frames described → finalize (page summary + intros + mermaid)
-                if needs_finalization(file_path):
+                if needs_finalization(file_path, repo_dir=repo_dir):
                     decision = _budget_check(frame_count, mode="finalize")
                     click.echo(decision.reason, err=True)
                     if not decision.should_start:

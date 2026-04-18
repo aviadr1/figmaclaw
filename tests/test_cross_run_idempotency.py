@@ -99,7 +99,7 @@ class TestIncidentReplay:
     """
 
     def test_run2_selector_skips_fully_tombstoned_file(self, tmp_path: Path) -> None:
-        _write_manifest(tmp_path, frame_hashes={"11:1": "h1", "11:2": "h2"})
+        _write_manifest(tmp_path, frame_hashes={"11:1": "a1a1a1a1", "11:2": "b2b2b2b2"})
         md = tmp_path / "page.md"
         _write_stuck_fixture(md, frames=["11:1", "11:2"])
 
@@ -123,13 +123,13 @@ class TestIncidentReplay:
         """One retry per content change — tombstone auto-invalidates when
         the manifest hash diverges from the recorded tombstone.
         """
-        _write_manifest(tmp_path, frame_hashes={"11:1": "h1"})
+        _write_manifest(tmp_path, frame_hashes={"11:1": "a1a1a1a1"})
         md = tmp_path / "page.md"
         _write_stuck_fixture(md, frames=["11:1"])
         _record_tombstones(md, tmp_path, {"11:1"})
 
         # Between runs: Figma content changed → pull rewrote manifest hash.
-        _write_manifest(tmp_path, frame_hashes={"11:1": "h1-NEW"})
+        _write_manifest(tmp_path, frame_hashes={"11:1": "a1a1a1a1feedface"})
 
         # Tombstone no longer active — frame pending again for one retry.
         pending = pending_frame_node_ids(md, repo_dir=tmp_path)
@@ -167,12 +167,12 @@ class TestPartialProgressStillWorks:
         """File has 2 frames, 1 tombstoned (matching hash) + 1 truly pending.
         Selector still picks it, dispatcher still sees the pending one.
         """
-        _write_manifest(tmp_path, frame_hashes={"11:1": "h1", "11:2": "h2"})
+        _write_manifest(tmp_path, frame_hashes={"11:1": "a1a1a1a1", "11:2": "b2b2b2b2"})
         md = tmp_path / "page.md"
         _write_stuck_fixture(
             md,
             frames=["11:1", "11:2"],
-            unresolvable_frames={"11:1": "h1"},  # 11:1 tombstoned, 11:2 not
+            unresolvable_frames={"11:1": "a1a1a1a1"},  # 11:1 tombstoned, 11:2 not
         )
 
         needs_it, _ = enrichment_info(md, repo_dir=tmp_path)
@@ -191,7 +191,7 @@ class TestPartialProgressStillWorks:
         _write_stuck_fixture(
             md,
             frames=["11:1"],
-            unresolvable_frames={"11:1": "h1"},
+            unresolvable_frames={"11:1": "a1a1a1a1"},
         )
 
         pending = pending_frame_node_ids(md)  # no repo_dir

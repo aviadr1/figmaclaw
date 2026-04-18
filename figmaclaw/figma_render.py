@@ -38,7 +38,12 @@ from __future__ import annotations
 
 import yaml
 
-from figmaclaw.figma_frontmatter import FrameComposition, RawTokenCounts, SectionNode
+from figmaclaw.figma_frontmatter import (
+    FigmaPageFrontmatter,
+    FrameComposition,
+    RawTokenCounts,
+    SectionNode,
+)
 from figmaclaw.figma_models import FigmaPage, FigmaSection
 from figmaclaw.figma_schema import (
     PLACEHOLDER_DESCRIPTION,
@@ -269,6 +274,45 @@ def build_page_frontmatter(
         raw_tokens=raw_tokens,
         frame_sections=frame_sections,
         unresolvable_frames=unresolvable_frames,
+    )
+
+
+def rebuild_frontmatter_from_parsed(
+    fm: FigmaPageFrontmatter,
+    *,
+    unresolvable_frames: dict[str, str] | None = None,
+) -> str:
+    """Rebuild YAML frontmatter from an existing parsed :class:`FigmaPageFrontmatter`.
+
+    Use this when you have a parsed frontmatter model in hand and need to
+    persist a small change (e.g. recording a tombstone in
+    ``unresolvable_frames``) without reconstructing a full
+    :class:`FigmaPage` model. Every field from *fm* is preserved and
+    flows through the same :func:`_build_frontmatter` chokepoint that
+    :func:`build_page_frontmatter` and :func:`build_component_frontmatter`
+    use, so the frame-keyed key-set invariant (figmaclaw#121) is
+    enforced uniformly.
+
+    When *unresolvable_frames* is None, the existing tombstones on *fm*
+    are preserved; pass an explicit dict to override.
+    """
+    return _build_frontmatter(
+        file_key=fm.file_key,
+        page_node_id=fm.page_node_id,
+        section_node_id=fm.section_node_id,
+        frame_ids=fm.frames,
+        flows=[(src, dst) for src, dst in fm.flows],
+        enriched_hash=fm.enriched_hash,
+        enriched_at=fm.enriched_at,
+        enriched_frame_hashes=fm.enriched_frame_hashes or None,
+        enriched_schema_version=fm.enriched_schema_version,
+        component_set_keys=fm.component_set_keys or None,
+        raw_frames=fm.raw_frames or None,
+        raw_tokens=fm.raw_tokens or None,
+        frame_sections=fm.frame_sections or None,
+        unresolvable_frames=unresolvable_frames
+        if unresolvable_frames is not None
+        else (fm.unresolvable_frames or None),
     )
 
 

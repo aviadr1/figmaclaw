@@ -152,10 +152,11 @@ flag.
 ### 2. Cross-field frontmatter key-set invariants
 
 The frontmatter has multiple frame-keyed dicts: `enriched_frame_hashes`,
-`raw_frames`, `raw_tokens`, `frame_sections`. The invariant
-`keys(d) ⊆ frames` must hold for every one of them after every write.
-Enforced centrally in `figma_render._build_frontmatter` — the single
-chokepoint for frontmatter serialization.
+`raw_frames`, `raw_tokens`, `frame_sections`, `unresolvable_frames`.
+The invariant `keys(d) ⊆ frames` must hold for every one of them after
+every write. Enforced centrally in `figma_render._build_frontmatter` —
+the single chokepoint for frontmatter serialization — and defensively
+on parse by `FigmaPageFrontmatter._cap_unresolvable_frames_to_frames`.
 
 **If you add a new frame-keyed field**:
 - Extend `_build_frontmatter` to prune it too

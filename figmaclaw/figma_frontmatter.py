@@ -71,9 +71,22 @@ Enrichment schema changelog:
 
 from __future__ import annotations
 
+import re
 from typing import Annotated, Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+# node_id shape: "<number>:<number>" (Figma's canonical node ID format).
+# Used to validate tombstone keys in unresolvable_frames so a malicious
+# or accidentally-corrupted commit can't inject non-Figma strings.
+_NODE_ID_RE = re.compile(r"^\d+:\d+$")
+
+# Maximum length of a tombstone hash value. The manifest stores content
+# hashes as lowercase hex (compute_frame_hash uses 16-char blake2b output);
+# we accept up to 64 chars to allow future hash upgrades without a schema
+# bump, but reject unbounded strings that could bloat the frontmatter.
+_MAX_TOMBSTONE_HASH_LEN = 64
+_TOMBSTONE_HASH_RE = re.compile(r"^[0-9a-f]+$")
 
 # Pull-pass schema version. Bump when pull_file writes new frontmatter fields.
 # Files in the manifest with pull_schema_version < this get frontmatter-refreshed
@@ -207,6 +220,41 @@ class FigmaPageFrontmatter(BaseModel):
     #   as every other frame-keyed dict (figmaclaw#121).
     unresolvable_frames: dict[str, str] = Field(default_factory=dict)
 
+    @field_validator("unresolvable_frames")
+    @classmethod
+    def _validate_unresolvable_frames(cls, value: dict[str, str]) -> dict[str, str]:
+        """Reject malformed tombstones — node IDs must look like Figma node IDs
+        and hash values must be short lowercase hex.
+
+        See security review in figmaclaw#121: without this, a malicious
+        actor (or accidental corruption) could inject arbitrary strings
+        as "tombstones" to make the enricher skip frames indefinitely.
+        Strict shape validation closes that vector at parse time.
+        """
+        if not value:
+            return value
+        for node_id, hash_value in value.items():
+            if not _NODE_ID_RE.match(node_id):
+                raise ValueError(
+                    f"unresolvable_frames key {node_id!r} is not a valid Figma "
+                    f"node_id (expected '<number>:<number>')"
+                )
+            if not isinstance(hash_value, str):
+                raise ValueError(
+                    f"unresolvable_frames[{node_id!r}] must be a string, "
+                    f"got {type(hash_value).__name__}"
+                )
+            if not 0 < len(hash_value) <= _MAX_TOMBSTONE_HASH_LEN:
+                raise ValueError(
+                    f"unresolvable_frames[{node_id!r}] hash length "
+                    f"{len(hash_value)} out of range (1..{_MAX_TOMBSTONE_HASH_LEN})"
+                )
+            if not _TOMBSTONE_HASH_RE.match(hash_value):
+                raise ValueError(
+                    f"unresolvable_frames[{node_id!r}] is not lowercase hex: {hash_value!r}"
+                )
+        return value
+
     @model_validator(mode="before")
     @classmethod
     def _normalize_frames(cls, data: Any) -> Any:
@@ -215,6 +263,28 @@ class FigmaPageFrontmatter(BaseModel):
             data = dict(data)  # don't mutate caller's dict
             data["frames"] = list(data["frames"].keys())
         return data
+
+    @model_validator(mode="after")
+    def _cap_unresolvable_frames_to_frames(self) -> FigmaPageFrontmatter:
+        """Tombstone set must be ⊆ frames.
+
+        The build-time chokepoint in ``_build_frontmatter`` strips
+        orphan tombstones on write, but a hand-edited file could land on
+        disk with extras. Validate on parse so downstream code never
+        sees a tombstone for a non-existent frame.
+        """
+        if not self.unresolvable_frames:
+            return self
+        frame_set = set(self.frames)
+        orphans = [nid for nid in self.unresolvable_frames if nid not in frame_set]
+        if orphans:
+            # Prune rather than error — the invariant is "cannot surface
+            # orphans", not "cannot tolerate them". Logs already warn via
+            # the key-set chokepoint on the next write.
+            self.unresolvable_frames = {
+                nid: h for nid, h in self.unresolvable_frames.items() if nid in frame_set
+            }
+        return self
 
     @model_validator(mode="after")
     def _require_both_ids_or_neither(self) -> FigmaPageFrontmatter:

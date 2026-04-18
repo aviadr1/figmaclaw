@@ -120,17 +120,17 @@ class TestActiveTombstonedNodeIds:
             file_key="fk",
             page_node_id="1:1",
             frames=["11:1"],
-            unresolvable_frames={"11:1": "h1"},
+            unresolvable_frames={"11:1": "a1a1a1a1"},
         )
         assert active_tombstoned_node_ids(fm, None) == set()
 
     def test_tombstone_active_when_hash_matches_manifest(self, tmp_path: Path) -> None:
-        _write_manifest(tmp_path, frame_hashes={"11:1": "h1", "11:2": "h2"})
+        _write_manifest(tmp_path, frame_hashes={"11:1": "a1a1a1a1", "11:2": "b2b2b2b2"})
         fm = FigmaPageFrontmatter(
             file_key="fk",
             page_node_id="1:1",
             frames=["11:1", "11:2"],
-            unresolvable_frames={"11:1": "h1"},
+            unresolvable_frames={"11:1": "a1a1a1a1"},
         )
         assert active_tombstoned_node_ids(fm, tmp_path) == {"11:1"}
 
@@ -139,12 +139,12 @@ class TestActiveTombstonedNodeIds:
         hash than the recorded tombstone. Tombstone is no longer active —
         the frame becomes pending again for one retry.
         """
-        _write_manifest(tmp_path, frame_hashes={"11:1": "h1-NEW"})
+        _write_manifest(tmp_path, frame_hashes={"11:1": "a1a1a1a1feedface"})
         fm = FigmaPageFrontmatter(
             file_key="fk",
             page_node_id="1:1",
             frames=["11:1"],
-            unresolvable_frames={"11:1": "h1-OLD"},
+            unresolvable_frames={"11:1": "a1a1a1a1deadbeef"},
         )
         assert active_tombstoned_node_ids(fm, tmp_path) == set()
 
@@ -156,7 +156,7 @@ class TestActiveTombstonedNodeIds:
             file_key="other-key",  # not in manifest
             page_node_id="1:1",
             frames=["11:1"],
-            unresolvable_frames={"11:1": "h1"},
+            unresolvable_frames={"11:1": "a1a1a1a1"},
         )
         assert active_tombstoned_node_ids(fm, tmp_path) == set()
 
@@ -168,12 +168,12 @@ class TestActiveTombstonedNodeIds:
 
 class TestPendingFiltersTombstones:
     def test_tombstoned_frame_is_not_pending_when_hash_matches(self, tmp_path: Path) -> None:
-        _write_manifest(tmp_path, frame_hashes={"11:1": "h1", "11:2": "h2"})
+        _write_manifest(tmp_path, frame_hashes={"11:1": "a1a1a1a1", "11:2": "b2b2b2b2"})
         md = tmp_path / "page.md"
         _write_page(
             md,
             frames=["11:1", "11:2"],
-            unresolvable_frames={"11:1": "h1"},
+            unresolvable_frames={"11:1": "a1a1a1a1"},
             body_unresolved_frames=["11:1", "11:2"],
         )
 
@@ -184,12 +184,12 @@ class TestPendingFiltersTombstones:
         """Content changed after tombstone → tombstone no longer active →
         frame pending again. This is the retry-on-change contract.
         """
-        _write_manifest(tmp_path, frame_hashes={"11:1": "h1-NEW"})
+        _write_manifest(tmp_path, frame_hashes={"11:1": "a1a1a1a1feedface"})
         md = tmp_path / "page.md"
         _write_page(
             md,
             frames=["11:1"],
-            unresolvable_frames={"11:1": "h1-OLD"},
+            unresolvable_frames={"11:1": "a1a1a1a1deadbeef"},
             body_unresolved_frames=["11:1"],
         )
 
@@ -206,7 +206,7 @@ class TestPendingFiltersTombstones:
         _write_page(
             md,
             frames=["11:1"],
-            unresolvable_frames={"11:1": "h1"},
+            unresolvable_frames={"11:1": "a1a1a1a1"},
             body_unresolved_frames=["11:1"],
         )
 
@@ -217,12 +217,12 @@ class TestPendingFiltersTombstones:
         """When every pending frame in a section is tombstoned+matching,
         the section is fully "done" and drops out of pending_sections.
         """
-        _write_manifest(tmp_path, frame_hashes={"11:1": "h1", "11:2": "h2"})
+        _write_manifest(tmp_path, frame_hashes={"11:1": "a1a1a1a1", "11:2": "b2b2b2b2"})
         md = tmp_path / "page.md"
         _write_page(
             md,
             frames=["11:1", "11:2"],
-            unresolvable_frames={"11:1": "h1", "11:2": "h2"},
+            unresolvable_frames={"11:1": "a1a1a1a1", "11:2": "b2b2b2b2"},
             body_unresolved_frames=["11:1", "11:2"],
         )
 
@@ -241,12 +241,12 @@ class TestEnrichmentInfoHonorsTombstones:
         unresolved row, the selector stops picking the file. This is what
         stops the hourly RED loop in figmaclaw#121.
         """
-        _write_manifest(tmp_path, frame_hashes={"11:1": "h1"})
+        _write_manifest(tmp_path, frame_hashes={"11:1": "a1a1a1a1"})
         md = tmp_path / "page.md"
         _write_page(
             md,
             frames=["11:1"],
-            unresolvable_frames={"11:1": "h1"},
+            unresolvable_frames={"11:1": "a1a1a1a1"},
             body_unresolved_frames=["11:1"],
         )
         # Anchor the schema to the current version so the "must update"
@@ -262,12 +262,12 @@ class TestEnrichmentInfoHonorsTombstones:
         assert needs_it is False
 
     def test_hash_drift_makes_file_enrichable_again(self, tmp_path: Path) -> None:
-        _write_manifest(tmp_path, frame_hashes={"11:1": "h1-NEW"})
+        _write_manifest(tmp_path, frame_hashes={"11:1": "a1a1a1a1feedface"})
         md = tmp_path / "page.md"
         _write_page(
             md,
             frames=["11:1"],
-            unresolvable_frames={"11:1": "h1-OLD"},
+            unresolvable_frames={"11:1": "a1a1a1a1deadbeef"},
             body_unresolved_frames=["11:1"],
         )
 
@@ -282,7 +282,7 @@ class TestEnrichmentInfoHonorsTombstones:
 
 class TestRecordTombstones:
     def test_writes_tombstones_with_current_manifest_hashes(self, tmp_path: Path) -> None:
-        _write_manifest(tmp_path, frame_hashes={"11:1": "h1", "11:2": "h2"})
+        _write_manifest(tmp_path, frame_hashes={"11:1": "a1a1a1a1", "11:2": "b2b2b2b2"})
         md = tmp_path / "page.md"
         _write_page(
             md,
@@ -295,10 +295,10 @@ class TestRecordTombstones:
 
         fm = parse_frontmatter(md.read_text())
         assert fm is not None
-        assert fm.unresolvable_frames == {"11:1": "h1", "11:2": "h2"}
+        assert fm.unresolvable_frames == {"11:1": "a1a1a1a1", "11:2": "b2b2b2b2"}
 
     def test_skips_node_ids_missing_from_manifest(self, tmp_path: Path) -> None:
-        _write_manifest(tmp_path, frame_hashes={"11:1": "h1"})  # no "11:2"
+        _write_manifest(tmp_path, frame_hashes={"11:1": "a1a1a1a1"})  # no "11:2"
         md = tmp_path / "page.md"
         _write_page(
             md,
@@ -310,15 +310,15 @@ class TestRecordTombstones:
         assert added == 1
         fm = parse_frontmatter(md.read_text())
         assert fm is not None
-        assert fm.unresolvable_frames == {"11:1": "h1"}
+        assert fm.unresolvable_frames == {"11:1": "a1a1a1a1"}
 
     def test_does_not_duplicate_existing_tombstones(self, tmp_path: Path) -> None:
-        _write_manifest(tmp_path, frame_hashes={"11:1": "h1"})
+        _write_manifest(tmp_path, frame_hashes={"11:1": "a1a1a1a1"})
         md = tmp_path / "page.md"
         _write_page(
             md,
             frames=["11:1"],
-            unresolvable_frames={"11:1": "h1"},
+            unresolvable_frames={"11:1": "a1a1a1a1"},
             body_unresolved_frames=["11:1"],
         )
 
@@ -326,7 +326,7 @@ class TestRecordTombstones:
         assert added == 0
 
     def test_preserves_body_verbatim(self, tmp_path: Path) -> None:
-        _write_manifest(tmp_path, frame_hashes={"11:1": "h1"})
+        _write_manifest(tmp_path, frame_hashes={"11:1": "a1a1a1a1"})
         md = tmp_path / "page.md"
         _write_page(
             md,
@@ -372,12 +372,12 @@ class TestKeySetInvariantAppliesToTombstones:
         )
         fm_text = build_page_frontmatter(
             page,
-            unresolvable_frames={"11:1": "h1", "DEAD:1": "h-dead"},
+            unresolvable_frames={"11:1": "a1a1a1a1", "DEAD:1": "deaddead"},
         )
 
         parsed = parse_frontmatter(f"{fm_text}\n\n# body\n")
         assert parsed is not None
-        assert parsed.unresolvable_frames == {"11:1": "h1"}
+        assert parsed.unresolvable_frames == {"11:1": "a1a1a1a1"}
         assert "DEAD:1" not in parsed.unresolvable_frames
 
 
@@ -401,7 +401,7 @@ class TestCrossRunIdempotency:
         are meant to close. Without tombstones, run 2 would keep
         selecting the file forever.
         """
-        _write_manifest(tmp_path, frame_hashes={"11:1": "h1"})
+        _write_manifest(tmp_path, frame_hashes={"11:1": "a1a1a1a1"})
         md = tmp_path / "page.md"
         _write_page(
             md,
