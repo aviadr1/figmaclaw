@@ -1871,12 +1871,14 @@ async def test_schema_upgrade_v6_to_v7_prunes_orphan_enriched_frame_hashes(tmp_p
     # First pull: write the page fresh (v7).
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
     md_rel = state.manifest.files["abc123"].pages["7741:45837"].md_path
+    assert md_rel is not None
     md_path = tmp_path / md_rel
 
     # Seed the showcase-v2 incident shape: orphan entries in
     # enriched_frame_hashes that are NOT in the real frames list.
     text = md_path.read_text()
     fm = parse_frontmatter(text)
+    assert fm is not None
     real_frames = set(fm.frames)
     orphan_nids = {"99:99", "88:88"}
     assert not orphan_nids & real_frames
@@ -1903,6 +1905,7 @@ async def test_schema_upgrade_v6_to_v7_prunes_orphan_enriched_frame_hashes(tmp_p
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
     fm_after = parse_frontmatter(md_path.read_text())
+    assert fm_after is not None
     assert state.manifest.files["abc123"].pull_schema_version == CURRENT_PULL_SCHEMA_VERSION
     assert set(fm_after.enriched_frame_hashes.keys()) <= set(fm_after.frames)
     assert not (set(fm_after.enriched_frame_hashes.keys()) & orphan_nids)
