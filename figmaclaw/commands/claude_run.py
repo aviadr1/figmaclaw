@@ -359,11 +359,26 @@ def _ensure_enrichment_log_schema(repo_dir: Path, log_path: Path) -> bool:
         _warn_enrichment_log(repo_dir, "migrated minimal enrichment log header to schema-v1")
         return True
 
+    # Unrecognized schema — no known migration path applies. Rather than
+    # silently skipping appends forever (the figmaclaw#121 incident shape,
+    # where this WARN recurred hourly and the file was never "fixed"),
+    # archive the current log with a UTC timestamp and start fresh. The
+    # caller's row is then appended to the new empty log; prior history
+    # is preserved in the .bak file and recoverable by hand if needed.
+    archived = log_path.with_name(
+        f"{log_path.stem}.bak."
+        f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
+        f"{log_path.suffix}"
+    )
+    log_path.rename(archived)
+    _rewrite_csv_rows(log_path, [])
+    _rebuild_event_id_index(repo_dir, [])
     _warn_enrichment_log(
         repo_dir,
-        "unsupported enrichment log schema/header; append skipped until file is fixed",
+        f"unrecognized enrichment log schema (fieldnames={list(fieldnames)}); "
+        f"archived prior log to {archived.name} and started a fresh schema-v1 log",
     )
-    return False
+    return True
 
 
 def _log_enrichment(
