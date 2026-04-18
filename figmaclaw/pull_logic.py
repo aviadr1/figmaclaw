@@ -45,6 +45,7 @@ from pathlib import Path
 import httpx
 from pydantic import BaseModel, Field
 
+from figmaclaw.body_validation import iter_body_frame_rows
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_frontmatter import (
     CURRENT_PULL_SCHEMA_VERSION,
@@ -54,7 +55,7 @@ from figmaclaw.figma_frontmatter import (
 )
 from figmaclaw.figma_hash import compute_frame_hashes, compute_page_hash
 from figmaclaw.figma_models import FigmaPage, FigmaSection, from_page_node
-from figmaclaw.figma_parse import parse_flows, parse_frontmatter
+from figmaclaw.figma_parse import parse_flows, parse_frontmatter, split_frontmatter
 from figmaclaw.figma_paths import (
     census_path,
     component_path,
@@ -301,13 +302,55 @@ def update_component_frontmatter(
 
 
 def _rewrite_frontmatter_preserving_body(out_path: Path, md_text: str, new_fm: str) -> None:
-    """Rewrite frontmatter while preserving markdown body byte-for-byte."""
-    from figmaclaw.figma_parse import split_frontmatter
+    """Rewrite frontmatter and structurally prune orphan frame rows from body.
 
+    Frontmatter is replaced wholesale. Body prose is preserved verbatim — we
+    do NOT parse or rewrite prose. The only body edit this function performs
+    is surgical removal of canonical frame *rows* whose node_id is no longer
+    in the new frontmatter's ``frames`` list. Table headers, separators,
+    prose, section headings, and Mermaid blocks are untouched.
+
+    This is a structural operation, not a prose rewrite: a row whose node_id
+    points to a frame that no longer exists cannot possibly be correct, so
+    dropping it is the narrow exception to the "code never rewrites body"
+    rule. See figmaclaw#121 — orphan rows left behind by a shrinking pull are
+    what drive cross-run enrichment loops.
+    """
     parts = split_frontmatter(md_text)
     assert parts is not None, f"Failed to parse frontmatter from {out_path}"
     _, body = parts
+
+    new_fm_parsed = parse_frontmatter(f"{new_fm}\n\n# body\n")
+    allowed_frame_ids = set(new_fm_parsed.frames) if new_fm_parsed else set()
+    body = _prune_orphan_frame_rows(body, allowed_frame_ids)
+
     out_path.write_text(f"{new_fm}\n{body}")
+
+
+def _prune_orphan_frame_rows(body: str, allowed_frame_ids: set[str]) -> str:
+    """Remove canonical frame rows whose node_id is not in *allowed_frame_ids*.
+
+    Uses :func:`figmaclaw.body_validation.iter_body_frame_rows` — the single
+    canonical body frame-row walker (fence-aware, exact-header match). Prose,
+    section headings, table headers, separators, and Mermaid blocks are
+    preserved verbatim because they are not yielded by the walker.
+
+    Returns *body* unchanged when *allowed_frame_ids* is empty (nothing to
+    enforce against).
+    """
+    if not allowed_frame_ids:
+        return body
+
+    orphan_line_indices = {
+        row.line_index
+        for row in iter_body_frame_rows(body)
+        if row.node_id not in allowed_frame_ids
+    }
+    if not orphan_line_indices:
+        return body
+
+    lines = body.splitlines(keepends=True)
+    return "".join(line for i, line in enumerate(lines) if i not in orphan_line_indices)
 
 
 def _aggregate_issues(issues: list) -> list[dict]:
