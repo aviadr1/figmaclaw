@@ -198,10 +198,24 @@ Do:
 ### 5. Log writers — no WARN-and-drop
 
 A log writer that emits `WARN … skipped until file is fixed` but never
-fixes the file silently loses data every run forever. If schema
-migration is possible, do it atomically on the first mismatch. If not,
-hard-fail. Never accept "warn and forget" as a terminal state for a
-writer.
+fixes the file silently loses data every run forever. Acceptable
+resolutions, in order of preference:
+
+1. **Migrate** — if the schema is recognizable (including legacy
+   superset/subset cases), migrate in place on the first mismatch.
+   This is the happy path.
+2. **Auto-archive and reset** — if no migration path applies, rename
+   the prior file to `<name>.bak.<UTC-timestamp><ext>` and start a
+   fresh schema-v1 log. History is preserved, the writer heals itself,
+   and subsequent runs append normally. Required: emit a human-readable
+   error line describing the archive event — don't hide the self-heal.
+3. **Hard-fail** — only for critical writers where silently resetting
+   would corrupt load-bearing state. Log writers used for observability
+   do not qualify.
+
+Never accept "warn and forget every run" as a terminal state. The test
+shape that pins this: run 1 with bad input triggers the heal, run 2
+with no new bad input does NOT re-emit the error.
 
 ### Review checklist for enrichment / pull / logging PRs
 
