@@ -85,6 +85,17 @@ _FrontmatterDumper.add_representer(
 )
 
 
+def _prune_to_allowed(d: dict | None, allowed: set[str]) -> dict | None:
+    """Return *d* restricted to keys in *allowed*, or None if *d* is falsy.
+
+    Enforces the frame-keyed key-set invariant at the single frontmatter
+    write chokepoint (``_build_frontmatter``). See figmaclaw#121.
+    """
+    if not d:
+        return d
+    return {k: v for k, v in d.items() if k in allowed}
+
+
 def _build_frontmatter(
     file_key: str,
     page_node_id: str,
@@ -101,7 +112,25 @@ def _build_frontmatter(
     raw_tokens: dict[str, RawTokenCounts] | None = None,
     frame_sections: dict[str, list[SectionNode]] | None = None,
 ) -> str:
-    """Render compact YAML frontmatter block (between --- markers)."""
+    """Render compact YAML frontmatter block (between --- markers).
+
+    Enforces the frame-keyed key-set invariant: any frame-keyed dict
+    (``enriched_frame_hashes``, ``raw_frames``, ``raw_tokens``, ``frame_sections``)
+    is pruned to ``⊆ frame_ids`` before rendering. This is the single chokepoint
+    for frontmatter writes — orphan frame-keyed entries cannot survive a
+    round-trip through this function, regardless of caller correctness.
+
+    Rationale: see figmaclaw#121 (cross-run enrichment loops). Orphan entries
+    in ``enriched_frame_hashes`` that survived a shrinking ``frames`` list in
+    ``pull`` caused hourly CI failures on stuck files the selector kept
+    reselecting across runs.
+    """
+    allowed_frame_ids = set(frame_ids)
+    enriched_frame_hashes = _prune_to_allowed(enriched_frame_hashes, allowed_frame_ids)
+    raw_frames = _prune_to_allowed(raw_frames, allowed_frame_ids)
+    raw_tokens = _prune_to_allowed(raw_tokens, allowed_frame_ids)
+    frame_sections = _prune_to_allowed(frame_sections, allowed_frame_ids)
+
     fm: dict = {"file_key": file_key, "page_node_id": page_node_id}
     if section_node_id:
         fm["section_node_id"] = section_node_id
