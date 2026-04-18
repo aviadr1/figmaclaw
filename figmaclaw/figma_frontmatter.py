@@ -64,6 +64,12 @@ Pull schema changelog:
       instances[] and raw_count (issue #38 coverage queries)
   v6: extended frame_sections inventory with stable instance_component_ids[] to
       support rename-robust coverage/autodiscovery queries
+  v7: added unresolvable_frames field (tombstones for NO-PROGRESS frames),
+      enforced frame-keyed key-set invariant at the _build_frontmatter
+      chokepoint, and added pull-time orphan body-row pruning via
+      iter_body_frame_rows (issue #121). Forcing a refresh cleans up
+      existing files whose `frames` list shrank in a prior pull but whose
+      enriched_frame_hashes / body-table rows retained the orphans.
 
 Enrichment schema changelog:
   v1: initial enrichment format — frame table + page summary + Mermaid flows
@@ -90,8 +96,9 @@ _TOMBSTONE_HASH_RE = re.compile(r"^[0-9a-f]+$")
 
 # Pull-pass schema version. Bump when pull_file writes new frontmatter fields.
 # Files in the manifest with pull_schema_version < this get frontmatter-refreshed
-# on the next pull run even if Figma content is unchanged. Body is never touched.
-CURRENT_PULL_SCHEMA_VERSION: int = 6
+# on the next pull run even if Figma content is unchanged. Body is never touched
+# (except for the narrow orphan-row prune in figmaclaw#121 — structural, not prose).
+CURRENT_PULL_SCHEMA_VERSION: int = 7
 
 # Enrichment schema version. Bump when the LLM prompt or output format changes.
 # Pages with enriched_schema_version < MIN_REQUIRED MUST be re-enriched (broken output).

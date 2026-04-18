@@ -52,7 +52,7 @@ from tests.conftest import (
 # Schema version registry — must contain every version that has been superseded.
 # When you bump CURRENT_PULL_SCHEMA_VERSION from N to N+1, add N here and add
 # a corresponding convergence test (like test_schema_upgrade_does_not_cause_infinite_loop_with_max_pages).
-TESTED_UPGRADE_FROM_VERSIONS: frozenset[int] = frozenset({1, 2, 3, 4, 5})
+TESTED_UPGRADE_FROM_VERSIONS: frozenset[int] = frozenset({1, 2, 3, 4, 5, 6})
 
 
 def test_schema_upgrade_coverage_is_current():
@@ -1841,6 +1841,71 @@ async def test_schema_upgrade_does_not_cause_infinite_loop_with_max_pages(tmp_pa
 
     # pull_schema_version must be updated after a schema-only pass
     assert state.manifest.files["abc123"].pull_schema_version == CURRENT_PULL_SCHEMA_VERSION
+
+
+@pytest.mark.asyncio
+async def test_schema_upgrade_v6_to_v7_prunes_orphan_enriched_frame_hashes(tmp_path: Path):
+    """INVARIANT for figmaclaw#121 / v7 schema bump: when a v6 file is
+    refreshed to v7, orphan entries in ``enriched_frame_hashes`` for
+    node_ids no longer in ``frames`` are pruned by the
+    ``_build_frontmatter`` chokepoint.
+
+    This is what lets existing stuck files in consumer repos (the
+    linear-git showcase-v2 shape) converge to clean state on the next
+    pull without any manual intervention.
+    """
+    from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
+    from figmaclaw.figma_parse import parse_frontmatter
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+
+    mock_client = MagicMock(spec=FigmaClient)
+    page_node = fake_page_node_with_children()
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2", "2026-03-31T12:00:00Z"))
+    mock_client.get_page = AsyncMock(return_value=page_node)
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+    mock_client.get_nodes = AsyncMock(return_value=fake_get_nodes_response())
+
+    # First pull: write the page fresh (v7).
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+    md_rel = state.manifest.files["abc123"].pages["7741:45837"].md_path
+    md_path = tmp_path / md_rel
+
+    # Seed the showcase-v2 incident shape: orphan entries in
+    # enriched_frame_hashes that are NOT in the real frames list.
+    text = md_path.read_text()
+    fm = parse_frontmatter(text)
+    real_frames = set(fm.frames)
+    orphan_nids = {"99:99", "88:88"}
+    assert not orphan_nids & real_frames
+    # Directly inject a v6-era frontmatter with orphan enriched_frame_hashes.
+    # We splice the raw YAML to bypass the write-time chokepoint (the
+    # chokepoint is exactly what this test asserts will re-prune the
+    # orphans on the NEXT pull).
+    injected = text.replace(
+        "---\n",
+        (
+            "---\n"
+            "enriched_frame_hashes: "
+            "{'11:1': aaaaaaaa, '11:2': bbbbbbbb, "
+            "'99:99': deaddead, '88:88': feedbeef}\n"
+        ),
+        1,
+    )
+    md_path.write_text(injected)
+    state.manifest.files["abc123"].pull_schema_version = 6  # simulate v6
+    state.save()
+
+    # Second pull: v6 < v7 → schema-stale refresh. The chokepoint must
+    # drop the orphans from enriched_frame_hashes.
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    fm_after = parse_frontmatter(md_path.read_text())
+    assert state.manifest.files["abc123"].pull_schema_version == CURRENT_PULL_SCHEMA_VERSION
+    assert set(fm_after.enriched_frame_hashes.keys()) <= set(fm_after.frames)
+    assert not (set(fm_after.enriched_frame_hashes.keys()) & orphan_nids)
 
 
 @pytest.mark.asyncio
