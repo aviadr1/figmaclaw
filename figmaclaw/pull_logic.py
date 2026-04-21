@@ -86,6 +86,11 @@ from figmaclaw.token_scan import PageTokenScan, scan_page
 log = logging.getLogger(__name__)
 TOKEN_SIDECAR_SCHEMA_VERSION = 2
 
+# Per-page API-call timeout. Applied around get_page and the sequential-mode
+# get_nodes call to prevent one stuck page from hanging an entire batch.
+# None disables per-page timeouts (falls back to the caller's wall-clock limit).
+DEFAULT_PER_PAGE_TIMEOUT_S: float = 240.0
+
 
 def _all_manifest_generated_paths(state: FigmaSyncState) -> set[str]:
     """Return all generated paths currently referenced by the manifest."""
@@ -667,6 +672,7 @@ async def pull_file(
     prune: bool = True,
     progress: Callable[[str], None] | None = None,
     on_page_written: Callable[[str, list[str]], None] | None = None,
+    per_page_timeout_s: float | None = DEFAULT_PER_PAGE_TIMEOUT_S,
 ) -> PullResult:
     """Pull all (or up to max_pages) changed pages for a tracked Figma file.
 
@@ -905,7 +911,25 @@ async def pull_file(
                 )
                 break
             try:
-                page_node = await client.get_page(file_key, page_node_id)
+                if per_page_timeout_s is not None:
+                    page_node = await asyncio.wait_for(
+                        client.get_page(file_key, page_node_id),
+                        timeout=per_page_timeout_s,
+                    )
+                else:
+                    page_node = await client.get_page(file_key, page_node_id)
+            except TimeoutError:
+                log.error(
+                    "get_page timed out after %ss for page %r (%s) — skipping",
+                    per_page_timeout_s,
+                    page_name,
+                    page_node_id,
+                )
+                _progress(
+                    f"  [{page_idx}/{total_pages}] {page_name} — timed out after {per_page_timeout_s}s, skipping"
+                )
+                result.pages_errored += 1
+                continue
             except Exception as exc:
                 log.error(
                     "Failed to fetch page %r (%s): %s — skipping", page_name, page_node_id, exc
@@ -1027,8 +1051,21 @@ async def pull_file(
                 else:
                     # Sequential mode: must fetch per-page (we don't have all page nodes upfront).
                     try:
-                        frame_docs = await client.get_nodes(file_key, screen_frame_ids, depth=2)
+                        if per_page_timeout_s is not None:
+                            frame_docs = await asyncio.wait_for(
+                                client.get_nodes(file_key, screen_frame_ids, depth=2),
+                                timeout=per_page_timeout_s,
+                            )
+                        else:
+                            frame_docs = await client.get_nodes(file_key, screen_frame_ids, depth=2)
                         raw_frames, frame_sections = _compute_raw_frames(frame_docs)
+                    except TimeoutError:
+                        log.warning(
+                            "get_nodes timed out after %ss for page %r (%s) — raw_frames will be omitted",
+                            per_page_timeout_s,
+                            page_name,
+                            page_node_id,
+                        )
                     except Exception as exc:
                         log.warning(
                             "Failed to fetch frame children for page %r (%s): %s — raw_frames will be omitted",

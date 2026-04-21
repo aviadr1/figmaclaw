@@ -18,7 +18,7 @@ from figmaclaw.figma_sync_state import FigmaSyncState
 from figmaclaw.figma_utils import parse_since
 from figmaclaw.git_utils import git_commit, git_push
 from figmaclaw.prune_utils import prune_file_artifacts_from_manifest
-from figmaclaw.pull_logic import PullResult, pull_file
+from figmaclaw.pull_logic import DEFAULT_PER_PAGE_TIMEOUT_S, PullResult, pull_file
 from figmaclaw.schema_status import is_pull_schema_stale
 from figmaclaw.status_markers import COMMIT_MSG_PREFIX, HAS_MORE_TRUE
 
@@ -68,6 +68,17 @@ from figmaclaw.status_markers import COMMIT_MSG_PREFIX, HAS_MORE_TRUE
     show_default=True,
     help="Prune stale generated figma artifacts (orphans, old rename paths, removed pages).",
 )
+@click.option(
+    "--per-page-timeout-s",
+    "per_page_timeout_s",
+    default=DEFAULT_PER_PAGE_TIMEOUT_S,
+    type=float,
+    show_default=True,
+    help=(
+        "Abort get_page/get_nodes for a single page after this many seconds and "
+        "mark it errored so the loop can continue. Pass 0 to disable."
+    ),
+)
 @click.pass_context
 def pull_cmd(
     ctx: click.Context,
@@ -79,10 +90,15 @@ def pull_cmd(
     team_id: str | None,
     since: str,
     prune: bool,
+    per_page_timeout_s: float,
 ) -> None:
     """Pull all tracked Figma files and write changed pages to disk."""
     repo_dir = Path(ctx.obj["repo_dir"])
     api_key = require_figma_api_key()
+
+    # 0 = caller opts out of per-page timeouts. Map to None to keep the signature
+    # explicit in pull_logic.pull_file (None => no asyncio.wait_for wrapping).
+    resolved_timeout: float | None = per_page_timeout_s if per_page_timeout_s > 0 else None
 
     asyncio.run(
         _run(
@@ -96,6 +112,7 @@ def pull_cmd(
             team_id,
             since,
             prune=prune,
+            per_page_timeout_s=resolved_timeout,
         )
     )
 
@@ -287,6 +304,7 @@ async def _run(
     team_id: str | None,
     since: str,
     prune: bool = True,
+    per_page_timeout_s: float | None = None,
 ) -> None:
     state = load_state(repo_dir)
 
@@ -411,6 +429,7 @@ async def _run(
                         max_pages=pages_budget,
                         prune=prune,
                         on_page_written=on_page_written,
+                        per_page_timeout_s=per_page_timeout_s,
                     )
                 finally:
                     stop_heartbeat.set()

@@ -13,6 +13,12 @@ FIGMACLAW_OUT_PATH="${FIGMACLAW_OUT_PATH:-/tmp/figmaclaw-out.txt}"
 FIGMA_TEAM_ID="${FIGMA_TEAM_ID:-}"
 SINCE="${SINCE:-3m}"
 FIGMACLAW_SYNC_OBS_DIR="${FIGMACLAW_SYNC_OBS_DIR:-}"
+# Delegate commit/push to figmaclaw itself at page granularity. Makes individual
+# pages durable in origin as soon as they're written, so a batch-level SIGKILL
+# no longer discards up-to-N-pages of work. The shell's commit_if_changed still
+# runs afterward as a safety net for manifest tail updates.
+AUTO_COMMIT_ENABLED="${AUTO_COMMIT_ENABLED:-true}"
+PUSH_EVERY="${PUSH_EVERY:-1}"
 
 declare -a PULL_ARGS
 CURRENT_MAX_PAGES_PER_BATCH="$MAX_PAGES_PER_BATCH"
@@ -77,6 +83,11 @@ set_pull_args() {
   fi
   if [ -n "$FIGMA_TEAM_ID" ]; then
     PULL_ARGS+=(--team-id "$FIGMA_TEAM_ID" --since "$SINCE")
+  fi
+  # Page-level commit+push keeps partial progress in origin even if the Python
+  # process is SIGKILL'd mid-batch — the next CI run's fresh checkout picks it up.
+  if [ "$AUTO_COMMIT_ENABLED" = "true" ]; then
+    PULL_ARGS+=(--auto-commit --push-every "$PUSH_EVERY")
   fi
 }
 
@@ -166,14 +177,23 @@ while true; do
 
   if [ "$pull_status" -eq 124 ]; then
     TOTAL_TIMEOUTS=$((TOTAL_TIMEOUTS + 1))
-    # Persist partial progress before retrying/stopping. Python saves manifest + .md
-    # files per-page, so mid-batch timeouts still leave valid, committable progress
-    # in the working tree. Without this commit, the next CI run does a fresh checkout
-    # and throws all that work away — causing the loop to re-do the same schema
-    # upgrades indefinitely without ever landing a commit.
+    # Persist partial progress before retrying/stopping. Two sources of work to save:
+    #   1. Local page commits from --auto-commit that weren't pushed yet (possible
+    #      when PUSH_EVERY > 1). Push them explicitly; best-effort, so failures
+    #      don't break the loop.
+    #   2. Any remaining dirty working-tree state (manifest tail updates, component
+    #      writes not attached to a page commit). commit_if_changed handles this.
+    # Without these, the next CI run's fresh `actions/checkout@v6` throws all
+    # mid-batch work away — causing the loop to re-do the same schema upgrades
+    # forever without ever landing a commit upstream.
+    git push >&2 || true
     committed="$(commit_if_changed "sync: figmaclaw — partial progress (batch $BATCH timeout)")"
     if [ "$committed" = "true" ]; then
       TOTAL_COMMITS=$((TOTAL_COMMITS + 1))
+      # Distinct event + log line so operators can tell at a glance whether a
+      # timed-out batch made forward progress or was completely wasted.
+      echo "figmaclaw pull timed out but partial progress committed (batch $BATCH)."
+      emit_obs "partial_commit_on_timeout" "timeout commit saved work"
     fi
     if [ "$INPUT_FORCE" != "true" ] && [ "$CURRENT_MAX_PAGES_PER_BATCH" -gt 1 ]; then
       CURRENT_MAX_PAGES_PER_BATCH=$((CURRENT_MAX_PAGES_PER_BATCH / 2))
