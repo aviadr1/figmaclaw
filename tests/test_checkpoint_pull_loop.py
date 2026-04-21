@@ -147,7 +147,7 @@ def test_stops_immediately_on_pull_timeout(tmp_path: Path) -> None:
     out = _run_loop(
         tmp_path,
         scenario="has_more_forever",
-        git_dirty="1",
+        git_dirty="0",  # nothing to commit on timeout → no git pull either
         timeout_mode="always",  # timeout returns 124 before figmaclaw runs
     )
     assert (tmp_path / "count.txt").exists() is False
@@ -155,7 +155,9 @@ def test_stops_immediately_on_pull_timeout(tmp_path: Path) -> None:
     trace = (
         (tmp_path / "git-trace.txt").read_text() if (tmp_path / "git-trace.txt").exists() else ""
     )
-    assert "git pull" not in trace
+    # With no dirty state, the timeout path must not attempt to commit, so no
+    # `git pull` / `git add` / `git commit` should be traced.
+    assert "git commit" not in trace
 
 
 def test_force_mode_runs_single_batch_even_when_has_more(tmp_path: Path) -> None:
@@ -271,6 +273,46 @@ def test_emits_sync_observability_logs_and_files(tmp_path: Path) -> None:
 
     assert "SYNC_OBS event=batch_start" in out
     assert "SYNC_OBS summary_file=" in out
+
+
+def test_timeout_commits_partial_progress_when_tree_dirty(tmp_path: Path) -> None:
+    """On timeout with a dirty tree, the loop must commit partial progress before
+    retrying or stopping. Without this, the next CI run does a fresh checkout and
+    all work done before SIGKILL is discarded."""
+    out = _run_loop(
+        tmp_path,
+        scenario="has_more_forever",
+        git_dirty="1",
+        timeout_mode="always",
+    )
+    trace = (tmp_path / "git-trace.txt").read_text()
+    # Must commit partial progress before giving up.
+    assert "git commit" in trace
+    # Message tag makes the commit recognizable in git log and distinct from
+    # normal `checkpoint batch` commits.
+    assert "partial progress" in trace
+    # And still produces the timeout-stop observability event.
+    assert "timed out" in out
+    assert "stopping checkpoint loop early" in out
+
+
+def test_timeout_backoff_commits_partial_progress_and_retries(tmp_path: Path) -> None:
+    """On timeout with dirty tree AND backoff eligibility, the loop must commit
+    before retrying with a smaller batch size."""
+    out = _run_loop(
+        tmp_path,
+        scenario="single_done",
+        git_dirty="1",
+        timeout_mode="first_only",
+        MAX_PAGES_PER_BATCH="8",
+    )
+    trace = (tmp_path / "git-trace.txt").read_text()
+    # Two commits expected: one partial-progress after the timed-out batch 1,
+    # one normal after the successful batch 2.
+    assert trace.count("git commit") == 2
+    assert "partial progress" in trace
+    # Retry happened at halved batch size.
+    assert "retrying with --max-pages 4" in out
 
 
 def test_timeout_stop_emits_batch_end_event(tmp_path: Path) -> None:

@@ -92,6 +92,7 @@ run_pull_batch() {
 }
 
 commit_if_changed() {
+  local msg_override="${1:-}"
   local t0 t1
   GIT_PULL_S=0
   GIT_ADD_S=0
@@ -119,8 +120,12 @@ commit_if_changed() {
   t1="$(date +%s)"
   GIT_DIFF_S="$((t1 - t0))"
 
-  COMMIT_MSG="$(grep '^COMMIT_MSG:' "$FIGMACLAW_OUT_PATH" | head -1 | sed 's/^COMMIT_MSG://' | tr -d '\n\r')"
-  COMMIT_MSG="${COMMIT_MSG:-sync: figmaclaw — checkpoint batch $BATCH}"
+  if [ -n "$msg_override" ]; then
+    COMMIT_MSG="$msg_override"
+  else
+    COMMIT_MSG="$(grep '^COMMIT_MSG:' "$FIGMACLAW_OUT_PATH" | head -1 | sed 's/^COMMIT_MSG://' | tr -d '\n\r')"
+    COMMIT_MSG="${COMMIT_MSG:-sync: figmaclaw — checkpoint batch $BATCH}"
+  fi
 
   t0="$(date +%s)"
   git commit -m "${COMMIT_MSG}" >&2
@@ -161,6 +166,15 @@ while true; do
 
   if [ "$pull_status" -eq 124 ]; then
     TOTAL_TIMEOUTS=$((TOTAL_TIMEOUTS + 1))
+    # Persist partial progress before retrying/stopping. Python saves manifest + .md
+    # files per-page, so mid-batch timeouts still leave valid, committable progress
+    # in the working tree. Without this commit, the next CI run does a fresh checkout
+    # and throws all that work away — causing the loop to re-do the same schema
+    # upgrades indefinitely without ever landing a commit.
+    committed="$(commit_if_changed "sync: figmaclaw — partial progress (batch $BATCH timeout)")"
+    if [ "$committed" = "true" ]; then
+      TOTAL_COMMITS=$((TOTAL_COMMITS + 1))
+    fi
     if [ "$INPUT_FORCE" != "true" ] && [ "$CURRENT_MAX_PAGES_PER_BATCH" -gt 1 ]; then
       CURRENT_MAX_PAGES_PER_BATCH=$((CURRENT_MAX_PAGES_PER_BATCH / 2))
       if [ "$CURRENT_MAX_PAGES_PER_BATCH" -lt 1 ]; then
