@@ -568,6 +568,183 @@ async def test_pull_file_has_more_false_when_all_pages_written(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_pull_file_fetches_pages_concurrently_in_sequential_mode(tmp_path: Path):
+    """INVARIANT: max_pages mode must fetch page nodes concurrently within each
+    chunk, not one at a time. Before this fix, a resynced file with N unchanged
+    pages cost N × per-call latency serialised (observed: 34 pages × ~8s = 274s).
+    Concurrent chunked fetch collapses that to ~chunk_latency × ceil(N/chunk) —
+    for a 10-page chunk, roughly the slowest single call in the chunk.
+
+    We verify concurrency by timing N slow mock fetches: if serial, total time
+    would be N * sleep_s; if concurrent, total ≈ sleep_s regardless of N."""
+    import time
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    n_pages = 8
+    per_call_sleep_s = 0.3  # each mock get_page takes 0.3s
+
+    async def slow_get_page(_fk: str, pid: str):
+        await asyncio.sleep(per_call_sleep_s)
+        return fake_page_node_for_id(pid, f"Page {pid}")
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta_multi(n_pages))
+    mock_client.get_page = AsyncMock(side_effect=slow_get_page)
+    mock_client.get_nodes = AsyncMock(return_value={})
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+
+    t0 = time.monotonic()
+    result = await pull_file(
+        mock_client,
+        "abc123",
+        state,
+        tmp_path,
+        force=False,
+        max_pages=n_pages,  # no write budget headroom — fetch+process all
+    )
+    elapsed = time.monotonic() - t0
+
+    # All pages should be written.
+    assert result.pages_written == n_pages
+
+    # Serial would be n_pages * per_call_sleep_s = 2.4s. Concurrent (one chunk)
+    # should complete in ~per_call_sleep_s plus overhead. Pick a threshold
+    # comfortably between the two: n*sleep - sleep*2 so even a very loaded CI
+    # machine shouldn't trip it without the fix genuinely being broken.
+    serial_floor_s = (n_pages - 2) * per_call_sleep_s
+    assert elapsed < serial_floor_s, (
+        f"pull_file fetched pages serially in {elapsed:.2f}s "
+        f"(serial floor would be {serial_floor_s:.2f}s for {n_pages} pages × "
+        f"{per_call_sleep_s}s). Chunk-parallel fetch is not wired up."
+    )
+
+
+@pytest.mark.asyncio
+async def test_pull_file_chunk_fetch_stops_when_budget_hit(tmp_path: Path):
+    """INVARIANT: when the write budget is hit inside a chunk, subsequent chunks
+    must NOT be fetched. Otherwise first-sync of a huge file would redo N ×
+    full-parallel-fetch work on every batch — same bad O(N²) pattern as before,
+    just with concurrency. Chunked early-stop preserves the sequential-mode API
+    budget while keeping parallel speedups within each chunk.
+
+    We verify by counting get_page calls: with chunk=10, max_pages=3,
+    n_pages=30, we should see exactly one chunk of fetches (10), not 30."""
+    from figmaclaw.pull_logic import PAGE_FETCH_CHUNK
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    n_pages = 3 * PAGE_FETCH_CHUNK  # ensures at least 3 chunks exist
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta_multi(n_pages))
+    mock_client.get_page = AsyncMock(
+        side_effect=lambda fk, pid: fake_page_node_for_id(pid, f"Page {pid}")
+    )
+    mock_client.get_nodes = AsyncMock(return_value={})
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+
+    result = await pull_file(
+        mock_client,
+        "abc123",
+        state,
+        tmp_path,
+        force=False,
+        max_pages=3,  # hit budget within the first chunk
+    )
+
+    assert result.pages_written == 3
+    assert result.has_more is True
+    # With first-chunk prefetch + mid-chunk budget hit, only the first chunk
+    # (PAGE_FETCH_CHUNK pages) should have been fetched — not all n_pages.
+    assert mock_client.get_page.await_count == PAGE_FETCH_CHUNK, (
+        f"expected {PAGE_FETCH_CHUNK} get_page calls (one chunk), got "
+        f"{mock_client.get_page.await_count}. Chunk-early-stop broken."
+    )
+
+
+@pytest.mark.asyncio
+async def test_pull_file_per_page_timeout_marks_stuck_page_errored_and_continues(
+    tmp_path: Path,
+):
+    """INVARIANT: one page whose get_page exceeds per_page_timeout_s must not
+    hang the whole file — it should be marked errored so subsequent pages still
+    get processed. This is the per-page analog of the shell-level batch timeout:
+    without it, a single slow page blocks all progress on the file forever."""
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    n_pages = 3
+    # fake_file_meta_multi emits page ids "100:1" … "100:N". Hang the first.
+    stuck_pid = "100:1"
+
+    async def maybe_hang(_fk: str, pid: str):
+        if pid == stuck_pid:
+            # Longer than the test's per-page timeout — wait_for must cancel us.
+            await asyncio.sleep(10.0)
+        return fake_page_node_for_id(pid, f"Page {pid}")
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta_multi(n_pages))
+    mock_client.get_page = AsyncMock(side_effect=maybe_hang)
+    mock_client.get_nodes = AsyncMock(return_value={})
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+
+    result = await pull_file(
+        mock_client,
+        "abc123",
+        state,
+        tmp_path,
+        force=False,
+        max_pages=5,  # sequential mode — uses the per-page get_page path we wrapped
+        per_page_timeout_s=0.1,
+    )
+
+    # The hung page is errored; the remaining two complete normally.
+    assert result.pages_errored == 1
+    assert result.pages_written == n_pages - 1
+    assert result.has_more is False
+
+
+@pytest.mark.asyncio
+async def test_pull_file_per_page_timeout_none_disables_wrapping(tmp_path: Path):
+    """INVARIANT: per_page_timeout_s=None preserves original behavior (no
+    asyncio.wait_for wrapping) — needed so callers that want to rely solely on
+    a higher-level timeout can opt out."""
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta_multi(2))
+    mock_client.get_page = AsyncMock(
+        side_effect=lambda fk, pid: fake_page_node_for_id(pid, f"Page {pid}")
+    )
+
+    result = await pull_file(
+        mock_client,
+        "abc123",
+        state,
+        tmp_path,
+        force=False,
+        max_pages=5,
+        per_page_timeout_s=None,
+    )
+    assert result.pages_errored == 0
+    assert result.pages_written == 2
+
+
+@pytest.mark.asyncio
 async def test_pull_file_has_more_false_when_no_limit(tmp_path: Path):
     """INVARIANT: has_more is False when max_pages is not set."""
 

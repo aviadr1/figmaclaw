@@ -116,6 +116,11 @@ def _run_loop(
             "BATCH_TIMEOUT_SECONDS": "1",
             "MAX_PAGES_PER_BATCH": "5",
             "INPUT_FORCE": "false",
+            # Default off in the test harness so existing expected-args assertions
+            # (e.g. "pull --max-pages 7") stay stable; individual tests flip this
+            # on when they want to exercise the auto-commit wiring.
+            "AUTO_COMMIT_ENABLED": "false",
+            "PUSH_EVERY": "1",
         }
     )
     env.update(extra_env)
@@ -147,7 +152,7 @@ def test_stops_immediately_on_pull_timeout(tmp_path: Path) -> None:
     out = _run_loop(
         tmp_path,
         scenario="has_more_forever",
-        git_dirty="1",
+        git_dirty="0",  # nothing to commit on timeout → no git pull either
         timeout_mode="always",  # timeout returns 124 before figmaclaw runs
     )
     assert (tmp_path / "count.txt").exists() is False
@@ -155,7 +160,9 @@ def test_stops_immediately_on_pull_timeout(tmp_path: Path) -> None:
     trace = (
         (tmp_path / "git-trace.txt").read_text() if (tmp_path / "git-trace.txt").exists() else ""
     )
-    assert "git pull" not in trace
+    # With no dirty state, the timeout path must not attempt to commit, so no
+    # `git pull` / `git add` / `git commit` should be traced.
+    assert "git commit" not in trace
 
 
 def test_force_mode_runs_single_batch_even_when_has_more(tmp_path: Path) -> None:
@@ -271,6 +278,190 @@ def test_emits_sync_observability_logs_and_files(tmp_path: Path) -> None:
 
     assert "SYNC_OBS event=batch_start" in out
     assert "SYNC_OBS summary_file=" in out
+
+
+def test_timeout_commits_partial_progress_when_tree_dirty(tmp_path: Path) -> None:
+    """On timeout with a dirty tree, the loop must commit partial progress before
+    retrying or stopping. Without this, the next CI run does a fresh checkout and
+    all work done before SIGKILL is discarded."""
+    out = _run_loop(
+        tmp_path,
+        scenario="has_more_forever",
+        git_dirty="1",
+        timeout_mode="always",
+    )
+    trace = (tmp_path / "git-trace.txt").read_text()
+    # Must commit partial progress before giving up.
+    assert "git commit" in trace
+    # Message tag makes the commit recognizable in git log and distinct from
+    # normal `checkpoint batch` commits.
+    assert "partial progress" in trace
+    # And still produces the timeout-stop observability event.
+    assert "timed out" in out
+    assert "stopping checkpoint loop early" in out
+
+
+def test_timeout_backoff_commits_partial_progress_and_retries(tmp_path: Path) -> None:
+    """On timeout with dirty tree AND backoff eligibility, the loop must commit
+    before retrying with a smaller batch size."""
+    out = _run_loop(
+        tmp_path,
+        scenario="single_done",
+        git_dirty="1",
+        timeout_mode="first_only",
+        MAX_PAGES_PER_BATCH="8",
+    )
+    trace = (tmp_path / "git-trace.txt").read_text()
+    # Two commits expected: one partial-progress after the timed-out batch 1,
+    # one normal after the successful batch 2.
+    assert trace.count("git commit") == 2
+    assert "partial progress" in trace
+    # Retry happened at halved batch size.
+    assert "retrying with --max-pages 4" in out
+
+
+def test_auto_commit_appends_flags_to_pull_args(tmp_path: Path) -> None:
+    """With AUTO_COMMIT_ENABLED=true, the loop must pass --auto-commit and
+    --push-every to figmaclaw so individual pages become durable in origin as
+    they're written — making the batch-level timeout no longer a data-loss risk
+    for already-processed pages."""
+    _run_loop(
+        tmp_path,
+        scenario="single_done",
+        git_dirty="1",
+        timeout_mode="pass",
+        AUTO_COMMIT_ENABLED="true",
+        PUSH_EVERY="1",
+    )
+    args = (tmp_path / "pull-args.txt").read_text().strip()
+    assert "--auto-commit" in args
+    assert "--push-every 1" in args
+
+
+def test_auto_commit_respects_custom_push_every(tmp_path: Path) -> None:
+    _run_loop(
+        tmp_path,
+        scenario="single_done",
+        git_dirty="1",
+        timeout_mode="pass",
+        AUTO_COMMIT_ENABLED="true",
+        PUSH_EVERY="5",
+    )
+    args = (tmp_path / "pull-args.txt").read_text().strip()
+    assert "--push-every 5" in args
+
+
+def test_auto_commit_also_flushes_unpushed_commits_on_timeout(tmp_path: Path) -> None:
+    """With --push-every > 1, a SIGKILL can leave local page commits unpushed.
+    On timeout the loop must explicitly git push before any safety-net commit
+    so those page commits reach origin before the job ends."""
+    _run_loop(
+        tmp_path,
+        scenario="has_more_forever",
+        git_dirty="1",
+        timeout_mode="always",
+        AUTO_COMMIT_ENABLED="true",
+        PUSH_EVERY="5",
+    )
+    trace = (tmp_path / "git-trace.txt").read_text()
+    # Push must run independently of commit_if_changed's trailing push —
+    # even a no-op local tree shouldn't suppress it, since --auto-commit
+    # may have committed pages that aren't pushed yet.
+    assert "git push" in trace
+
+
+def test_exit_trap_flushes_any_unpushed_commits_on_normal_exit(tmp_path: Path) -> None:
+    """Normal-exit path must still `git push` once via the EXIT trap. With
+    --auto-commit this drains any per-page commits that weren't pushed (e.g.
+    PUSH_EVERY > 1 leaving a tail of unpushed commits, or a SIGKILL between
+    Python's `git commit` and `git push`). Without this, the next CI run's
+    fresh checkout discards those local commits."""
+    _run_loop(
+        tmp_path,
+        scenario="single_done",
+        git_dirty="0",
+        timeout_mode="pass",
+        AUTO_COMMIT_ENABLED="true",
+        PUSH_EVERY="5",
+    )
+    trace = (tmp_path / "git-trace.txt").read_text()
+    assert "git push" in trace, (
+        "EXIT trap must issue at least one `git push` even when commit_if_changed "
+        "returned false, to flush unpushed --auto-commit page commits."
+    )
+
+
+def test_exit_trap_does_not_fail_script_when_push_fails(tmp_path: Path) -> None:
+    """A transient `git push` failure during the trap must not crash the script
+    and mask the real exit status / observability output."""
+    bin_dir = _setup_fake_bin(tmp_path, scenario="single_done", git_dirty="0", timeout_mode="pass")
+    # Overwrite the helper's git stub with one that fails on `push` — simulates
+    # network hiccup / auth token expired / remote conflict during the trap.
+    (bin_dir / "git").write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "${1:-}" = "push" ]; then exit 1; fi\n'
+        'if [ "${1:-}" = "diff" ] && [ "${GIT_DIRTY:-0}" = "1" ]; then exit 1; fi\n'
+        "exit 0\n"
+    )
+    (bin_dir / "git").chmod(0o755)
+
+    repo = Path(__file__).resolve().parents[1]
+    script = repo / "scripts" / "checkpoint_pull_loop.sh"
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{bin_dir}:{env['PATH']}",
+            "COUNT_FILE": str(tmp_path / "count.txt"),
+            "TRACE_FILE": str(tmp_path / "git-trace.txt"),
+            "FIGMACLAW_OUT_PATH": str(tmp_path / "figmaclaw-out.txt"),
+            "ARGS_FILE": str(tmp_path / "pull-args.txt"),
+            "TIMEOUT_COUNT_FILE": str(tmp_path / "timeout-count.txt"),
+            "SCENARIO": "single_done",
+            "GIT_DIRTY": "0",
+            "TIMEOUT_MODE": "pass",
+            "MAX_BATCHES": "10",
+            "MAX_IDLE_HAS_MORE_BATCHES": "3",
+            "BATCH_TIMEOUT_SECONDS": "1",
+            "MAX_PAGES_PER_BATCH": "5",
+            "INPUT_FORCE": "false",
+            "AUTO_COMMIT_ENABLED": "true",
+            "PUSH_EVERY": "1",
+        }
+    )
+    # check=True catches nonzero exit — we expect exit 0 even with the failing
+    # trap push.
+    subprocess.run([str(script)], cwd=tmp_path, text=True, capture_output=True, env=env, check=True)
+
+
+def test_partial_commit_on_timeout_emits_distinct_observability_event(tmp_path: Path) -> None:
+    """Operators need to tell apart 'timeout produced work' vs 'timeout wasted
+    a run' at a glance. The partial_commit_on_timeout event surfaces the former."""
+    obs_dir = tmp_path / "obs"
+    out = _run_loop(
+        tmp_path,
+        scenario="has_more_forever",
+        git_dirty="1",
+        timeout_mode="always",
+        FIGMACLAW_SYNC_OBS_DIR=str(obs_dir),
+    )
+    events_text = (obs_dir / "checkpoint_events.csv").read_text()
+    assert "partial_commit_on_timeout" in events_text
+    assert "partial progress committed" in out
+
+
+def test_clean_tree_timeout_does_not_emit_partial_commit_event(tmp_path: Path) -> None:
+    """If there was nothing to commit on timeout, don't spam the partial-commit
+    event — it's meant to signal forward progress, not just that a timeout fired."""
+    obs_dir = tmp_path / "obs"
+    _run_loop(
+        tmp_path,
+        scenario="has_more_forever",
+        git_dirty="0",
+        timeout_mode="always",
+        FIGMACLAW_SYNC_OBS_DIR=str(obs_dir),
+    )
+    events_text = (obs_dir / "checkpoint_events.csv").read_text()
+    assert "partial_commit_on_timeout" not in events_text
 
 
 def test_timeout_stop_emits_batch_end_event(tmp_path: Path) -> None:
