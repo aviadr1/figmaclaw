@@ -151,6 +151,18 @@ commit_if_changed() {
 }
 
 init_observability
+
+# Final-push safety net. With --auto-commit and any PUSH_EVERY value, a SIGKILL
+# between figmaclaw's `git commit` and `git push` can leave local commits that
+# never made it to origin. The next CI run does `actions/checkout@v6` (fresh
+# tree) and throws those commits away, which is exactly the data-loss shape
+# this whole PR exists to fix. The trap fires on normal exit, error exit, and
+# signals — `git push` with nothing to push is a no-op, so it's always safe.
+final_push_flush() {
+  git push >&2 || true
+}
+trap final_push_flush EXIT
+
 emit_obs "loop_start" "checkpoint loop started"
 
 idle_has_more=0

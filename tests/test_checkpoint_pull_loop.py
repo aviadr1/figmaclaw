@@ -370,6 +370,69 @@ def test_auto_commit_also_flushes_unpushed_commits_on_timeout(tmp_path: Path) ->
     assert "git push" in trace
 
 
+def test_exit_trap_flushes_any_unpushed_commits_on_normal_exit(tmp_path: Path) -> None:
+    """Normal-exit path must still `git push` once via the EXIT trap. With
+    --auto-commit this drains any per-page commits that weren't pushed (e.g.
+    PUSH_EVERY > 1 leaving a tail of unpushed commits, or a SIGKILL between
+    Python's `git commit` and `git push`). Without this, the next CI run's
+    fresh checkout discards those local commits."""
+    _run_loop(
+        tmp_path,
+        scenario="single_done",
+        git_dirty="0",
+        timeout_mode="pass",
+        AUTO_COMMIT_ENABLED="true",
+        PUSH_EVERY="5",
+    )
+    trace = (tmp_path / "git-trace.txt").read_text()
+    assert "git push" in trace, (
+        "EXIT trap must issue at least one `git push` even when commit_if_changed "
+        "returned false, to flush unpushed --auto-commit page commits."
+    )
+
+
+def test_exit_trap_does_not_fail_script_when_push_fails(tmp_path: Path) -> None:
+    """A transient `git push` failure during the trap must not crash the script
+    and mask the real exit status / observability output."""
+    bin_dir = _setup_fake_bin(tmp_path, scenario="single_done", git_dirty="0", timeout_mode="pass")
+    # Overwrite the helper's git stub with one that fails on `push` — simulates
+    # network hiccup / auth token expired / remote conflict during the trap.
+    (bin_dir / "git").write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "${1:-}" = "push" ]; then exit 1; fi\n'
+        'if [ "${1:-}" = "diff" ] && [ "${GIT_DIRTY:-0}" = "1" ]; then exit 1; fi\n'
+        "exit 0\n"
+    )
+    (bin_dir / "git").chmod(0o755)
+
+    repo = Path(__file__).resolve().parents[1]
+    script = repo / "scripts" / "checkpoint_pull_loop.sh"
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{bin_dir}:{env['PATH']}",
+            "COUNT_FILE": str(tmp_path / "count.txt"),
+            "TRACE_FILE": str(tmp_path / "git-trace.txt"),
+            "FIGMACLAW_OUT_PATH": str(tmp_path / "figmaclaw-out.txt"),
+            "ARGS_FILE": str(tmp_path / "pull-args.txt"),
+            "TIMEOUT_COUNT_FILE": str(tmp_path / "timeout-count.txt"),
+            "SCENARIO": "single_done",
+            "GIT_DIRTY": "0",
+            "TIMEOUT_MODE": "pass",
+            "MAX_BATCHES": "10",
+            "MAX_IDLE_HAS_MORE_BATCHES": "3",
+            "BATCH_TIMEOUT_SECONDS": "1",
+            "MAX_PAGES_PER_BATCH": "5",
+            "INPUT_FORCE": "false",
+            "AUTO_COMMIT_ENABLED": "true",
+            "PUSH_EVERY": "1",
+        }
+    )
+    # check=True catches nonzero exit — we expect exit 0 even with the failing
+    # trap push.
+    subprocess.run([str(script)], cwd=tmp_path, text=True, capture_output=True, env=env, check=True)
+
+
 def test_partial_commit_on_timeout_emits_distinct_observability_event(tmp_path: Path) -> None:
     """Operators need to tell apart 'timeout produced work' vs 'timeout wasted
     a run' at a glance. The partial_commit_on_timeout event surfaces the former."""
