@@ -239,9 +239,7 @@ def catalog_staleness_errors(
         ]
 
     stale = [
-        lib
-        for lib in libraries
-        if not lib.source_version or lib.source_version != file_entry.version
+        lib for lib in libraries if _source_version_is_older(lib.source_version, file_entry.version)
     ]
     if stale:
         versions = ", ".join(sorted({lib.source_version or "missing" for lib in stale}))
@@ -255,6 +253,25 @@ def catalog_staleness_errors(
 
 def libraries_for_file(catalog: TokenCatalog, file_key: str) -> list[CatalogLibrary]:
     return [lib for lib in catalog.libraries.values() if lib.source_file_key == file_key]
+
+
+def _source_version_is_older(source_version: str | None, manifest_version: str) -> bool:
+    """True when the catalog source version is older than manifest state.
+
+    Figma file versions are numeric strings in practice. If a standalone
+    variables refresh observes a version newer than the local manifest, the
+    catalog is not stale for token suggestions; the page sync cache is merely
+    behind. For non-numeric future formats, fall back to equality because no
+    ordering is available.
+    """
+    if not source_version:
+        return True
+    if source_version == manifest_version:
+        return False
+    try:
+        return int(source_version) < int(manifest_version)
+    except ValueError:
+        return source_version != manifest_version
 
 
 def library_hashes_for_file(catalog: TokenCatalog, file_key: str) -> list[str]:
