@@ -2,7 +2,7 @@
 
 > **Status: IMPLEMENTED.** All changes below have been made.
 >
-> **Canon source:** the body / frontmatter / manifest data contract is canonized in [`figmaclaw-canon.md` §1](figmaclaw-canon.md#1-three-layer-data-contract). The BP invariants are canonized in [§4 BP](figmaclaw-canon.md#bp--body-preservation), with detailed test mapping in [`body-preservation-invariants.md`](body-preservation-invariants.md). This doc is **historical context** — the original RFC that produced those invariants.
+> **Canon source:** the body / frontmatter / manifest data contract is canonized in [`figmaclaw-canon` §1](../skills/figmaclaw-canon/SKILL.md#1-three-layer-data-contract). The BP invariants are canonized in [§4 BP](../skills/figmaclaw-canon/SKILL.md#bp--body-preservation), with detailed test mapping in [`body-preservation-invariants.md`](body-preservation-invariants.md). This doc is **historical context** — the original RFC that produced those invariants.
 
 ## The problem
 

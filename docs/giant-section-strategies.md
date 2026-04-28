@@ -4,7 +4,7 @@
 > This document captures the data, debate, and decision for handling large sections
 > (>60 frames) during enrichment.
 >
-> **Canon cross-reference:** the section-level enrichment design that emerged from this analysis is canonized as [D10 in `figmaclaw-canon.md` §5](figmaclaw-canon.md#d10-section-level-enrichment-via-per-frame-hash-aggregation). This doc is the historical analysis behind D10.
+> **Canon cross-reference:** the section-level enrichment design that emerged from this analysis is canonized as [D10 in `figmaclaw-canon.md` §5](../skills/figmaclaw-canon/SKILL.md#d10-section-level-enrichment-via-per-frame-hash-aggregation). This doc is the historical analysis behind D10.
 
 ## The problem
 

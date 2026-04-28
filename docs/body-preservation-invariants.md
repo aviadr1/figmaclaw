@@ -1,6 +1,6 @@
 # Body preservation invariants
 
-> **Canon source:** the BP / SC / FM / CL invariant *names and bindings* are canonized in [`figmaclaw-canon.md` §4](figmaclaw-canon.md#4-invariant-classes). This document is the **detailed test mapping** for each invariant — keep using it when writing or reviewing tests, and refer to canon for the authoritative rule.
+> **Canon source:** the BP / SC / FM / CL invariant *names and bindings* are canonized in [`figmaclaw-canon` §4](../skills/figmaclaw-canon/SKILL.md#4-invariant-classes). This document is the **detailed test mapping** for each invariant — keep using it when writing or reviewing tests, and refer to canon for the authoritative rule.
 
 The body of a figmaclaw `.md` file is LLM-authored prose: page summaries,
 section intros, filled description tables, and Mermaid flowcharts. Producing
@@ -11,7 +11,7 @@ These invariants are **law**. Every code path that touches `.md` files must
 obey them. Tests in `tests/test_body_preservation.py` and `tests/test_write_body.py` prove each one.
 
 **Related docs:**
-- [`figmaclaw-canon.md`](figmaclaw-canon.md) — single source of truth for all figmaclaw invariants and design decisions
+- [`figmaclaw-canon`](../skills/figmaclaw-canon/SKILL.md) — single source of truth for all figmaclaw invariants and design decisions
 - [`figmaclaw-md-format.md`](figmaclaw-md-format.md) — authoritative format spec (frontmatter schema, body structure, command table)
 - [`body-preservation-design.md`](body-preservation-design.md) — original design doc (historical context for why these invariants exist)
 

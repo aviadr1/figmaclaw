@@ -1,6 +1,6 @@
 # figmaclaw
 
-> **For invariants, design decisions, and the data contract, see [`docs/figmaclaw-canon.md`](docs/figmaclaw-canon.md).** That document is authoritative; this one is a developer-onboarding pointer with brief summaries.
+> **For invariants, design decisions, and the data contract, see [`skills/figmaclaw-canon/SKILL.md`](skills/figmaclaw-canon/SKILL.md).** That document is authoritative; this one is a developer-onboarding pointer with brief summaries.
 
 ## Ecosystem ownership
 
@@ -29,7 +29,7 @@ figmaclaw and issueclaw are **general-purpose open-source tools** — they work 
 
 ## Data contract
 
-The full three-layer contract is canonized in [`docs/figmaclaw-canon.md` §1](docs/figmaclaw-canon.md#1-three-layer-data-contract). Quick summary:
+The full three-layer contract is canonized in [`skills/figmaclaw-canon/SKILL.md` §1](skills/figmaclaw-canon/SKILL.md#1-three-layer-data-contract). Quick summary:
 
 - **Frontmatter** = machine-readable state. Code reads/writes freely.
 - **Body** = human/LLM prose. **Code never writes, regenerates, or parses.** No `parse_page_summary()`. No `parse_section_intros()`. No regex over body tables.
@@ -59,23 +59,23 @@ The full three-layer contract is canonized in [`docs/figmaclaw-canon.md` §1](do
 
 ## Invariants — quick index
 
-The full text of every invariant lives in [canon §4](docs/figmaclaw-canon.md#4-invariant-classes). Cite by ID in commit messages and PR review.
+The full text of every invariant lives in [canon §4](skills/figmaclaw-canon/SKILL.md#4-invariant-classes). Cite by ID in commit messages and PR review.
 
 | Class | Owns | Canon link |
 |---|---|---|
-| BP | Body preservation (`.md` body never destroyed by code) | [§4 BP](docs/figmaclaw-canon.md#bp--body-preservation) |
-| SC | Scaffold (new files get LLM placeholders) | [§4 SC](docs/figmaclaw-canon.md#sc--scaffold) |
-| FM | Frontmatter correctness | [§4 FM](docs/figmaclaw-canon.md#fm--frontmatter-correctness) |
-| CL | CLI flag innocence (informational flags don't write) | [§4 CL](docs/figmaclaw-canon.md#cl--cli-flag-innocence) |
-| W  | Write idempotency (skip if only timestamp would change) | [§4 W](docs/figmaclaw-canon.md#w--write-idempotency) |
-| CR | Cross-run discipline (no same-input-same-expensive-output loops) | [§4 CR](docs/figmaclaw-canon.md#cr--cross-run-discipline) |
-| KS | Frame-keyed key-set (`keys(d) ⊆ frames`) | [§4 KS](docs/figmaclaw-canon.md#ks--frame-keyed-key-set) |
-| TS | Terminal-state for LLM-dispatched work (every "pending" has a tombstone) | [§4 TS](docs/figmaclaw-canon.md#ts--terminal-state-for-llm-dispatched-work) |
-| CW | Canonical walker reuse (one body iterator) | [§4 CW](docs/figmaclaw-canon.md#cw--canonical-walker-reuse) |
-| LW | Log-writer auto-heal or hard-fail (no WARN-and-drop) | [§4 LW](docs/figmaclaw-canon.md#lw--log-writer-auto-heal) |
-| HE | Heal-at-entry (every reader normalizes on encounter) | [§4 HE](docs/figmaclaw-canon.md#he--heal-at-entry) |
-| TC | Token catalog | [§4 TC](docs/figmaclaw-canon.md#tc--token-catalog) |
-| TS-S | Token sidecar | [§4 TS-S](docs/figmaclaw-canon.md#ts-s--token-sidecar) |
+| BP | Body preservation (`.md` body never destroyed by code) | [§4 BP](skills/figmaclaw-canon/SKILL.md#bp--body-preservation) |
+| SC | Scaffold (new files get LLM placeholders) | [§4 SC](skills/figmaclaw-canon/SKILL.md#sc--scaffold) |
+| FM | Frontmatter correctness | [§4 FM](skills/figmaclaw-canon/SKILL.md#fm--frontmatter-correctness) |
+| CL | CLI flag innocence (informational flags don't write) | [§4 CL](skills/figmaclaw-canon/SKILL.md#cl--cli-flag-innocence) |
+| W  | Write idempotency (skip if only timestamp would change) | [§4 W](skills/figmaclaw-canon/SKILL.md#w--write-idempotency) |
+| CR | Cross-run discipline (no same-input-same-expensive-output loops) | [§4 CR](skills/figmaclaw-canon/SKILL.md#cr--cross-run-discipline) |
+| KS | Frame-keyed key-set (`keys(d) ⊆ frames`) | [§4 KS](skills/figmaclaw-canon/SKILL.md#ks--frame-keyed-key-set) |
+| TS | Terminal-state for LLM-dispatched work (every "pending" has a tombstone) | [§4 TS](skills/figmaclaw-canon/SKILL.md#ts--terminal-state-for-llm-dispatched-work) |
+| CW | Canonical walker reuse (one body iterator) | [§4 CW](skills/figmaclaw-canon/SKILL.md#cw--canonical-walker-reuse) |
+| LW | Log-writer auto-heal or hard-fail (no WARN-and-drop) | [§4 LW](skills/figmaclaw-canon/SKILL.md#lw--log-writer-auto-heal) |
+| HE | Heal-at-entry (every reader normalizes on encounter) | [§4 HE](skills/figmaclaw-canon/SKILL.md#he--heal-at-entry) |
+| TC | Token catalog | [§4 TC](skills/figmaclaw-canon/SKILL.md#tc--token-catalog) |
+| TS-S | Token sidecar | [§4 TS-S](skills/figmaclaw-canon/SKILL.md#ts-s--token-sidecar) |
 
 ## Development
 
@@ -115,7 +115,7 @@ uv run ruff format --check
 
 ## Anti-loop policy summary
 
-The full text of dim 1–6 lives in canon §4 (CR, KS, TS, CW, LW, HE). When adding or modifying any enrichment / pull / logging code path, run through the canon's [anti-pattern checklist](docs/figmaclaw-canon.md#8-anti-pattern-checklist-for-pr-review) before opening a PR. The same checklist below, abbreviated:
+The full text of dim 1–6 lives in canon §4 (CR, KS, TS, CW, LW, HE). When adding or modifying any enrichment / pull / logging code path, run through the canon's [anti-pattern checklist](skills/figmaclaw-canon/SKILL.md#8-anti-pattern-checklist-for-pr-review) before opening a PR. The same checklist below, abbreviated:
 
 - [ ] Loop-break? → cross-run test (CR-1).
 - [ ] Frame-keyed frontmatter field? → pruned at `_build_frontmatter` chokepoint + key-set test (KS-1).

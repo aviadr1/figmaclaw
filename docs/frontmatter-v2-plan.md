@@ -1,6 +1,6 @@
 # Frontmatter v2: frames as index, not store
 
-> **Canon source:** the design decisions D1..D10 originally proposed in this RFC are canonized in [`figmaclaw-canon.md` §5](figmaclaw-canon.md#5-design-decisions). The data-contract argument (manifest=cache, frontmatter=state) is canonized in [§1](figmaclaw-canon.md#1-three-layer-data-contract). This document is the **historical RFC** — kept for the rationale and tradeoff discussion behind each decision.
+> **Canon source:** the design decisions D1..D10 originally proposed in this RFC are canonized in [`figmaclaw-canon` §5](../skills/figmaclaw-canon/SKILL.md#5-design-decisions). The data-contract argument (manifest=cache, frontmatter=state) is canonized in [§1](../skills/figmaclaw-canon/SKILL.md#1-three-layer-data-contract). This document is the **historical RFC** — kept for the rationale and tradeoff discussion behind each decision.
 
 > **Status:** Implemented. All v2 work and section-level enrichment are complete (see "Changes needed" at the bottom). This plan superseded the "figmaclaw — LLM enrichment in CI/CD" Linear document (2026-04-01).
 

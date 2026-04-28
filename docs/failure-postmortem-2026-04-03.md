@@ -1,6 +1,6 @@
 # Failure Postmortem: Enrichment Pipeline (2026-04-03 to 2026-04-04)
 
-> **Canon cross-reference:** the lessons from this postmortem inform several invariants in [`figmaclaw-canon.md` §4](figmaclaw-canon.md#4-invariant-classes), notably W (write idempotency), CR (cross-run discipline), and LW (log-writer auto-heal). This document remains the historical timeline of failures #1-#7.
+> **Canon cross-reference:** the lessons from this postmortem inform several invariants in [`figmaclaw-canon` §4](../skills/figmaclaw-canon/SKILL.md#4-invariant-classes), notably W (write idempotency), CR (cross-run discipline), and LW (log-writer auto-heal). This document remains the historical timeline of failures #1-#7.
 
 ## Timeline of failures caused during this work session
 
