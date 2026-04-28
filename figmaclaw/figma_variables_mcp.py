@@ -10,46 +10,56 @@ same local variable definitions through ``figma.variables``.
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from figmaclaw.figma_api_models import FigmaAPIValidationError, LocalVariablesResponse, _validate
 from figmaclaw.figma_mcp import FigmaMcpClient, FigmaMcpError
 
-_EXPORT_LOCAL_VARIABLES_JS = r"""
-(async () => {
-  const variablesApi = figma.variables;
-  if (!variablesApi) {
-    throw new Error("figma.variables is not available in this Figma runtime");
+_MCP_VARIABLE_CHUNK_SIZE = 50
+
+_MCP_VARIABLES_COMMON_JS = r"""
+const variablesApi = figma.variables;
+if (!variablesApi) {
+  throw new Error("figma.variables is not available in this Figma runtime");
+}
+
+const localVariables = variablesApi.getLocalVariablesAsync
+  ? await variablesApi.getLocalVariablesAsync()
+  : variablesApi.getLocalVariables();
+const localCollections = variablesApi.getLocalVariableCollectionsAsync
+  ? await variablesApi.getLocalVariableCollectionsAsync()
+  : variablesApi.getLocalVariableCollections();
+
+localVariables.sort((a, b) => a.id.localeCompare(b.id));
+
+const cloneValue = (value) => {
+  if (value === null || value === undefined || typeof value !== "object") {
+    return value;
   }
+  if (value.type === "VARIABLE_ALIAS") {
+    return { type: "VARIABLE_ALIAS", id: value.id };
+  }
+  if ("r" in value && "g" in value && "b" in value) {
+    return { r: value.r, g: value.g, b: value.b, a: value.a ?? 1 };
+  }
+  return JSON.parse(JSON.stringify(value));
+};
 
-  const localVariables = variablesApi.getLocalVariablesAsync
-    ? await variablesApi.getLocalVariablesAsync()
-    : variablesApi.getLocalVariables();
-  const localCollections = variablesApi.getLocalVariableCollectionsAsync
-    ? await variablesApi.getLocalVariableCollectionsAsync()
-    : variablesApi.getLocalVariableCollections();
+const safeGet = (target, key, fallback) => {
+  try {
+    const value = target[key];
+    return value === undefined || value === null ? fallback : value;
+  } catch (_error) {
+    return fallback;
+  }
+};
+"""
 
-  const cloneValue = (value) => {
-    if (value === null || value === undefined || typeof value !== "object") {
-      return value;
-    }
-    if (value.type === "VARIABLE_ALIAS") {
-      return { type: "VARIABLE_ALIAS", id: value.id };
-    }
-    if ("r" in value && "g" in value && "b" in value) {
-      return { r: value.r, g: value.g, b: value.b, a: value.a ?? 1 };
-    }
-    return JSON.parse(JSON.stringify(value));
-  };
-
-  const safeGet = (target, key, fallback) => {
-    try {
-      const value = target[key];
-      return value === undefined || value === null ? fallback : value;
-    } catch (_error) {
-      return fallback;
-    }
-  };
+_EXPORT_LOCAL_VARIABLES_JS = (
+    "(async () => {\n"
+    + _MCP_VARIABLES_COMMON_JS
+    + r"""
 
   const variableCollections = {};
   for (const collection of localCollections) {
@@ -97,21 +107,136 @@ _EXPORT_LOCAL_VARIABLES_JS = r"""
   });
 })()
 """
+)
+
+_EXPORT_LOCAL_VARIABLES_SUMMARY_JS = (
+    "(async () => {\n"
+    + _MCP_VARIABLES_COMMON_JS
+    + r"""
+  return JSON.stringify({
+    status: 200,
+    error: false,
+    meta: {
+      variable_count: localVariables.length,
+      collections: localCollections.map((collection) => [
+        collection.id,
+        safeGet(collection, "name", ""),
+        safeGet(collection, "key", ""),
+        safeGet(collection, "modes", []).map((mode) => [
+          mode.modeId,
+          safeGet(mode, "name", ""),
+        ]),
+        safeGet(collection, "defaultModeId", ""),
+        Boolean(safeGet(collection, "remote", false)),
+        Boolean(safeGet(collection, "hiddenFromPublishing", false)),
+      ]),
+    },
+  });
+})()
+"""
+)
+
+
+def _export_local_variables_chunk_js(offset: int, limit: int) -> str:
+    code = (
+        "(async () => {\n"
+        + _MCP_VARIABLES_COMMON_JS
+        + r"""
+  return JSON.stringify({
+    status: 200,
+    error: false,
+    meta: {
+      offset: __OFFSET__,
+      limit: __LIMIT__,
+      variables: localVariables.slice(__OFFSET__, __END__).map((variable) => {
+        const valuesByMode = {};
+        for (const [modeId, value] of Object.entries(variable.valuesByMode || {})) {
+          valuesByMode[modeId] = cloneValue(value);
+        }
+        return [
+          variable.id,
+          safeGet(variable, "name", ""),
+          safeGet(variable, "key", ""),
+          safeGet(variable, "variableCollectionId", ""),
+          safeGet(variable, "resolvedType", ""),
+          valuesByMode,
+          Boolean(safeGet(variable, "remote", false)),
+          safeGet(variable, "description", ""),
+          Boolean(safeGet(variable, "hiddenFromPublishing", false)),
+          Array.from(safeGet(variable, "scopes", [])),
+          safeGet(variable, "codeSyntax", {}),
+        ];
+      }),
+    },
+  });
+})()
+"""
+    )
+    return (
+        code.replace("__OFFSET__", str(offset))
+        .replace("__LIMIT__", str(limit))
+        .replace("__END__", str(offset + limit))
+    )
 
 
 async def get_local_variables_via_mcp(
     file_key: str,
     *,
     client: FigmaMcpClient | None = None,
+    chunk_size: int = _MCP_VARIABLE_CHUNK_SIZE,
 ) -> LocalVariablesResponse:
     """Read local variable definitions from Figma through MCP ``use_figma``."""
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be > 0")
+
     mcp = client or FigmaMcpClient.auto()
-    result = await mcp.use_figma(
-        file_key=file_key,
-        code=_EXPORT_LOCAL_VARIABLES_JS,
-        description="Export local variable definitions",
+    async with mcp.session(timeout=120.0) as sess:
+        return await _get_local_variables_via_mcp_runner(
+            sess.use_figma,
+            file_key=file_key,
+            chunk_size=chunk_size,
+        )
+
+
+async def _get_local_variables_via_mcp_runner(
+    use_figma: Callable[[str, str, str], Awaitable[dict[str, Any]]],
+    *,
+    file_key: str,
+    chunk_size: int,
+) -> LocalVariablesResponse:
+    summary_result = await use_figma(
+        file_key,
+        _EXPORT_LOCAL_VARIABLES_SUMMARY_JS,
+        "Export local variable collection summary",
     )
-    return local_variables_response_from_mcp_result(result, file_key=file_key)
+    summary = _json_payload_from_mcp_result(summary_result, file_key=file_key)
+    meta = summary.get("meta", {})
+    total = int(meta.get("variable_count", 0))
+
+    variables: dict[str, Any] = {}
+    for offset in range(0, total, chunk_size):
+        chunk_result = await use_figma(
+            file_key,
+            _export_local_variables_chunk_js(offset, chunk_size),
+            f"Export local variable definitions {offset}-{offset + chunk_size}",
+        )
+        chunk = _json_payload_from_mcp_result(chunk_result, file_key=file_key)
+        for row in chunk.get("meta", {}).get("variables", []):
+            variable = _expand_variable_row(row)
+            variables[variable["id"]] = variable
+
+    collections = _expand_collections(meta.get("collections", []), variables)
+    return _validate_local_variables_payload(
+        {
+            "status": 200,
+            "error": False,
+            "meta": {
+                "variables": variables,
+                "variableCollections": collections,
+            },
+        },
+        file_key=file_key,
+    )
 
 
 def local_variables_response_from_mcp_result(
@@ -130,6 +255,14 @@ def local_variables_response_from_mcp_result(
             f"{_mcp_text(result)[:500]}"
         )
 
+    return _validate_local_variables_payload(payload, file_key=file_key)
+
+
+def _validate_local_variables_payload(
+    payload: dict[str, Any],
+    *,
+    file_key: str,
+) -> LocalVariablesResponse:
     try:
         return _validate(
             LocalVariablesResponse,
@@ -141,6 +274,70 @@ def local_variables_response_from_mcp_result(
         raise
     except Exception as exc:
         raise FigmaMcpError(f"MCP variables payload validation failed: {exc}") from exc
+
+
+def _json_payload_from_mcp_result(result: dict[str, Any], *, file_key: str) -> dict[str, Any]:
+    if result.get("isError"):
+        raise FigmaMcpError(f"MCP variables export failed: {_mcp_text(result)}")
+
+    for candidate in _candidate_payloads(result):
+        parsed = _parse_candidate(candidate)
+        if isinstance(parsed, dict) and isinstance(parsed.get("meta"), dict):
+            return parsed
+
+    raise FigmaMcpError(
+        f"MCP variables export did not return a JSON payload: {_mcp_text(result)[:500]}"
+    )
+
+
+def _expand_variable_row(row: Any) -> dict[str, Any]:
+    if not isinstance(row, list) or len(row) != 11:
+        raise FigmaMcpError(f"MCP variable row has unexpected shape: {row!r}")
+    return {
+        "id": row[0],
+        "name": row[1],
+        "key": row[2],
+        "variableCollectionId": row[3],
+        "resolvedType": row[4],
+        "valuesByMode": row[5],
+        "remote": row[6],
+        "description": row[7],
+        "hiddenFromPublishing": row[8],
+        "scopes": row[9],
+        "codeSyntax": row[10],
+    }
+
+
+def _expand_collections(rows: Any, variables: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(rows, list):
+        raise FigmaMcpError(f"MCP collection summary has unexpected shape: {rows!r}")
+
+    collections: dict[str, Any] = {}
+    for row in rows:
+        if not isinstance(row, list) or len(row) != 7:
+            raise FigmaMcpError(f"MCP collection row has unexpected shape: {row!r}")
+        coll_id = row[0]
+        collections[coll_id] = {
+            "id": coll_id,
+            "name": row[1],
+            "key": row[2],
+            "modes": [
+                {"modeId": mode[0], "name": mode[1]}
+                for mode in row[3]
+                if isinstance(mode, list) and len(mode) == 2
+            ],
+            "defaultModeId": row[4],
+            "remote": row[5],
+            "hiddenFromPublishing": row[6],
+            "variableIds": [],
+        }
+
+    for variable in variables.values():
+        coll_id = variable.get("variableCollectionId")
+        if coll_id in collections:
+            collections[coll_id]["variableIds"].append(variable["id"])
+
+    return collections
 
 
 def _extract_variables_payload(result: dict[str, Any]) -> dict[str, Any] | None:
