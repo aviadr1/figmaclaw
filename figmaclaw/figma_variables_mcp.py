@@ -42,20 +42,29 @@ _EXPORT_LOCAL_VARIABLES_JS = r"""
     return JSON.parse(JSON.stringify(value));
   };
 
+  const safeGet = (target, key, fallback) => {
+    try {
+      const value = target[key];
+      return value === undefined || value === null ? fallback : value;
+    } catch (_error) {
+      return fallback;
+    }
+  };
+
   const variableCollections = {};
   for (const collection of localCollections) {
     variableCollections[collection.id] = {
       id: collection.id,
-      name: collection.name || "",
-      key: collection.key || "",
-      modes: (collection.modes || []).map((mode) => ({
+      name: safeGet(collection, "name", ""),
+      key: safeGet(collection, "key", ""),
+      modes: safeGet(collection, "modes", []).map((mode) => ({
         modeId: mode.modeId,
-        name: mode.name || "",
+        name: safeGet(mode, "name", ""),
       })),
-      defaultModeId: collection.defaultModeId || "",
-      remote: Boolean(collection.remote),
-      hiddenFromPublishing: Boolean(collection.hiddenFromPublishing),
-      variableIds: Array.from(collection.variableIds || []),
+      defaultModeId: safeGet(collection, "defaultModeId", ""),
+      remote: Boolean(safeGet(collection, "remote", false)),
+      hiddenFromPublishing: Boolean(safeGet(collection, "hiddenFromPublishing", false)),
+      variableIds: Array.from(safeGet(collection, "variableIds", [])),
     };
   }
 
@@ -68,16 +77,16 @@ _EXPORT_LOCAL_VARIABLES_JS = r"""
 
     variables[variable.id] = {
       id: variable.id,
-      name: variable.name || "",
-      key: variable.key || "",
-      variableCollectionId: variable.variableCollectionId || "",
-      resolvedType: variable.resolvedType || "",
+      name: safeGet(variable, "name", ""),
+      key: safeGet(variable, "key", ""),
+      variableCollectionId: safeGet(variable, "variableCollectionId", ""),
+      resolvedType: safeGet(variable, "resolvedType", ""),
       valuesByMode,
-      remote: Boolean(variable.remote),
-      description: variable.description || "",
-      hiddenFromPublishing: Boolean(variable.hiddenFromPublishing),
-      scopes: Array.from(variable.scopes || []),
-      codeSyntax: variable.codeSyntax || {},
+      remote: Boolean(safeGet(variable, "remote", false)),
+      description: safeGet(variable, "description", ""),
+      hiddenFromPublishing: Boolean(safeGet(variable, "hiddenFromPublishing", false)),
+      scopes: Array.from(safeGet(variable, "scopes", [])),
+      codeSyntax: safeGet(variable, "codeSyntax", {}),
     };
   }
 
