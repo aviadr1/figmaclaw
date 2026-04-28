@@ -11,6 +11,10 @@ on:
       webhook_payload:
         required: true
         type: string
+      figmaclaw_ref:
+        required: false
+        type: string
+        default: main
     secrets:
       FIGMA_API_KEY:
         required: true
@@ -39,7 +43,7 @@ jobs:
           enable-cache: true
 
       - name: Install figmaclaw
-        run: uv tool install git+https://github.com/aviadr1/figmaclaw
+        run: uv tool install "git+https://github.com/aviadr1/figmaclaw@${{ inputs.figmaclaw_ref }}"
 
       - name: Pull latest changes
         run: git pull --no-rebase --ff-only origin main

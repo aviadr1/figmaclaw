@@ -51,6 +51,10 @@ on:
         type: boolean
         default: false
         description: 'For large pages, enrich one section at a time'
+      figmaclaw_ref:
+        required: false
+        type: string
+        default: main
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
@@ -87,7 +91,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install figmaclaw
-        run: pip install uv && uv tool install 'git+https://github.com/aviadr1/figmaclaw'
+        run: pip install uv && uv tool install "git+https://github.com/aviadr1/figmaclaw@${{ inputs.figmaclaw_ref }}"
 
       - name: Configure git
         run: |
