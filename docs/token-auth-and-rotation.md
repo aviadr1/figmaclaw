@@ -1,5 +1,7 @@
 # Figma Token Auth and Rotation
 
+> **Canon cross-reference:** the variables-refresh code path documented in [`figmaclaw-canon.md` §4 TC-1, TC-6](figmaclaw-canon.md#tc--token-catalog) requires Enterprise scope `file_variables:read`. When that scope is unavailable, fall back to the SEEDED workflow per D14. This document remains authoritative for *secret management and rotation*.
+
 This document defines which token is used where in `figmaclaw`, how to create it, how long it lives, and how to rotate it safely in CI.
 
 As of April 15, 2026.

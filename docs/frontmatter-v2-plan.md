@@ -1,9 +1,8 @@
 # Frontmatter v2: frames as index, not store
 
-> **Status:** Partially implemented. Frontmatter schema, v2 commands, and CI enrichment
-> pipeline are all landed and working. Remaining work is listed under "Changes needed."
-> This plan supersedes the "figmaclaw — LLM enrichment in CI/CD" Linear document
-> (2026-04-01), which is now fully implemented and should be deleted.
+> **Canon source:** the design decisions D1..D10 originally proposed in this RFC are canonized in [`figmaclaw-canon.md` §5](figmaclaw-canon.md#5-design-decisions). The data-contract argument (manifest=cache, frontmatter=state) is canonized in [§1](figmaclaw-canon.md#1-three-layer-data-contract). This document is the **historical RFC** — kept for the rationale and tradeoff discussion behind each decision.
+
+> **Status:** Implemented. All v2 work and section-level enrichment are complete (see "Changes needed" at the bottom). This plan superseded the "figmaclaw — LLM enrichment in CI/CD" Linear document (2026-04-01).
 
 ## The problem
 
