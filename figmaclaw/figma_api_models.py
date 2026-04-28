@@ -332,3 +332,110 @@ class VersionsPagination(pydantic.BaseModel):
 
 # Forward-ref rebuild: VersionsPage references VersionsPagination by name.
 VersionsPage.model_rebuild()
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/files/{file_key}/variables/local — local variables and collections
+# ---------------------------------------------------------------------------
+#
+# Used by the `figmaclaw variables` command (canon §4 TC-1) to refresh the
+# ds_catalog.json registry. Requires Figma Enterprise scope
+# `file_variables:read` — non-Enterprise plans return HTTP 403, which the
+# client maps to a typed VariablesUnavailable result rather than an error.
+
+
+class VariableModeValue(pydantic.BaseModel):
+    """One mode-keyed value entry inside a Variable's ``valuesByMode`` map.
+
+    The shape varies by ``resolvedType``:
+      * COLOR → ``{"r": float, "g": float, "b": float, "a": float}`` (0..1 channels)
+      * FLOAT → a number
+      * STRING → a string
+      * BOOLEAN → a bool
+      * any type → ``{"type": "VARIABLE_ALIAS", "id": "VariableID:..."}`` for aliases
+
+    We keep this as :class:`dict` because the union of shapes makes a strict
+    typed model fragile under Figma schema drift. Callers (token_catalog
+    schema-v2) classify the value at translation time, not here.
+    """
+
+    model_config = _BASE_CONFIG
+
+
+class VariableEntry(pydantic.BaseModel):
+    """One variable definition in ``meta.variables`` of a /variables/local response.
+
+    Per canon §4 TC-2 ("complete identity"): every field figmaclaw stores in
+    its catalog must come from somewhere. This model is the boundary between
+    Figma's wire shape and the catalog's storage shape.
+    """
+
+    model_config = _BASE_CONFIG
+
+    id: str
+    name: str
+    key: str = ""
+    variableCollectionId: str = ""  # noqa: N815
+    resolvedType: str = ""  # noqa: N815  — "COLOR" | "FLOAT" | "STRING" | "BOOLEAN"
+    valuesByMode: dict[str, Any] = pydantic.Field(default_factory=dict)  # noqa: N815
+    remote: bool = False
+    description: str = ""
+    hiddenFromPublishing: bool = False  # noqa: N815
+    scopes: list[str] = pydantic.Field(default_factory=list)
+    codeSyntax: dict[str, str] = pydantic.Field(default_factory=dict)  # noqa: N815
+
+
+class VariableCollectionMode(pydantic.BaseModel):
+    """One mode entry in a variable collection's ``modes`` list."""
+
+    model_config = _BASE_CONFIG
+
+    modeId: str  # noqa: N815
+    name: str = ""
+
+
+class VariableCollection(pydantic.BaseModel):
+    """One variable collection in ``meta.variableCollections``.
+
+    A collection groups variables and owns the mode list (e.g. Light/Dark).
+    Per canon TC-4, mode IDs and the default mode flow into the catalog so
+    readers can pick a deterministic value.
+    """
+
+    model_config = _BASE_CONFIG
+
+    id: str
+    name: str = ""
+    key: str = ""
+    modes: list[VariableCollectionMode] = pydantic.Field(default_factory=list)
+    defaultModeId: str = ""  # noqa: N815
+    remote: bool = False
+    hiddenFromPublishing: bool = False  # noqa: N815
+    variableIds: list[str] = pydantic.Field(default_factory=list)  # noqa: N815
+
+
+class LocalVariablesMeta(pydantic.BaseModel):
+    """The ``meta`` envelope inside a /variables/local response."""
+
+    model_config = _BASE_CONFIG
+
+    variables: dict[str, VariableEntry] = pydantic.Field(default_factory=dict)
+    variableCollections: dict[str, VariableCollection] = pydantic.Field(  # noqa: N815
+        default_factory=dict
+    )
+
+
+class LocalVariablesResponse(pydantic.BaseModel):
+    """Response from ``GET /v1/files/{file_key}/variables/local``.
+
+    Returned by :meth:`figma_client.FigmaClient.get_local_variables` on success
+    (HTTP 200). On HTTP 403 (Enterprise scope missing), the client returns
+    :data:`None` instead — see canon §4 D14, where ``seeded:*`` entries fill
+    the gap when this endpoint is unavailable.
+    """
+
+    model_config = _BASE_CONFIG
+
+    status: int = 200
+    error: bool = False
+    meta: LocalVariablesMeta = pydantic.Field(default_factory=LocalVariablesMeta)

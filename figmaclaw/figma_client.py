@@ -18,6 +18,7 @@ import httpx
 from figmaclaw.figma_api_models import (
     FileMetaResponse,
     FileSummary,
+    LocalVariablesResponse,
     NodesResponse,
     ProjectFilesResponse,
     ProjectSummary,
@@ -433,6 +434,32 @@ class FigmaClient:
         data = await self._get(f"/v1/files/{file_key}/component_sets")
         result: list[dict[str, Any]] = data.get("meta", {}).get("component_sets", [])
         return result
+
+    async def get_local_variables(self, file_key: str) -> LocalVariablesResponse | None:
+        """GET /v1/files/{file_key}/variables/local — Figma local-variables registry.
+
+        Returns the typed response on success. Returns ``None`` when the API
+        responds 403 (Enterprise scope ``file_variables:read`` not granted).
+        Per canon §5 D14, callers are expected to fall back to ``seeded:*``
+        catalog entries in that case.
+
+        Other HTTP errors (4xx/5xx other than 403, network errors) propagate
+        as ``httpx.HTTPStatusError`` so callers can decide whether to retry
+        or skip the file. We do NOT swallow non-403 errors silently — that
+        would be the LW-1 "WARN-and-drop" anti-pattern.
+        """
+        try:
+            data = await self._get(f"/v1/files/{file_key}/variables/local")
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 403:
+                return None
+            raise
+        return _validate(
+            LocalVariablesResponse,
+            data,
+            endpoint="GET /v1/files/{key}/variables/local",
+            context=f"file_key={file_key}",
+        )
 
     async def get_nodes(
         self,
