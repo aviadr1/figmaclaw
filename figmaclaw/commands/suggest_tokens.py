@@ -62,9 +62,22 @@ def suggest_tokens_cmd(
 
     frames_processed = len(filtered_frames)
 
-    # Count catalog stats
-    color_vars = sum(1 for v in catalog.variables.values() if v.hex is not None)
-    numeric_vars = sum(1 for v in catalog.variables.values() if v.numeric_value is not None)
+    # Count catalog stats — use the schema-v2 values_by_mode shape.
+    # (Pre-v2 catalogs are migrated on load; here we only see v2 entries.)
+    def _has_color(v: object) -> bool:
+        for value in getattr(v, "values_by_mode", {}).values():
+            if getattr(value, "hex", None):
+                return True
+        return False
+
+    def _has_numeric(v: object) -> bool:
+        for value in getattr(v, "values_by_mode", {}).values():
+            if getattr(value, "numeric_value", None) is not None:
+                return True
+        return False
+
+    color_vars = sum(1 for v in catalog.variables.values() if _has_color(v))
+    numeric_vars = sum(1 for v in catalog.variables.values() if _has_numeric(v))
     total_vars = len(catalog.variables)
 
     click.echo(f"Catalog: {total_vars} variables ({color_vars} color, {numeric_vars} numeric)")

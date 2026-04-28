@@ -108,10 +108,15 @@ def test_suggest_tokens_dry_run_and_frame_filtered_write(tmp_path: Path) -> None
         encoding="utf-8",
     )
 
+    # Catalog stub uses the v2 values_by_mode shape (canon TC-4).
     catalog = SimpleNamespace(
         variables={
-            "a": SimpleNamespace(hex="#FFFFFF", numeric_value=None),
-            "b": SimpleNamespace(hex=None, numeric_value=8),
+            "a": SimpleNamespace(
+                values_by_mode={"_default": SimpleNamespace(hex="#FFFFFF", numeric_value=None)}
+            ),
+            "b": SimpleNamespace(
+                values_by_mode={"_default": SimpleNamespace(hex=None, numeric_value=8)}
+            ),
         }
     )
 
