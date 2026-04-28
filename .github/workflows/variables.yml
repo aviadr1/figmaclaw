@@ -1,0 +1,61 @@
+# Reusable workflow — called by host repos via:
+#   uses: aviadr1/figmaclaw/.github/workflows/variables.yml@main
+#
+# Refreshes .figma-sync/ds_catalog.json from Figma local variables.
+# Version-gated: only writes and commits when a tracked file's variable
+# registry is stale relative to the current Figma file version.
+
+on:
+  workflow_call:
+    inputs:
+      file_key:
+        description: 'Refresh variables only for this file key (default: all tracked files)'
+        required: false
+        type: string
+        default: ''
+    secrets:
+      FIGMA_API_KEY:
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  variables:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install figmaclaw
+        run: uv tool install git+https://github.com/aviadr1/figmaclaw
+
+      - name: Pull latest changes
+        run: git pull --no-rebase --ff-only origin main
+
+      - name: Configure git
+        run: |
+          git config user.name "figmaclaw[bot]"
+          git config user.email "figmaclaw[bot]@users.noreply.github.com"
+
+      - name: Refresh variables
+        env:
+          FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+        run: |
+          if [ -n "${{ inputs.file_key }}" ]; then
+            figmaclaw variables --file-key "${{ inputs.file_key }}" --auto-commit
+          else
+            figmaclaw variables --auto-commit
+          fi
+
+      - name: Push
+        run: git push || (git pull --no-rebase --ff-only origin main && git push)

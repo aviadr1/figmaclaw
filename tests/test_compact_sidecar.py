@@ -17,12 +17,13 @@ from pathlib import Path
 
 from figmaclaw.pull_logic import _aggregate_issues, _write_token_sidecar
 from figmaclaw.token_catalog import (
+    CatalogValue,
+    CatalogVariable,
     TokenCatalog,
     merge_bindings,
     suggest_for_sidecar,
 )
 from figmaclaw.token_scan import (
-    OLD_LIB_PREFIX,
     Classification,
     FrameTokenScan,
     PageTokenScan,
@@ -32,6 +33,24 @@ from figmaclaw.token_scan import (
 
 RED = {"r": 1.0, "g": 0.0, "b": 0.0, "a": 1.0}
 BLUE = {"r": 0.0, "g": 0.0, "b": 1.0, "a": 1.0}
+
+
+def _seed_variable(
+    catalog: TokenCatalog,
+    variable_id: str,
+    *,
+    prop: str,
+    hex: str | None = None,
+    numeric_value: float | None = None,
+) -> None:
+    catalog.variables[variable_id] = CatalogVariable(
+        name=variable_id,
+        values_by_mode={
+            "_default": CatalogValue(hex=hex, numeric_value=numeric_value),
+        },
+        source="figma_api",
+        observed_on=[prop],
+    )
 
 
 def _issue(
@@ -102,7 +121,7 @@ def test_aggregate_different_properties_produce_separate_entries():
 
 def test_aggregate_different_classifications_produce_separate_entries():
     """INVARIANT: raw and stale with same value are separate entries."""
-    stale_var = f"VariableID:{OLD_LIB_PREFIX}abc/1:1"
+    stale_var = "VariableID:legacyabc/1:1"
     issues = [
         _issue(classification="raw"),
         _issue(classification="stale", stale_variable_id=stale_var),
@@ -115,7 +134,7 @@ def test_aggregate_different_classifications_produce_separate_entries():
 
 def test_aggregate_preserves_stale_variable_id():
     """INVARIANT: stale_variable_id is preserved in aggregated output."""
-    stale_var = f"VariableID:{OLD_LIB_PREFIX}abc/1:1"
+    stale_var = "VariableID:legacyabc/1:1"
     issues = [
         _issue(classification="stale", stale_variable_id=stale_var),
     ]
@@ -225,7 +244,7 @@ def test_aggregate_each_entry_has_all_required_fields():
             classification="stale",
             current_value=BLUE,
             hex="#0000FF",
-            stale_variable_id=f"VariableID:{OLD_LIB_PREFIX}abc/1:1",
+            stale_variable_id="VariableID:legacyabc/1:1",
         ),
     ]
     result = _aggregate_issues(issues)
@@ -387,6 +406,7 @@ def test_sidecar_summary_reflects_total_issues_not_unique(tmp_path: Path):
 def test_suggest_for_sidecar_works_with_aggregated_issues():
     """INVARIANT: suggest_for_sidecar correctly enriches schema v2 aggregated issues."""
     catalog = TokenCatalog()
+    _seed_variable(catalog, "var:red", prop="fill", hex="#FF0000")
     merge_bindings(
         catalog,
         [
@@ -419,6 +439,7 @@ def test_suggest_for_sidecar_works_with_aggregated_issues():
 def test_suggest_for_sidecar_numeric_with_aggregated_issues():
     """INVARIANT: numeric matching works correctly with aggregated issues."""
     catalog = TokenCatalog()
+    _seed_variable(catalog, "var:radius-8", prop="cornerRadius", numeric_value=8.0)
     merge_bindings(
         catalog,
         [
@@ -507,6 +528,8 @@ def test_end_to_end_pull_suggest_roundtrip(tmp_path: Path):
 
     # Now run suggest-tokens
     catalog = TokenCatalog()
+    _seed_variable(catalog, "var:red", prop="fill", hex="#FF0000")
+    _seed_variable(catalog, "var:radius-8", prop="cornerRadius", numeric_value=8.0)
     merge_bindings(
         catalog,
         [

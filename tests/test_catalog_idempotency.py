@@ -15,7 +15,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from figmaclaw.token_catalog import TokenCatalog, merge_bindings, save_catalog
+from figmaclaw.token_catalog import (
+    CatalogValue,
+    CatalogVariable,
+    TokenCatalog,
+    merge_bindings,
+    save_catalog,
+)
 from figmaclaw.token_scan import ValidBinding
 
 
@@ -25,9 +31,19 @@ def _make_binding(
     return ValidBinding(variable_id=variable_id, property=prop, hex=hex)
 
 
+def _seed_variable(catalog: TokenCatalog, variable_id: str = "var:1", hex: str = "#FF0000") -> None:
+    catalog.variables[variable_id] = CatalogVariable(
+        name=variable_id,
+        resolved_type="COLOR",
+        values_by_mode={"_default": CatalogValue(hex=hex)},
+        source="figma_api",
+    )
+
+
 def test_save_catalog_creates_file_on_first_call(tmp_path: Path):
     """INVARIANT: save_catalog writes the catalog file on first call."""
     catalog = TokenCatalog()
+    _seed_variable(catalog)
     merge_bindings(catalog, [_make_binding()])
 
     save_catalog(catalog, tmp_path)
@@ -43,6 +59,7 @@ def test_save_catalog_is_idempotent_when_state_unchanged(tmp_path: Path):
     state must not modify the file. Only updated_at / fetched_at would differ,
     and write_json_if_changed strips those before comparison."""
     catalog = TokenCatalog()
+    _seed_variable(catalog)
     merge_bindings(catalog, [_make_binding()])
     save_catalog(catalog, tmp_path)
 
@@ -66,6 +83,7 @@ def test_merge_bindings_increments_usage_count(tmp_path: Path):
     usage_count. Observing the same binding twice is meaningful state — it
     means the variable is used twice — and DOES produce a file write."""
     catalog = TokenCatalog()
+    _seed_variable(catalog)
     merge_bindings(catalog, [_make_binding()])
     save_catalog(catalog, tmp_path)
 
@@ -82,14 +100,16 @@ def test_merge_bindings_increments_usage_count(tmp_path: Path):
 
 
 def test_save_catalog_writes_when_new_variable_added(tmp_path: Path):
-    """INVARIANT: save_catalog writes when a new variable ID appears."""
+    """INVARIANT: save_catalog writes when a new variable definition appears."""
     catalog = TokenCatalog()
+    _seed_variable(catalog, "var:1")
     merge_bindings(catalog, [_make_binding("var:1")])
     save_catalog(catalog, tmp_path)
 
     path = tmp_path / ".figma-sync" / "ds_catalog.json"
     content_before = path.read_text()
 
+    _seed_variable(catalog, "var:2", hex="#00FF00")
     merge_bindings(catalog, [_make_binding("var:2", hex="#00FF00")])
     save_catalog(catalog, tmp_path)
 
@@ -103,6 +123,7 @@ def test_save_catalog_writes_when_new_variable_added(tmp_path: Path):
 def test_save_catalog_writes_when_observed_property_added(tmp_path: Path):
     """INVARIANT: save_catalog writes when an existing variable gains a new observed property."""
     catalog = TokenCatalog()
+    _seed_variable(catalog, "var:1")
     merge_bindings(catalog, [_make_binding("var:1", prop="fill")])
     save_catalog(catalog, tmp_path)
 

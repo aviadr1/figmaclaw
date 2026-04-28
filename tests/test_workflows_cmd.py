@@ -24,6 +24,7 @@ def test_workflows_upgrade_writes_all_managed_files(tmp_path):
     assert (wf_dir / "figmaclaw-sync.yaml").exists()
     assert (wf_dir / "figmaclaw-webhook.yaml").exists()
     assert (wf_dir / "figmaclaw-manage-webhooks.yaml").exists()
+    assert (wf_dir / "figmaclaw-variables.yaml").exists()
 
 
 def test_workflows_upgrade_overwrites_drifted_managed_file(tmp_path):
@@ -54,6 +55,7 @@ def test_workflows_doctor_reports_healthy_after_upgrade(tmp_path):
     assert "figmaclaw-sync.yaml: ok" in result.output
     assert "figmaclaw-webhook.yaml: ok" in result.output
     assert "figmaclaw-manage-webhooks.yaml: ok" in result.output
+    assert "figmaclaw-variables.yaml: ok" in result.output
     assert "present and up to date" in result.output
 
 
@@ -83,4 +85,5 @@ def test_workflows_doctor_json_output(tmp_path):
     assert "figmaclaw-sync.yaml" in payload["expected"]
     assert "figmaclaw-webhook.yaml" in payload["expected"]
     assert "figmaclaw-manage-webhooks.yaml" in payload["expected"]
+    assert "figmaclaw-variables.yaml" in payload["expected"]
     assert any(file["name"] == "figmaclaw-sync.yaml" for file in payload["files"])

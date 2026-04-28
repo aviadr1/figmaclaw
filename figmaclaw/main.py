@@ -24,6 +24,7 @@ from figmaclaw.commands.stream_format import stream_format_cmd
 from figmaclaw.commands.suggest_tokens import suggest_tokens_cmd
 from figmaclaw.commands.sync import sync_cmd
 from figmaclaw.commands.track import track_cmd
+from figmaclaw.commands.variables import variables_cmd
 from figmaclaw.commands.webhooks import webhooks_group
 from figmaclaw.commands.workflows_cmd import workflows_group
 from figmaclaw.commands.write_body import write_body_cmd
@@ -92,6 +93,7 @@ cli.add_command(stream_format_cmd)
 cli.add_command(set_flows_cmd)
 cli.add_command(sync_cmd)
 cli.add_command(track_cmd)
+cli.add_command(variables_cmd)
 cli.add_command(webhooks_group)
 cli.add_command(workflows_group)
 cli.add_command(suggest_tokens_cmd)

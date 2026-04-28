@@ -32,6 +32,14 @@ def test_manage_webhooks_template_is_installed() -> None:
     assert "manage-webhooks.yml@main" in text
 
 
+def test_variables_template_is_installed() -> None:
+    """INVARIANT: variables-catalog stub is part of managed templates."""
+    text = bundled_template_text("figmaclaw-variables.yaml")
+
+    assert "variables.yml@main" in text
+    assert "group: figma-git-variables" in text
+
+
 def test_concurrency_groups_are_isolated_by_workflow_role() -> None:
     """INVARIANT: concurrency groups are explicit and non-overlapping by role."""
 
@@ -43,6 +51,7 @@ def test_concurrency_groups_are_isolated_by_workflow_role() -> None:
 
     assert "figma-git-sync-pull" in sync_groups
     assert "figma-git-census" in sync_groups
+    assert "figma-git-variables" in sync_groups
     assert "figma-git-enrich" in sync_groups
     assert "figma-git-enrich-large" in sync_groups
     assert webhook_groups == {"figma-git-webhook"}

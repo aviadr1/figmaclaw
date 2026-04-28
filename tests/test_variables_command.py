@@ -1,0 +1,161 @@
+"""Tests for `figmaclaw variables` (canon TC-1, TC-5, TC-6, TC-7)."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from click.testing import CliRunner
+
+from figmaclaw.figma_api_models import LocalVariablesResponse
+from figmaclaw.figma_sync_state import FigmaSyncState
+from figmaclaw.main import cli
+
+FILE_KEY = "file123"
+
+
+def _track(repo_dir: Path) -> None:
+    state = FigmaSyncState(repo_dir)
+    state.add_tracked_file(FILE_KEY, "Design System")
+    state.save()
+
+
+def _meta(version: str = "v1") -> dict:
+    return {
+        "name": "Design System",
+        "version": version,
+        "lastModified": "2026-04-28T00:00:00Z",
+        "document": {"id": "0:0", "name": "Document", "type": "DOCUMENT", "children": []},
+    }
+
+
+def _variables(version_hash: str = "libabc") -> dict:
+    return {
+        "status": 200,
+        "error": False,
+        "meta": {
+            "variables": {
+                f"VariableID:{version_hash}/1:1": {
+                    "id": f"VariableID:{version_hash}/1:1",
+                    "name": "fg/primary",
+                    "key": "fg-primary",
+                    "variableCollectionId": "VariableCollectionId:1:0",
+                    "resolvedType": "COLOR",
+                    "valuesByMode": {"1:0": {"r": 1, "g": 0, "b": 0, "a": 1}},
+                    "scopes": ["ALL_FILLS"],
+                    "codeSyntax": {"WEB": "fg-primary"},
+                }
+            },
+            "variableCollections": {
+                "VariableCollectionId:1:0": {
+                    "id": "VariableCollectionId:1:0",
+                    "name": "Primitives",
+                    "modes": [{"modeId": "1:0", "name": "Light"}],
+                    "defaultModeId": "1:0",
+                    "variableIds": [f"VariableID:{version_hash}/1:1"],
+                }
+            },
+        },
+    }
+
+
+class _FakeClient:
+    def __init__(self, variables_response: LocalVariablesResponse | None, version: str = "v1"):
+        self.variables_response = variables_response
+        self.meta = SimpleNamespace(
+            name="Design System",
+            version=version,
+            lastModified="2026-04-28T00:00:00Z",
+        )
+        self.variables_calls = 0
+
+    async def __aenter__(self) -> _FakeClient:
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+    async def get_file_meta(self, _file_key: str) -> SimpleNamespace:
+        return self.meta
+
+    async def get_local_variables(self, _file_key: str) -> LocalVariablesResponse | None:
+        self.variables_calls += 1
+        return self.variables_response
+
+
+def test_variables_command_refreshes_catalog(tmp_path: Path, monkeypatch) -> None:
+    """INVARIANT (TC-1, TC-6): variables refresh uses /variables/local and writes v2 catalog."""
+    _track(tmp_path)
+    monkeypatch.setenv("FIGMA_API_KEY", "figd_test")
+    fake = _FakeClient(LocalVariablesResponse.model_validate(_variables()))
+
+    with patch("figmaclaw.commands.variables.FigmaClient", return_value=fake):
+        result = CliRunner().invoke(
+            cli,
+            ["--repo-dir", str(tmp_path), "variables", "--file-key", FILE_KEY],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0
+    data = json.loads((tmp_path / ".figma-sync" / "ds_catalog.json").read_text())
+    assert data["schema_version"] == 2
+    assert data["libraries"]["libabc"]["source_version"] == "v1"
+    assert data["variables"]["VariableID:libabc/1:1"]["name"] == "fg/primary"
+
+
+def test_variables_command_skips_current_catalog(tmp_path: Path, monkeypatch) -> None:
+    """INVARIANT (TC-7): a current source_version skips the variables endpoint."""
+    _track(tmp_path)
+    monkeypatch.setenv("FIGMA_API_KEY", "figd_test")
+    fake = _FakeClient(LocalVariablesResponse.model_validate(_variables()))
+    catalog_path = tmp_path / ".figma-sync" / "ds_catalog.json"
+    catalog_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "libraries": {
+                    "libabc": {
+                        "name": "Design System",
+                        "source_file_key": FILE_KEY,
+                        "source_version": "v1",
+                    }
+                },
+                "variables": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with patch("figmaclaw.commands.variables.FigmaClient", return_value=fake):
+        result = CliRunner().invoke(
+            cli,
+            ["--repo-dir", str(tmp_path), "variables", "--file-key", FILE_KEY],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0
+    assert "variables unchanged" in result.output
+    assert fake.variables_calls == 0
+
+
+def test_variables_command_marks_403_as_seeded_fallback_current(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """INVARIANT (D14): Enterprise-scope 403 is not fatal and records source_version."""
+    _track(tmp_path)
+    monkeypatch.setenv("FIGMA_API_KEY", "figd_test")
+    fake = _FakeClient(None, version="v2")
+
+    with patch("figmaclaw.commands.variables.FigmaClient", return_value=fake):
+        result = CliRunner().invoke(
+            cli,
+            ["--repo-dir", str(tmp_path), "variables", "--file-key", FILE_KEY],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0
+    assert "endpoint unavailable" in result.output
+    data = json.loads((tmp_path / ".figma-sync" / "ds_catalog.json").read_text())
+    assert data["libraries"][f"local:{FILE_KEY}"]["source_version"] == "v2"

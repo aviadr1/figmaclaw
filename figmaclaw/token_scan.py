@@ -1,13 +1,13 @@
-"""Scan a Figma page node tree for raw/stale/valid design token bindings.
+"""Scan a Figma page node tree for raw/unknown/valid design token bindings.
 
 Piggybacked on get_page() in pull_logic.py — the full recursive CANVAS tree
 (including boundVariables on every node) is already in memory after get_page().
 Zero additional API calls needed.
 
 Token states:
-  valid  — property bound to DS library (hash 778120a439be1fc5e95e31d08a39a2e70bed3e63)
-  stale  — property bound to OLD_Gigaverse library (prefix a3972cba)
-  raw    — no boundVariables binding at all (hardcoded value)
+  valid            — property bound to a known library from ds_catalog.json
+  unknown_library  — property bound to a library absent from ds_catalog.json
+  raw              — no boundVariables binding at all (hardcoded value)
 
 Detection rules (per-property):
   fills[i]:         boundVariables.fills[i].id — skip if fillStyleId set (covered by style)
@@ -26,14 +26,12 @@ but its internal children belong to the component definition, not the screen.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-DS_LIB_HASH = "778120a439be1fc5e95e31d08a39a2e70bed3e63"
-OLD_LIB_PREFIX = "a3972cba"
-
-Classification = Literal["valid", "stale", "raw"]
+Classification = Literal["valid", "unknown_library", "stale", "raw"]
 
 
 class ValidBinding(BaseModel):
@@ -55,23 +53,32 @@ _SPACING_PROPS = (
 _FONT_PROPS = ("fontSize", "fontFamily", "fontWeight")
 
 
-def classify_variable_id(var_id: str | None) -> Classification:
-    """Classify a Figma variable ID as valid, stale, or raw.
+def _library_hash(var_id: str | None) -> str | None:
+    if not var_id:
+        return None
+    inner = var_id.removeprefix("VariableID:")
+    if "/" not in inner:
+        return None
+    return inner.split("/", 1)[0]
+
+
+def classify_variable_id(
+    var_id: str | None, *, libraries: Mapping[str, object] | None = None
+) -> Classification:
+    """Classify a Figma variable ID as valid, unknown-library, or raw.
 
     Variable IDs have the format ``VariableID:<lib_hash>/<var_id>``.
     The lib_hash prefix identifies the source library file.
     An absent or empty ID means the property is hardcoded (raw).
-    An unknown library hash is treated as valid to avoid false positives.
+    A bound variable from a library absent from the catalog is explicit
+    unknown-library state (canon D12), not silently valid.
     """
     if not var_id:
         return "raw"
-    inner = var_id.removeprefix("VariableID:")
-    lib_hash = inner.split("/")[0]
-    if lib_hash == DS_LIB_HASH:
+    lib_hash = _library_hash(var_id)
+    if lib_hash and libraries and lib_hash in libraries:
         return "valid"
-    if lib_hash.startswith(OLD_LIB_PREFIX):
-        return "stale"
-    return "valid"  # unknown library — conservative, no false positive
+    return "unknown_library"
 
 
 def _get_bv_id(bv_entry: Any) -> str:
@@ -89,7 +96,7 @@ def _rgb_to_hex(color: dict[str, float]) -> str:
 
 
 class TokenIssue(BaseModel):
-    """A single raw or stale token binding on a specific node property."""
+    """A single raw or unknown-library token binding on a specific node property."""
 
     node_id: str
     node_name: str
@@ -100,7 +107,8 @@ class TokenIssue(BaseModel):
     classification: Classification
     current_value: Any = None  # color dict for fills/strokes; scalar for dimensions
     hex: str | None = None  # derived from current_value for color properties only
-    stale_variable_id: str | None = None  # existing wrong binding ID (stale only)
+    stale_variable_id: str | None = None  # legacy field; preserved for old sidecars
+    library_hash: str | None = None  # source library when classification=unknown_library
     fix_variable_id: str | None = None  # null when written by pull; filled by suggest-tokens
 
 
@@ -132,10 +140,11 @@ def _scan_node(
     path: list[str],
     depth: int,
     valid_bindings: list[ValidBinding] | None = None,
+    libraries: Mapping[str, object] | None = None,
 ) -> None:
     """Recursively walk a node, collecting token classification results.
 
-    counters is mutated in-place: keys "raw", "stale", "valid".
+    counters is mutated in-place: keys "raw", "unknown_library", "valid".
     valid_bindings is mutated in-place when provided: collects resolved valid bindings.
     INSTANCE children are not recursed (their internals belong to the component).
     """
@@ -154,7 +163,6 @@ def _scan_node(
         cls: Classification,
         current_value: Any,
         idx: int | None = None,
-        stale_var_id: str | None = None,
         var_id: str | None = None,
     ) -> None:
         counters[cls] = counters.get(cls, 0) + 1
@@ -179,8 +187,8 @@ def _scan_node(
         )
         if isinstance(current_value, dict) and "r" in current_value:
             issue.hex = _rgb_to_hex(current_value)
-        if stale_var_id:
-            issue.stale_variable_id = stale_var_id
+        if cls == "unknown_library":
+            issue.library_hash = _library_hash(var_id)
         issues.append(issue)
 
     # fills
@@ -195,14 +203,13 @@ def _scan_node(
             continue
         cbv = fills_bv[i] if isinstance(fills_bv, list) and i < len(fills_bv) else None
         var_id = _get_bv_id(cbv)
-        cls = classify_variable_id(var_id)
+        cls = classify_variable_id(var_id, libraries=libraries)
         record(
             "fill",
             cls,
             fill.get("color"),
             idx=i,
-            stale_var_id=var_id if cls == "stale" else None,
-            var_id=var_id if cls == "valid" else None,
+            var_id=var_id,
         )
 
     # strokes
@@ -213,39 +220,36 @@ def _scan_node(
             continue
         cbv = strokes_bv[i] if isinstance(strokes_bv, list) and i < len(strokes_bv) else None
         var_id = _get_bv_id(cbv)
-        cls = classify_variable_id(var_id)
+        cls = classify_variable_id(var_id, libraries=libraries)
         record(
             "stroke",
             cls,
             stroke.get("color"),
             idx=i,
-            stale_var_id=var_id if cls == "stale" else None,
-            var_id=var_id if cls == "valid" else None,
+            var_id=var_id,
         )
 
     # strokeWeight (only when node has at least one stroke)
     if strokes and node.get("strokeWeight") is not None:
         var_id = _get_bv_id(bv.get("strokeWeight"))
-        cls = classify_variable_id(var_id)
+        cls = classify_variable_id(var_id, libraries=libraries)
         record(
             "strokeWeight",
             cls,
             node.get("strokeWeight"),
-            stale_var_id=var_id if cls == "stale" else None,
-            var_id=var_id if cls == "valid" else None,
+            var_id=var_id,
         )
 
     # cornerRadius (non-zero scalars only; "mixed" means individual corners are set)
     cr = node.get("cornerRadius")
     if cr is not None and cr != "mixed" and cr != 0:
         var_id = _get_bv_id(bv.get("cornerRadius"))
-        cls = classify_variable_id(var_id)
+        cls = classify_variable_id(var_id, libraries=libraries)
         record(
             "cornerRadius",
             cls,
             cr,
-            stale_var_id=var_id if cls == "stale" else None,
-            var_id=var_id if cls == "valid" else None,
+            var_id=var_id,
         )
 
     # gap and padding (auto-layout nodes)
@@ -254,13 +258,12 @@ def _scan_node(
             val = node.get(prop)
             if val is not None and val != 0:
                 var_id = _get_bv_id(bv.get(prop))
-                cls = classify_variable_id(var_id)
+                cls = classify_variable_id(var_id, libraries=libraries)
                 record(
                     prop,
                     cls,
                     val,
-                    stale_var_id=var_id if cls == "stale" else None,
-                    var_id=var_id if cls == "valid" else None,
+                    var_id=var_id,
                 )
 
     # font properties (TEXT nodes only)
@@ -274,39 +277,53 @@ def _scan_node(
                 val = node.get(prop)
                 if val is not None:
                     var_id = _get_bv_id(bv.get(prop))
-                    cls = classify_variable_id(var_id)
+                    cls = classify_variable_id(var_id, libraries=libraries)
                     record(
                         prop,
                         cls,
                         val,
-                        stale_var_id=var_id if cls == "stale" else None,
-                        var_id=var_id if cls == "valid" else None,
+                        var_id=var_id,
                     )
 
     # recurse — skip INSTANCE children (component internals, not this screen's concern)
     if node_type == "INSTANCE":
         return
     for child in node.get("children") or []:
-        _scan_node(child, issues, counters, node_path, depth + 1, valid_bindings)
+        _scan_node(child, issues, counters, node_path, depth + 1, valid_bindings, libraries)
 
 
-def scan_frame(frame_node: dict[str, Any]) -> FrameTokenScan:
+def scan_frame(
+    frame_node: dict[str, Any], *, libraries: Mapping[str, object] | None = None
+) -> FrameTokenScan:
     """Scan a single FRAME node (including its own properties and all descendants)."""
     issues: list[TokenIssue] = []
     counters: dict[str, int] = {}
     valid_bindings: list[ValidBinding] = []
-    _scan_node(frame_node, issues, counters, path=[], depth=0, valid_bindings=valid_bindings)
+    _scan_node(
+        frame_node,
+        issues,
+        counters,
+        path=[],
+        depth=0,
+        valid_bindings=valid_bindings,
+        libraries=libraries,
+    )
     return FrameTokenScan(
         name=frame_node.get("name", ""),
         raw=counters.get("raw", 0),
-        stale=counters.get("stale", 0),
+        stale=counters.get("unknown_library", 0),
         valid=counters.get("valid", 0),
         issues=issues,
         valid_bindings=valid_bindings,
     )
 
 
-def scan_page(page_node: dict[str, Any], frame_ids: set[str]) -> PageTokenScan:
+def scan_page(
+    page_node: dict[str, Any],
+    frame_ids: set[str],
+    *,
+    libraries: Mapping[str, object] | None = None,
+) -> PageTokenScan:
     """Scan all frames in frame_ids found within page_node.
 
     Walks the CANVAS tree to find each target FRAME, calls scan_frame on it,
@@ -321,7 +338,7 @@ def scan_page(page_node: dict[str, Any], frame_ids: set[str]) -> PageTokenScan:
         node_id = node.get("id", "")
         node_type = node.get("type", "")
         if node_type in ("FRAME", "COMPONENT") and node_id in frame_ids:
-            fscan = scan_frame(node)
+            fscan = scan_frame(node, libraries=libraries)
             result.raw += fscan.raw
             result.stale += fscan.stale
             result.valid += fscan.valid

@@ -175,6 +175,52 @@ def test_suggest_tokens_dry_run_and_frame_filtered_write(tmp_path: Path) -> None
     assert written["suggested_at"] == "2026-04-15T12:00:00Z"
 
 
+def test_suggest_tokens_refuses_stale_catalog(tmp_path: Path) -> None:
+    """INVARIANT (CR-2, TC-7): suggest-tokens exits before using stale catalog data."""
+    state = FigmaSyncState(tmp_path)
+    state.add_tracked_file("abc123", "Design System")
+    state.set_file_meta(
+        "abc123",
+        version="v2",
+        last_modified="2026-04-28T00:00:00Z",
+        last_checked_at="2026-04-28T00:00:00Z",
+        file_name="Design System",
+    )
+    state.save()
+
+    catalog_path = tmp_path / ".figma-sync" / "ds_catalog.json"
+    catalog_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "libraries": {
+                    "libabc": {
+                        "name": "Design System",
+                        "source_file_key": "abc123",
+                        "source_version": "v1",
+                    }
+                },
+                "variables": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    sidecar = tmp_path / "page.tokens.json"
+    sidecar.write_text(
+        json.dumps({"file_key": "abc123", "frames": {}}),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        ["--repo-dir", str(tmp_path), "suggest-tokens", "--sidecar", str(sidecar)],
+    )
+
+    assert result.exit_code != 0
+    assert "ds_catalog.json is stale" in result.output
+    assert "figmaclaw variables --file-key abc123" in result.output
+
+
 def test_self_skill_list_print_specific_and_not_found(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

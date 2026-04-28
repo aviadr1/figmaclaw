@@ -36,6 +36,7 @@ class FileEntry(BaseModel):
     version: str
     last_modified: str
     last_checked_at: str = ""
+    library_hash: str | None = None
     # 0 = pre-versioning. Set to CURRENT_PULL_SCHEMA_VERSION after a successful pull
     # that wrote all pages at the current schema. Files below CURRENT_PULL_SCHEMA_VERSION
     # get frontmatter re-written on next pull even if Figma content is unchanged.

@@ -53,6 +53,18 @@ jobs:
     secrets:
       FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
 
+  # Variables: snapshot Figma local variables to .figma-sync/ds_catalog.json.
+  # Version-gated in the reusable workflow; no-op when registry is current.
+  variables:
+    needs: sync
+    if: success()
+    concurrency:
+      group: figma-git-variables
+      cancel-in-progress: true
+    uses: aviadr1/figmaclaw/.github/workflows/variables.yml@main
+    secrets:
+      FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+
   # Whole-page enrichment: small pages (≤80 frames), many per run
   # Sorted smallest-first for throughput. ~38 pages/hour observed.
   enrich:

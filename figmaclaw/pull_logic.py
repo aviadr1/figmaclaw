@@ -46,6 +46,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 from figmaclaw.body_validation import iter_body_frame_rows
+from figmaclaw.figma_api_models import LocalVariablesResponse
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_frontmatter import (
     CURRENT_PULL_SCHEMA_VERSION,
@@ -80,7 +81,14 @@ from figmaclaw.prune_utils import (
     remove_generated_relpath,
 )
 from figmaclaw.schema_status import is_pull_schema_stale
-from figmaclaw.token_catalog import load_catalog, merge_bindings, save_catalog
+from figmaclaw.token_catalog import (
+    library_hashes_for_file,
+    load_catalog,
+    mark_local_variables_unavailable,
+    merge_bindings,
+    merge_local_variables,
+    save_catalog,
+)
 from figmaclaw.token_scan import PageTokenScan, scan_page
 
 log = logging.getLogger(__name__)
@@ -406,6 +414,7 @@ def _aggregate_issues(issues: list) -> list[dict]:
         hex_val = issue.hex
         cur_val = issue.current_value
         stale_var = issue.stale_variable_id
+        library_hash = getattr(issue, "library_hash", None)
 
         # Normalize current_value for grouping: round floats, stringify dicts
         if isinstance(cur_val, float):
@@ -416,7 +425,7 @@ def _aggregate_issues(issues: list) -> list[dict]:
         else:
             norm_val = cur_val
 
-        key = (prop, cls, hex_val, norm_val, stale_var)
+        key = (prop, cls, hex_val, norm_val, stale_var, library_hash)
         buckets[key] += 1
 
         if key not in representatives:
@@ -427,6 +436,8 @@ def _aggregate_issues(issues: list) -> list[dict]:
                 entry["current_value"] = cur_val
             if stale_var is not None:
                 entry["stale_variable_id"] = stale_var
+            if library_hash is not None:
+                entry["library_hash"] = library_hash
             representatives[key] = entry
 
     result = []
@@ -801,6 +812,40 @@ async def pull_file(
         file_name=file_name,
     )
 
+    # Tier 1.5 file-scope registry refresh: variables are file-level data and
+    # must not be gated by per-page hashes (canon TC-5 / D11).
+    try:
+        local_variables = await client.get_local_variables(file_key)
+        if local_variables is None:
+            mark_local_variables_unavailable(
+                catalog,
+                file_key=file_key,
+                file_name=file_name,
+                file_version=api_version,
+            )
+        elif not isinstance(local_variables, LocalVariablesResponse):
+            log.warning(
+                "Unexpected variables response type (%s) — continuing with existing catalog",
+                type(local_variables).__name__,
+            )
+        else:
+            merge_local_variables(
+                catalog,
+                local_variables,
+                file_key=file_key,
+                file_name=file_name,
+                file_version=api_version,
+            )
+        save_catalog(catalog, repo_root)
+        hashes = library_hashes_for_file(catalog, file_key)
+        if hashes:
+            state.manifest.files[file_key].library_hash = hashes[0]
+    except Exception as exc:
+        log.warning(
+            "Failed to refresh variables catalog (%s) — continuing with existing catalog",
+            type(exc).__name__,
+        )
+
     # Fetch component sets once per changed file. Used to populate component_set_keys
     # in component section .md frontmatter so build skills can skip search_design_system().
     try:
@@ -1130,7 +1175,11 @@ async def pull_file(
             )
             if should_scan_tokens:
                 try:
-                    token_scan = scan_page(page_node, set(screen_frame_ids))
+                    token_scan = scan_page(
+                        page_node,
+                        set(screen_frame_ids),
+                        libraries=catalog.libraries,
+                    )
                     # Sparse frontmatter summary — only frames with at least one issue
                     raw_tokens = {
                         fid: RawTokenCounts(raw=fscan.raw, stale=fscan.stale, valid=fscan.valid)

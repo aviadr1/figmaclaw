@@ -37,6 +37,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from figmaclaw.figma_api_models import LocalVariablesResponse, VariableEntry
+from figmaclaw.figma_sync_state import FigmaSyncState
 from figmaclaw.figma_utils import write_json_if_changed
 from figmaclaw.token_scan import ValidBinding
 
@@ -216,6 +217,54 @@ def save_catalog(catalog: TokenCatalog, repo_root: Path) -> None:
     )
 
 
+def catalog_staleness_errors(
+    catalog: TokenCatalog, state: FigmaSyncState, file_key: str
+) -> list[str]:
+    """Return actionable stale/missing catalog errors for one tracked file.
+
+    Canon CR-2 / TC-7: consumers must not produce suggestions from a stale
+    catalog. A current catalog has at least one library entry whose
+    ``source_file_key`` matches the sidecar's ``file_key`` and whose
+    ``source_version`` equals the manifest's current file version.
+    """
+    file_entry = state.manifest.files.get(file_key)
+    if file_entry is None:
+        return [f"{file_key}: not present in .figma-sync/manifest.json"]
+
+    libraries = libraries_for_file(catalog, file_key)
+    if not libraries:
+        return [
+            f"{file_key}: ds_catalog.json has no variables registry for this file; "
+            f"run `figmaclaw variables --file-key {file_key}`"
+        ]
+
+    stale = [
+        lib
+        for lib in libraries
+        if not lib.source_version or lib.source_version != file_entry.version
+    ]
+    if stale:
+        versions = ", ".join(sorted({lib.source_version or "missing" for lib in stale}))
+        return [
+            f"{file_key}: ds_catalog.json is stale for manifest version {file_entry.version} "
+            f"(catalog source_version: {versions}); run `figmaclaw variables --file-key {file_key}`"
+        ]
+
+    return []
+
+
+def libraries_for_file(catalog: TokenCatalog, file_key: str) -> list[CatalogLibrary]:
+    return [lib for lib in catalog.libraries.values() if lib.source_file_key == file_key]
+
+
+def library_hashes_for_file(catalog: TokenCatalog, file_key: str) -> list[str]:
+    return [
+        lib_hash
+        for lib_hash, lib in catalog.libraries.items()
+        if lib.source_file_key == file_key and not lib_hash.startswith(LOCAL_LIBRARY_PREFIX)
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Migration v1 → v2
 # ---------------------------------------------------------------------------
@@ -360,6 +409,30 @@ def merge_local_variables(
     return count
 
 
+def mark_local_variables_unavailable(
+    catalog: TokenCatalog,
+    *,
+    file_key: str,
+    file_name: str,
+    file_version: str,
+) -> None:
+    """Record that the variables endpoint was checked but unavailable.
+
+    Figma returns 403 when the token lacks Enterprise ``file_variables:read``.
+    Per D14, consumers may still rely on seeded catalog entries in that case,
+    but CR-2 still needs a current ``source_version`` marker so a reader can
+    distinguish "checked and unavailable" from "stale or never refreshed".
+    """
+    fetched_at = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    catalog.libraries[_local_library_key(file_key)] = CatalogLibrary(
+        name=file_name,
+        source_file_key=file_key,
+        fetched_at=fetched_at,
+        source_version=file_version,
+    )
+    catalog.updated_at = fetched_at
+
+
 def _derive_library_hash(variables: dict[str, VariableEntry]) -> str | None:
     """Extract the library hash from any variable id of form
     ``VariableID:<lib_hash>/<id>``. Returns None when no variable in the
@@ -426,50 +499,30 @@ def merge_bindings(catalog: TokenCatalog, bindings: list[ValidBinding]) -> int:
     fields (``name``, ``values_by_mode``, ``scopes``, etc.) — those come
     exclusively from ``merge_local_variables``.
 
-    During the v1→v2 transition some values may not yet have a definition
-    (the variables endpoint has not been called). For graceful
-    degradation we still create a placeholder entry with
-    ``source="observed"`` and write the observed value into
-    ``values_by_mode["_default"]``. This preserves the suggest-tokens
-    matching path while the full refresh hasn't happened yet. Once the
-    variables command runs, the placeholder is upgraded to a full
-    ``source="figma_api"`` entry.
+    If a page walk sees a variable that is absent from the catalog, the
+    binding is ignored here. The remedy is a file-scope variables refresh,
+    not adding an observation-defined catalog entry.
 
-    Returns the count of NEW variable entries added (placeholders only).
+    Returns the count of existing variable entries whose usage changed.
     """
-    new_count = 0
+    changed_count = 0
     for b in bindings:
         vid = b.variable_id
         if not vid:
             continue
         entry = catalog.variables.get(vid)
         if entry is None:
-            entry = CatalogVariable(
-                library_hash=_extract_library_hash(vid),
-                source="observed",
-            )
-            catalog.variables[vid] = entry
-            new_count += 1
+            continue
 
         # Usage signals — canonical writer for these two fields.
         if b.property not in entry.observed_on:
             entry.observed_on.append(b.property)
+            changed_count += 1
         entry.usage_count += 1
-
-        # Graceful degradation: only fill default-mode value if the entry
-        # is observation-only (no figma_api definition yet). Once
-        # merge_local_variables has populated values_by_mode, observation
-        # never overwrites it.
-        if entry.source == "observed":
-            default = entry.values_by_mode.get(DEFAULT_MODE_ID, CatalogValue())
-            if b.hex is not None and default.hex is None:
-                default.hex = b.hex
-            if b.numeric_value is not None and default.numeric_value is None:
-                default.numeric_value = b.numeric_value
-            entry.values_by_mode[DEFAULT_MODE_ID] = default
+        changed_count += 1
 
     catalog.updated_at = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    return new_count
+    return changed_count
 
 
 def _extract_library_hash(vid: str) -> str | None:

@@ -1,0 +1,25 @@
+# Installed by: figmaclaw init (or figmaclaw workflows upgrade)
+# Upgrade after tool update: figmaclaw workflows upgrade
+# Logic lives in: aviadr1/figmaclaw/.github/workflows/variables.yml
+
+name: figmaclaw — variables catalog
+
+on:
+  workflow_dispatch:
+    inputs:
+      file_key:
+        description: 'Refresh variables only for this file key (default: all tracked files)'
+        required: false
+        default: ''
+
+concurrency:
+  group: figma-git-variables
+  cancel-in-progress: true
+
+jobs:
+  variables:
+    uses: aviadr1/figmaclaw/.github/workflows/variables.yml@main
+    with:
+      file_key: ${{ github.event.inputs.file_key || '' }}
+    secrets:
+      FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}

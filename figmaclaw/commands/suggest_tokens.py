@@ -8,7 +8,8 @@ from pathlib import Path
 
 import click
 
-from figmaclaw.token_catalog import load_catalog, suggest_for_sidecar
+from figmaclaw.commands._shared import load_state
+from figmaclaw.token_catalog import catalog_staleness_errors, load_catalog, suggest_for_sidecar
 
 
 @click.command("suggest-tokens")
@@ -44,6 +45,11 @@ def suggest_tokens_cmd(
 
     sidecar_file = Path(sidecar_path)
     sidecar = json.loads(sidecar_file.read_text(encoding="utf-8"))
+    file_key = sidecar.get("file_key")
+    if file_key:
+        errors = catalog_staleness_errors(catalog, load_state(repo_dir), file_key)
+        if errors:
+            raise click.ClickException(errors[0])
 
     # Apply frame filter if requested
     if frames:
