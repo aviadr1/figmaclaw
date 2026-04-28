@@ -17,6 +17,10 @@ on:
         required: false
         type: string
         default: main
+      target_ref:
+        required: false
+        type: string
+        default: main
     secrets:
       FIGMA_API_KEY:
         required: true
@@ -44,7 +48,7 @@ jobs:
         run: uv tool install "git+https://github.com/aviadr1/figmaclaw@${{ inputs.figmaclaw_ref }}"
 
       - name: Pull latest changes
-        run: git pull --no-rebase --ff-only origin main
+        run: git pull --no-rebase --ff-only origin "${{ inputs.target_ref }}"
 
       - name: Configure git
         run: |
@@ -62,4 +66,4 @@ jobs:
           fi
 
       - name: Push
-        run: git push || (git pull --no-rebase --ff-only origin main && git push)
+        run: git push || (git pull --no-rebase --ff-only origin "${{ inputs.target_ref }}" && git push)

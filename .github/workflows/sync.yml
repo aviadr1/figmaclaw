@@ -20,6 +20,10 @@ on:
         required: false
         type: string
         default: main
+      target_ref:
+        required: false
+        type: string
+        default: main
     secrets:
       FIGMA_API_KEY:
         required: true
@@ -49,7 +53,7 @@ jobs:
         run: uv tool install "git+https://github.com/aviadr1/figmaclaw@${{ inputs.figmaclaw_ref }}"
 
       - name: Pull latest changes
-        run: git pull --no-rebase --ff-only origin main
+        run: git pull --no-rebase --ff-only origin "${{ inputs.target_ref }}"
 
       - name: Configure git
         run: |
@@ -70,7 +74,7 @@ jobs:
             NEWLY="${NEWLY:-unknown}"
             git commit -m "sync: figmaclaw — tracking ${NEWLY} new file(s)"
             git push
-            git pull --no-rebase --ff-only origin main
+            git pull --no-rebase --ff-only origin "${{ inputs.target_ref }}"
           fi
 
       - name: Checkout checkpoint loop script
