@@ -11,7 +11,12 @@ from typing import Any
 
 import click
 
-from figmaclaw.commands._shared import load_state, require_figma_api_key, require_tracked_files
+from figmaclaw.commands._shared import (
+    figma_variables_api_key,
+    load_state,
+    require_figma_api_key,
+    require_tracked_files,
+)
 from figmaclaw.figma_api_models import FileSummary, ProjectSummary
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_sync_state import FigmaSyncState
@@ -334,7 +339,7 @@ async def _run(
     pages_budget = max_pages
     has_more_global = False
 
-    async with FigmaClient(api_key) as client:
+    async with FigmaClient(api_key, variables_api_key=figma_variables_api_key(api_key)) as client:
         # Fast listing pre-filter: one listing pass replaces N individual get_file_meta
         # calls for unchanged files. Also handles auto-discovery when team_id is set.
         # None means "no listing available" (team_id not set); {} means "listing ran but

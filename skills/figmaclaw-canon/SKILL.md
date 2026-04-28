@@ -65,7 +65,7 @@ Every artifact figmaclaw produces, what it caches, when it refreshes, who writes
 |---|---|---|---|---|---|
 | File meta | `manifest.files[k].version`, `last_modified`, `last_checked_at` | "Has the file changed?" | every `pull` (cheap meta call) | `pull_logic.py` | yes |
 | File registry: components | `figma/{slug}/_census.md` | Published component sets (name, key, page, updated). Stable content hash over `(name, key)` pairs. | `figmaclaw census` standalone, **and** opportunistic during `pull` when file version changed | `commands/census.py` | yes |
-| **File registry: variables** | `.figma-sync/ds_catalog.json` (schema v2) | Variable definitions per library: name, collection, resolved_type, values_by_mode, scopes, code_syntax, alias_of. | `figmaclaw variables` standalone, **and** opportunistic during `pull` when file version changed | `commands/variables.py`, `token_catalog.py` | yes (subject to Enterprise scope `file_variables:read`; `seeded:*` entries fill the gap when scope unavailable) |
+| **File registry: variables** | `.figma-sync/ds_catalog.json` (schema v2) | Variable definitions per library: name, collection, resolved_type, values_by_mode, scopes, code_syntax, alias_of. | `figmaclaw variables` standalone, **and** opportunistic during `pull` when file version changed | `commands/variables.py`, `token_catalog.py` | yes (REST `/variables/local` when `file_variables:read` is available, or Figma MCP plugin-runtime export; `seeded:*` entries fill the gap when no authoritative reader is available) |
 | Page structure | `figma/{slug}/pages/*.md` frontmatter (`frames`, `flows`); `manifest.files[k].pages[p].page_hash` / `frame_hashes` | Page node tree, prototype edges, hashes. | `pull` when file version changed AND page hash changed | `pull_logic.py`, `figma_render.py` | yes |
 | Page tokens (raw/stale usage) | `figma/{slug}/pages/*.tokens.json` | Per-frame `(property, classification, value)` aggregates with `count`. Schema v2. | `pull` when page hash changed | `pull_logic.py`, `token_scan.py` | yes (re-walk page) |
 | Page body | `figma/{slug}/pages/*.md` body | LLM-authored prose. | `claude-run` (LLM enrichment, downstream of pull) | LLM via `write-body`; figmaclaw never overwrites | **no — protected by BP-1..6** |
@@ -86,7 +86,8 @@ When a sync runs, figmaclaw cascades through these checks. Higher tiers gate low
                        │
 ┌──────────────────────▼───────────────────────────────────────────┐
 │ Tier 1.5 File-scope registry refresh                             │
-│          `get_local_variables(file_key)` → catalog (TC-1, TC-5)  │
+│          `get_local_variables(file_key)` / MCP export → catalog   │
+│          (TC-1, TC-5)                                             │
 │          `get_component_sets(file_key)`  → census body (D11)     │
 │          One REST call each per changed file.                    │
 └──────────────────────┬───────────────────────────────────────────┘
@@ -253,8 +254,8 @@ The catalog (`.figma-sync/ds_catalog.json`) is the file-scope authoritative answ
 
 | ID | Invariant | Enforced by |
 |---|---|---|
-| **TC-1 — Authoritative source.** | Catalog is built from `GET /v1/files/{key}/variables/local`, not from page-walk observation. It enumerates every variable Figma defines for the file, including ones never bound to any node. Page walks may produce *usage* facts; they MUST NOT add a variable to the catalog or set its definitional fields. | `tests/test_token_catalog.py::test_tc1_*` |
-| **TC-2 — Complete identity.** | Every variable entry stores: `library_hash`, `collection_id`, `name`, `resolved_type` (`COLOR`/`FLOAT`/`STRING`/`BOOLEAN`), `values_by_mode`, `scopes`, `code_syntax`, `alias_of`, `source` (`figma_api`/`seeded:*`/`observed`). No definitional field is "set later by another code path." | `tests/test_token_catalog.py::test_tc2_*` |
+| **TC-1 — Authoritative source.** | Catalog is built from Figma's file-scope variable registry: first `GET /v1/files/{key}/variables/local` when REST scope allows it, otherwise the Figma MCP plugin-runtime export. It is never built from page-walk observation. It enumerates every variable Figma defines for the file, including ones never bound to any node. Page walks may produce *usage* facts; they MUST NOT add a variable to the catalog or set its definitional fields. | `tests/test_token_catalog.py::test_tc1_*` |
+| **TC-2 — Complete identity.** | Every variable entry stores: `library_hash`, `collection_id`, `name`, `resolved_type` (`COLOR`/`FLOAT`/`STRING`/`BOOLEAN`), `values_by_mode`, `scopes`, `code_syntax`, `alias_of`, `source` (`figma_api`/`figma_mcp`/`seeded:*`/`observed`). No definitional field is "set later by another code path." | `tests/test_token_catalog.py::test_tc2_*` |
 | **TC-3 — No dead fields.** | Every field on `CatalogVariable` and `CatalogLibrary` has exactly one canonical writer. CI fails if a model field is declared but no source location writes it. | source-scan meta-test in `tests/test_dead_fields.py` |
 | **TC-4 — Mode-aware storage.** | Variables store `values_by_mode: dict[mode_id, value]`, never flattened to a single value. Readers that need a single value pick an explicit `default_mode_id` from the library entry. There is no implicit last-write-wins. | `tests/test_token_catalog.py::test_tc4_*` |
 | **TC-5 — Refresh is page-independent.** | The catalog refresh code path takes `file_key` and a `FigmaClient` only. It never reads or writes any `pages/*.md`, never consults `enriched_hash`, `page_hash`, or `frame_hashes`. It joins `pull` at Tier 1.5 (file-version-gated, once per changed file) — at the same tier as `get_component_sets`. | `tests/test_variables_command.py::test_tc5_*` |
@@ -266,7 +267,8 @@ The catalog (`.figma-sync/ds_catalog.json`) is the file-scope authoritative answ
 **`source` enum values:**
 
 - `figma_api` — populated from `/variables/local`. Authoritative.
-- `seeded:css` — imported from a CSS export by `seed_catalog.py` or equivalent. Bridge state when `file_variables:read` scope is unavailable.
+- `figma_mcp` — populated from Figma MCP plugin-runtime variable export. Authoritative fallback when REST variables scope is unavailable.
+- `seeded:css` — imported from a CSS export by `seed_catalog.py` or equivalent. Bridge state when no authoritative variable reader is available.
 - `seeded:manual` — hand-added (e.g. `border/width` tokens not present in CSS).
 - `observed` — variable ID was seen as a `boundVariables` reference but the definition was never resolved. Legacy / graceful-degradation only; new code MUST NOT produce these.
 
@@ -383,11 +385,11 @@ D11 extends this axis: file-scope registries (catalog, census) belong in the cac
 
 **Why:** Variables (and components) change *independently* of any page's content. Before this decision, the catalog was gated on per-page hash invalidation, which meant a Figma file rename of `gray/100` → `gray/100-default` could change the file's `version` without changing any page's hash, and the local catalog would never refresh — even though every consumer of "what tokens does this DS define?" expected an answer. Census already established this pattern for components (commit `13b0146`); D11 generalises it.
 
-**Tradeoff:** A new tier in the refresh ladder. Acceptable — the cost is one cheap REST call per changed file (`get_component_sets`, `get_local_variables`), which is well within Tier 1 budget.
+**Tradeoff:** A new tier in the refresh ladder. Acceptable — the normal cost is one cheap REST call per changed file (`get_component_sets`, `get_local_variables`), which is well within Tier 1 budget. If REST variables scope is unavailable, `figmaclaw variables --source auto` may use Figma MCP for the catalog refresh instead.
 
 ### D12: Library identity is data-derived, never hardcoded
 
-**Decision:** No library hash constants in figmaclaw source. Library identity comes from the file's `/variables/local` response (or, for an unknown library, from the catalog's `libraries` map populated by other tracked files).
+**Decision:** No library hash constants in figmaclaw source. Library identity comes from the file's variable-registry response (`/variables/local` or MCP export), or, for an unknown library, from the catalog's `libraries` map populated by other tracked files.
 
 **Why:** The previous `DS_LIB_HASH = "778120a4..."` and `OLD_LIB_PREFIX = "a3972cba"` constants in `token_scan.py` coupled a general-purpose tool to one customer's setup, in direct violation of the "general-purpose open-source" rule in `CLAUDE.md`. Worse, any unknown library (including a new DS coming online) was silently classified `valid` by the conservative fallback — making the catalog answer "yes, this binding is fine" even when it had no idea what library the binding pointed at.
 
@@ -397,7 +399,7 @@ D11 extends this axis: file-scope registries (catalog, census) belong in the cac
 
 **Decision:** Two distinct data structures:
 
-- `ds_catalog.json` — **definitions.** Authoritative answer to "what variables exist?". Source: REST. Never observation.
+- `ds_catalog.json` — **definitions.** Authoritative answer to "what variables exist?". Source: Figma variable registry via REST or MCP. Never observation.
 - `*.tokens.json` sidecars — **usage.** Per-page answer to "what bindings and raw values exist on this page?". Source: page walks.
 
 **Why:** The original `ccdd2d7` design collapsed both into observation. The catalog inherited mode-blindness, name-blindness, and library-confusion as a result; see failure modes F2..F5 in §6.
@@ -406,7 +408,7 @@ D11 extends this axis: file-scope registries (catalog, census) belong in the cac
 
 ### D14: SEEDED entries are first-class via a `source` field
 
-**Decision:** Each catalog variable carries a `source` field with values `figma_api`, `seeded:css`, `seeded:manual`, or `observed`. Catalog readers and `suggest-tokens` treat all sources as valid match candidates; downstream tooling (`fix-tokens`, future) treats them differently.
+**Decision:** Each catalog variable carries a `source` field with values `figma_api`, `figma_mcp`, `seeded:css`, `seeded:manual`, or `observed`. Catalog readers and `suggest-tokens` treat all sources as valid match candidates; downstream tooling (`fix-tokens`, future) treats them differently.
 
 **Why:** Until every customer team has Enterprise scope `file_variables:read`, CSS-derived seeds remain the only path for many tokens. The `seed_catalog.py` script in linear-git is the precedent (commit `157cd98d6`). Treating `SEEDED:*` IDs as a permanent first-class case (not a temporary workaround) means the schema is honest about its sources, and `fix-tokens` can refuse to apply a `seeded:*` ID until it's resolved to a real Figma variable ID by a future runtime resolution step.
 

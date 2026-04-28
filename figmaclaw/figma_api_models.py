@@ -339,9 +339,9 @@ VersionsPage.model_rebuild()
 # ---------------------------------------------------------------------------
 #
 # Used by the `figmaclaw variables` command (canon §4 TC-1) to refresh the
-# ds_catalog.json registry. Requires Figma Enterprise scope
-# `file_variables:read` — non-Enterprise plans return HTTP 403, which the
-# client maps to a typed VariablesUnavailable result rather than an error.
+# ds_catalog.json registry. REST requires Figma scope `file_variables:read`;
+# when that endpoint returns 403, the command can fall back to Figma MCP's
+# plugin-runtime variable export, which is parsed into this same model.
 
 
 class VariableModeValue(pydantic.BaseModel):
@@ -426,12 +426,13 @@ class LocalVariablesMeta(pydantic.BaseModel):
 
 
 class LocalVariablesResponse(pydantic.BaseModel):
-    """Response from ``GET /v1/files/{file_key}/variables/local``.
+    """Response from local variable definition readers.
 
-    Returned by :meth:`figma_client.FigmaClient.get_local_variables` on success
-    (HTTP 200). On HTTP 403 (Enterprise scope missing), the client returns
-    :data:`None` instead — see canon §4 D14, where ``seeded:*`` entries fill
-    the gap when this endpoint is unavailable.
+    Returned by :meth:`figma_client.FigmaClient.get_local_variables` on REST
+    success (HTTP 200), and by the Figma MCP plugin-runtime export fallback.
+    On REST HTTP 403 (``file_variables:read`` missing), the REST client returns
+    :data:`None` instead so callers can try MCP before falling back to D14
+    ``seeded:*`` entries.
     """
 
     model_config = _BASE_CONFIG

@@ -1,6 +1,6 @@
 # Figma Token Auth and Rotation
 
-> **Canon cross-reference:** the variables-refresh code path documented in [`figmaclaw-canon` §4 TC-1, TC-6](../skills/figmaclaw-canon/SKILL.md#tc--token-catalog) requires Enterprise scope `file_variables:read`. When that scope is unavailable, fall back to the SEEDED workflow per D14. This document remains authoritative for *secret management and rotation*.
+> **Canon cross-reference:** the variables-refresh code path documented in [`figmaclaw-canon` §4 TC-1, TC-6](../skills/figmaclaw-canon/SKILL.md#tc--token-catalog) uses REST `/variables/local` when `file_variables:read` is available, and falls back to Figma MCP plugin-runtime export in `figmaclaw variables --source auto`. When no authoritative reader is available, use the SEEDED workflow per D14. This document remains authoritative for *secret management and rotation*.
 
 This document defines which token is used where in `figmaclaw`, how to create it, how long it lives, and how to rotate it safely in CI.
 
@@ -11,6 +11,7 @@ As of April 15, 2026.
 | Variable | Used for | Token type | Where used in repo |
 |---|---|---|---|
 | `FIGMA_API_KEY` | Figma REST API calls (pull, list, webhooks, REST smoke tests) | Personal Access Token (PAT) or OAuth REST access token | `figmaclaw/figma_client.py`, `smoke-api-ci`, `smoke-webhook-ci` |
+| `FIGMA_VARIABLES_TOKEN` | Optional REST token override only for `/variables/local` | PAT or OAuth REST access token with `file_variables:read` when available | `figmaclaw/commands/variables.py`, `figmaclaw/figma_client.py` |
 | `FIGMA_MCP_TOKEN` | Figma MCP server (`https://mcp.figma.com/mcp`) | MCP OAuth access token (Bearer) | `figmaclaw/figma_mcp.py`, `smoke-mcp-ci` |
 
 ## Can a PAT be used for `FIGMA_MCP_TOKEN`?

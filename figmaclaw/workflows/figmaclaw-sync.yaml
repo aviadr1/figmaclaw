@@ -64,6 +64,8 @@ jobs:
     uses: aviadr1/figmaclaw/.github/workflows/variables.yml@main
     secrets:
       FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+      FIGMA_VARIABLES_TOKEN: ${{ secrets.FIGMA_VARIABLES_TOKEN }}
+      FIGMA_MCP_TOKEN: ${{ secrets.FIGMA_MCP_TOKEN }}
 
   # Whole-page enrichment: small pages (≤80 frames), many per run
   # Sorted smallest-first for throughput. ~38 pages/hour observed.

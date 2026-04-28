@@ -27,6 +27,8 @@ on:
     secrets:
       FIGMA_API_KEY:
         required: true
+      FIGMA_VARIABLES_TOKEN:
+        required: false
       # ANTHROPIC_API_KEY is intentionally absent — figmaclaw pull has zero LLM dependency.
       # LLM enrichment is done by the caller's enrich job via claude-run.yaml.
 
@@ -92,6 +94,7 @@ jobs:
       - name: Pull Figma files (checkpointed loop)
         env:
           FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+          FIGMA_VARIABLES_TOKEN: ${{ secrets.FIGMA_VARIABLES_TOKEN }}
           INPUT_FORCE: ${{ inputs.force }}
           FIGMA_TEAM_ID: ${{ inputs.figma_team_id }}
           SINCE: ${{ inputs.since }}

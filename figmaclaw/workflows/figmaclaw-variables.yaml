@@ -11,6 +11,10 @@ on:
         description: 'Refresh variables only for this file key (default: all tracked files)'
         required: false
         default: ''
+      variables_source:
+        description: 'Variable-definition reader: auto, rest, or mcp'
+        required: false
+        default: auto
 
 concurrency:
   group: figma-git-variables
@@ -21,5 +25,8 @@ jobs:
     uses: aviadr1/figmaclaw/.github/workflows/variables.yml@main
     with:
       file_key: ${{ github.event.inputs.file_key || '' }}
+      variables_source: ${{ github.event.inputs.variables_source || 'auto' }}
     secrets:
       FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+      FIGMA_VARIABLES_TOKEN: ${{ secrets.FIGMA_VARIABLES_TOKEN }}
+      FIGMA_MCP_TOKEN: ${{ secrets.FIGMA_MCP_TOKEN }}

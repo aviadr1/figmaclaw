@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from click.testing import CliRunner
 
@@ -103,6 +103,7 @@ def test_variables_command_refreshes_catalog(tmp_path: Path, monkeypatch) -> Non
     assert data["schema_version"] == 2
     assert data["libraries"]["libabc"]["source_version"] == "v1"
     assert data["variables"]["VariableID:libabc/1:1"]["name"] == "fg/primary"
+    assert data["variables"]["VariableID:libabc/1:1"]["source"] == "figma_api"
 
 
 def test_variables_command_skips_current_catalog(tmp_path: Path, monkeypatch) -> None:
@@ -120,6 +121,7 @@ def test_variables_command_skips_current_catalog(tmp_path: Path, monkeypatch) ->
                         "name": "Design System",
                         "source_file_key": FILE_KEY,
                         "source_version": "v1",
+                        "source": "figma_api",
                     }
                 },
                 "variables": {},
@@ -159,3 +161,110 @@ def test_variables_command_marks_403_as_seeded_fallback_current(
     assert "endpoint unavailable" in result.output
     data = json.loads((tmp_path / ".figma-sync" / "ds_catalog.json").read_text())
     assert data["libraries"][f"local:{FILE_KEY}"]["source_version"] == "v2"
+    assert data["libraries"][f"local:{FILE_KEY}"]["source"] == "unavailable"
+
+
+def test_variables_command_does_not_skip_current_unavailable_marker(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A current 403 marker must not block a later MCP authoritative refresh."""
+    _track(tmp_path)
+    monkeypatch.setenv("FIGMA_API_KEY", "figd_test")
+    fake = _FakeClient(None, version="v2")
+    catalog_path = tmp_path / ".figma-sync" / "ds_catalog.json"
+    catalog_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "libraries": {
+                    f"local:{FILE_KEY}": {
+                        "name": "Design System",
+                        "source_file_key": FILE_KEY,
+                        "source_version": "v2",
+                        "source": "unavailable",
+                    }
+                },
+                "variables": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    mcp_response = LocalVariablesResponse.model_validate(_variables("mcplib"))
+    mcp_export = AsyncMock(return_value=mcp_response)
+
+    with (
+        patch("figmaclaw.commands.variables.FigmaClient", return_value=fake),
+        patch("figmaclaw.commands.variables.get_local_variables_via_mcp", mcp_export),
+    ):
+        result = CliRunner().invoke(
+            cli,
+            ["--repo-dir", str(tmp_path), "variables", "--file-key", FILE_KEY],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0
+    assert fake.variables_calls == 1
+    mcp_export.assert_awaited_once_with(FILE_KEY)
+    data = json.loads(catalog_path.read_text())
+    assert data["libraries"]["mcplib"]["source"] == "figma_mcp"
+
+
+def test_variables_command_auto_falls_back_to_mcp_definitions(tmp_path: Path, monkeypatch) -> None:
+    """INVARIANT (TC-1, D14): REST 403 can fall back to MCP definitions."""
+    _track(tmp_path)
+    monkeypatch.setenv("FIGMA_API_KEY", "figd_test")
+    fake = _FakeClient(None, version="v3")
+    mcp_response = LocalVariablesResponse.model_validate(_variables("mcplib"))
+    mcp_export = AsyncMock(return_value=mcp_response)
+
+    with (
+        patch("figmaclaw.commands.variables.FigmaClient", return_value=fake),
+        patch("figmaclaw.commands.variables.get_local_variables_via_mcp", mcp_export),
+    ):
+        result = CliRunner().invoke(
+            cli,
+            ["--repo-dir", str(tmp_path), "variables", "--file-key", FILE_KEY],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0
+    assert fake.variables_calls == 1
+    mcp_export.assert_awaited_once_with(FILE_KEY)
+    assert "REST variables endpoint unavailable" in result.output
+    assert "via figma_mcp" in result.output
+    data = json.loads((tmp_path / ".figma-sync" / "ds_catalog.json").read_text())
+    assert data["libraries"]["mcplib"]["source_version"] == "v3"
+    assert data["variables"]["VariableID:mcplib/1:1"]["name"] == "fg/primary"
+    assert data["variables"]["VariableID:mcplib/1:1"]["source"] == "figma_mcp"
+
+
+def test_variables_command_source_mcp_skips_rest_variables(tmp_path: Path, monkeypatch) -> None:
+    """Explicit MCP mode uses the plugin-runtime reader directly."""
+    _track(tmp_path)
+    monkeypatch.setenv("FIGMA_API_KEY", "figd_test")
+    fake = _FakeClient(None, version="v4")
+    mcp_response = LocalVariablesResponse.model_validate(_variables("mcplib"))
+    mcp_export = AsyncMock(return_value=mcp_response)
+
+    with (
+        patch("figmaclaw.commands.variables.FigmaClient", return_value=fake),
+        patch("figmaclaw.commands.variables.get_local_variables_via_mcp", mcp_export),
+    ):
+        result = CliRunner().invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "variables",
+                "--file-key",
+                FILE_KEY,
+                "--source",
+                "mcp",
+            ],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0
+    assert fake.variables_calls == 0
+    mcp_export.assert_awaited_once_with(FILE_KEY)
+    assert "via figma_mcp" in result.output

@@ -38,8 +38,8 @@ If you only need updated tokens, run `figmaclaw variables --file-key <k>` — do
 | Command | What it does | Writes |
 |---|---|---|
 | `figmaclaw census` | Snapshot published component sets to `_census.md` per tracked file. Hash-gated; no commit if registry unchanged. | `figma/{slug}/_census.md`. |
-| `figmaclaw variables` | Refresh DS variable catalog from `/v1/files/{key}/variables/local`. Per canon TC-1, this is the authoritative source for token names, modes, scopes. | `.figma-sync/ds_catalog.json`. |
-| `figmaclaw variables --file-key <k>` | Same, single file. | Same, scoped. |
+| `figmaclaw variables` | Refresh DS variable catalog from Figma's variable registry. Default `--source auto` tries REST `/variables/local`, then Figma MCP plugin-runtime export when REST lacks `file_variables:read`. Per canon TC-1, these are authoritative sources for token names, modes, scopes. | `.figma-sync/ds_catalog.json`. |
+| `figmaclaw variables --file-key <k>` | Same, single file. Add `--source rest` to disable MCP fallback, or `--source mcp` to force plugin-runtime export. | Same, scoped. |
 
 ### Inspection (read-only)
 

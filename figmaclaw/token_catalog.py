@@ -1,16 +1,18 @@
 """DS variable catalog — file-scope cache of design-token definitions.
 
 Stored at ``.figma-sync/ds_catalog.json``. Populated authoritatively by the
-``figmaclaw variables`` command (which calls Figma's ``/variables/local``
-REST endpoint) and supplementally by ``seed_catalog.py``-style CSS imports
-that produce ``SEEDED:*`` entries when Enterprise scope is unavailable.
+``figmaclaw variables`` command (from Figma's ``/variables/local`` REST
+endpoint, or the Figma MCP plugin runtime when REST variables scope is
+unavailable) and supplementally by ``seed_catalog.py``-style CSS imports that
+produce ``SEEDED:*`` entries when no authoritative variable reader is available.
 
 **Architectural rule (canon §4 TC-1, §5 D13):** the catalog stores
 **definitions**. Per-page sidecar files (``*.tokens.json``) store
 **usage**. Page-walk observation may add ``observed_on`` and
 ``usage_count`` to existing entries but MUST NOT introduce a variable
 into the catalog or set its definitional fields (name, values_by_mode,
-collection, scopes, code_syntax). Definitions come from REST.
+collection, scopes, code_syntax). Definitions come from Figma's variable
+registry, either through REST or the plugin runtime.
 
 Invariants enforced here (canon §4 TC):
 
@@ -57,6 +59,7 @@ LOCAL_LIBRARY_PREFIX = "local:"
 
 # Default mode id used when the source has no mode information (e.g. SEEDED entries).
 DEFAULT_MODE_ID = "_default"
+AUTHORITATIVE_DEFINITION_SOURCES = {"figma_api", "figma_mcp"}
 
 
 def _prop_bucket(prop: str) -> str:
@@ -121,6 +124,7 @@ class CatalogLibrary(BaseModel):
     source_file_key: str | None = None
     fetched_at: str | None = None
     source_version: str | None = None
+    source: str | None = None
     modes: dict[str, str] = Field(default_factory=dict)  # mode_id -> human name
     default_mode_id: str | None = None
     collections: dict[str, CatalogCollection] = Field(default_factory=dict)
@@ -130,12 +134,13 @@ class CatalogVariable(BaseModel):
     """One design-token (Figma variable) entry.
 
     Per canon TC-2, every field has a single canonical writer. The ``source``
-    enum (``figma_api`` / ``seeded:css`` / ``seeded:manual`` / ``observed``)
-    drives downstream tool behavior — see canon §5 D14.
+    enum (``figma_api`` / ``figma_mcp`` / ``seeded:css`` /
+    ``seeded:manual`` / ``observed``) drives downstream tool behavior — see
+    canon §5 D14.
 
     ``observed_on`` and ``usage_count`` are the only fields that page-walk
     observation may write to. All other fields are populated from a
-    /variables/local response or a CSS seed.
+    /variables/local response, MCP plugin-runtime export, or a CSS seed.
     """
 
     # Identity
@@ -153,7 +158,7 @@ class CatalogVariable(BaseModel):
     alias_of: str | None = None  # variable-level alias (whole-variable redirection)
 
     # Provenance
-    source: str = "observed"  # "figma_api" | "seeded:css" | "seeded:manual" | "observed"
+    source: str = "observed"  # "figma_api" | "figma_mcp" | "seeded:*" | "observed"
 
     # Page-walk usage signal (canon TC-1, D13: usage, NOT definition)
     observed_on: list[str] = Field(default_factory=list)
@@ -255,6 +260,18 @@ def libraries_for_file(catalog: TokenCatalog, file_key: str) -> list[CatalogLibr
     return [lib for lib in catalog.libraries.values() if lib.source_file_key == file_key]
 
 
+def library_keys_for_file(catalog: TokenCatalog, file_key: str) -> list[str]:
+    return [key for key, lib in catalog.libraries.items() if lib.source_file_key == file_key]
+
+
+def has_figma_api_definitions_for_file(catalog: TokenCatalog, file_key: str) -> bool:
+    library_keys = set(library_keys_for_file(catalog, file_key))
+    return any(
+        entry.source in AUTHORITATIVE_DEFINITION_SOURCES and entry.library_hash in library_keys
+        for entry in catalog.variables.values()
+    )
+
+
 def _source_version_is_older(source_version: str | None, manifest_version: str) -> bool:
     """True when the catalog source version is older than manifest state.
 
@@ -354,15 +371,18 @@ def merge_local_variables(
     file_key: str,
     file_name: str,
     file_version: str,
+    source: str = "figma_api",
 ) -> int:
-    """Ingest a /variables/local response into the catalog.
+    """Ingest local variable definitions into the catalog.
 
     Populates a library entry (keyed by the lib_hash derived from variable
     IDs, or ``local:<file_key>`` for unpublished variables) and writes
     full identity for every variable in the response.
 
     Canon §4 TC-1 (authoritative source), TC-2 (complete identity),
-    TC-4 (mode-aware), TC-7 (source_version observable).
+    TC-4 (mode-aware), TC-7 (source_version observable). ``source`` records
+    which authoritative reader provided the definitions (``figma_api`` or
+    ``figma_mcp``).
 
     Returns the count of variable entries added or updated.
     """
@@ -395,6 +415,7 @@ def merge_local_variables(
         source_file_key=file_key,
         fetched_at=fetched_at,
         source_version=file_version,
+        source=source,
         modes=modes_map,
         default_mode_id=default_mode_id,
         collections=collections,
@@ -416,7 +437,7 @@ def merge_local_variables(
             scopes=list(var_entry.scopes),
             code_syntax=dict(var_entry.codeSyntax),
             alias_of=None,  # variable-level alias resolution not used by Figma here
-            source="figma_api",
+            source=source,
             observed_on=observed_on,
             usage_count=usage_count,
         )
@@ -446,6 +467,7 @@ def mark_local_variables_unavailable(
         source_file_key=file_key,
         fetched_at=fetched_at,
         source_version=file_version,
+        source="unavailable",
     )
     catalog.updated_at = fetched_at
 
