@@ -598,7 +598,11 @@ def _extract_library_hash(vid: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def suggest_for_sidecar(sidecar: dict, catalog: TokenCatalog) -> dict:
+def suggest_for_sidecar(
+    sidecar: dict,
+    catalog: TokenCatalog,
+    library_hashes: set[str] | None = None,
+) -> dict:
     """Enrich a sidecar dict in-place with token suggestions from the catalog.
 
     Sets ``suggest_status`` ("auto"|"ambiguous"|"no_match") and
@@ -612,12 +616,20 @@ def suggest_for_sidecar(sidecar: dict, catalog: TokenCatalog) -> dict:
       * Numeric properties — match by ``round(value, 4)`` within the
         same property bucket.
 
+    If ``library_hashes`` is provided, only variables whose
+    ``library_hash`` is in that set are considered as candidates. This is
+    how ``suggest-tokens --library`` limits matches to the migration
+    target DS (e.g. Tap-In / LSN) instead of all libraries in the
+    catalog. ``None`` (the default) considers all variables.
+
     Returns the modified sidecar dict.
     """
     hex_to_vids: dict[str, list[str]] = {}
     numeric_to_vids: dict[tuple[str, str], list[str]] = {}
 
     for vid, entry in catalog.variables.items():
+        if library_hashes is not None and entry.library_hash not in library_hashes:
+            continue
         # Pick the default-mode value for indexing; fall back to the first
         # mode value if no default is recorded.
         value = _pick_default_value(entry, catalog)
