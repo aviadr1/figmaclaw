@@ -26,7 +26,7 @@ from figmaclaw.figma_frontmatter import (
 )
 from figmaclaw.figma_md_parse import section_line_ranges
 from figmaclaw.figma_parse import parse_frontmatter
-from figmaclaw.figma_schema import is_placeholder_row
+from figmaclaw.figma_schema import unresolved_row_node_id
 from figmaclaw.schema_status import enrichment_schema_status, is_pull_schema_stale
 from figmaclaw.staleness import stale_frame_ids_from_manifest
 
@@ -34,12 +34,12 @@ SECTION_THRESHOLD = 80
 
 
 def _count_pending_in_range(lines: list[str], start: int, end: int) -> int:
-    """Count placeholder frame rows within a line range.
+    """Count unresolved frame rows within a line range.
 
-    Uses :func:`figma_schema.is_placeholder_row` as the canonical check so
+    Uses :func:`figma_schema.unresolved_row_node_id` as the canonical check so
     this and the enrichment dispatcher agree on what "pending" means.
     """
-    return sum(1 for line in lines[start:end] if is_placeholder_row(line))
+    return sum(1 for line in lines[start:end] if unresolved_row_node_id(line) is not None)
 
 
 def _stale_frame_ids(

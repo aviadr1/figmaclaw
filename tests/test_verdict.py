@@ -295,31 +295,141 @@ class TestRow7ClassicFailure:
         assert v.row == "row 7"
 
 
+class TestRow9AllStuckYellow:
+    """Row 9: every attempted file hit NO-PROGRESS → YELLOW (exit 0).
+
+    Incident context: in figmaclaw#121, the linear-git nightly sync ran
+    hourly for 24+ hours with the same 6 files stuck in NO-PROGRESS. The
+    old verdict mapped this to row 6 "silent dispatch failure" (RED), so
+    CI was RED every hour and real regressions would have been hidden.
+    Row 9 recognizes it as a known steady state instead.
+    """
+
+    def test_all_attempted_stuck_is_yellow_exit_zero(self) -> None:
+        v = compute_verdict(
+            files_selected=68,
+            work_attempted=6,
+            commits_made=0,
+            errors=0,
+            budget_exhausted=False,
+            skipped_no_work=0,
+            stuck=6,
+        )
+        assert v.exit_code == EXIT_GREEN  # YELLOW shares GREEN's exit code
+        assert v.row == "row 9"
+        assert "yellow" in v.label.lower()
+        assert "stuck" in v.label.lower()
+
+    def test_mixed_stuck_and_unstuck_no_commits_stays_row_6(self) -> None:
+        """If even one attempted file was not stuck (and no commits landed),
+        the run is still a silent dispatch failure, not all-stuck.
+
+        Pins the precise row 9 condition: ``stuck == work_attempted``, not
+        ``stuck > 0``. This prevents row 9 from swallowing real regressions
+        in runs where most files stalled for a legitimate bug.
+        """
+        v = compute_verdict(
+            files_selected=10,
+            work_attempted=5,
+            commits_made=0,
+            errors=0,
+            budget_exhausted=False,
+            skipped_no_work=0,
+            stuck=4,  # 4 of 5 stuck — not ALL
+        )
+        assert v.exit_code == EXIT_RED
+        assert v.row == "row 6"
+
+    def test_stuck_with_commits_is_not_row_9(self) -> None:
+        """Row 9 requires zero commits. If any commit landed, that file is
+        not stuck for the purposes of the verdict — fall through to rows
+        2/3/4a/4b as usual.
+        """
+        v = compute_verdict(
+            files_selected=6,
+            work_attempted=6,
+            commits_made=2,
+            errors=0,
+            budget_exhausted=False,
+            skipped_no_work=0,
+            stuck=4,
+        )
+        # commits made + no errors → row 2 (clean completion)
+        assert v.exit_code == EXIT_GREEN
+        assert v.row == "row 2"
+
+    def test_phantom_selection_beats_all_stuck(self) -> None:
+        """Row 5 (phantom selection) outranks row 9, always.
+
+        A phantom-selected file is a selector/dispatcher bug that must
+        never be hidden — even behind an otherwise-steady all-stuck run.
+        """
+        v = compute_verdict(
+            files_selected=10,
+            work_attempted=5,
+            commits_made=0,
+            errors=0,
+            budget_exhausted=False,
+            skipped_no_work=1,
+            stuck=5,
+        )
+        assert v.exit_code == EXIT_RED
+        assert v.row == "row 5"
+
+    def test_default_stuck_is_zero_preserving_existing_rows(self) -> None:
+        """Callers that have not yet been updated to pass `stuck` must see
+        the exact same verdict they got before row 9 was introduced.
+
+        This is a backward-compat pin — if a future edit accidentally
+        changes the default, pre-row-9 counter tuples would shift verdicts.
+        """
+        v_without = compute_verdict(
+            files_selected=3,
+            work_attempted=3,
+            commits_made=0,
+            errors=0,
+            budget_exhausted=False,
+            skipped_no_work=0,
+        )
+        v_with_zero = compute_verdict(
+            files_selected=3,
+            work_attempted=3,
+            commits_made=0,
+            errors=0,
+            budget_exhausted=False,
+            skipped_no_work=0,
+            stuck=0,
+        )
+        assert v_without == v_with_zero
+        assert v_without.row == "row 6"  # silent dispatch, as before
+
+
 # ---------------------------------------------------------------------------
-# Exit code contract — every RED must map to exit 2, every GREEN to 0.
+# Exit code contract — every RED must map to exit 2, every GREEN/YELLOW to 0.
 # ---------------------------------------------------------------------------
 
 
 class TestExitCodeContract:
-    """No 'soft red' — every RED label pairs with EXIT_RED, every GREEN with EXIT_GREEN."""
+    """Every RED label pairs with EXIT_RED; every GREEN/YELLOW with EXIT_GREEN."""
 
-    # (files_selected, work_attempted, commits_made, errors, budget_exhausted, skipped_no_work)
-    SCENARIOS: list[tuple[int, int, int, int, bool, int]] = [
-        (0, 0, 0, 0, False, 0),  # row 1
-        (5, 5, 5, 0, False, 0),  # row 2
-        (5, 3, 3, 0, True, 0),  # row 3
-        (10, 10, 9, 1, False, 0),  # row 4a
-        (10, 10, 3, 7, False, 0),  # row 4b
-        (5, 4, 4, 0, False, 1),  # row 5
-        (3, 3, 0, 0, False, 0),  # row 6
-        (3, 3, 0, 3, False, 0),  # row 7
+    # (files_selected, work_attempted, commits_made, errors, budget_exhausted, skipped_no_work, stuck)
+    SCENARIOS: list[tuple[int, int, int, int, bool, int, int]] = [
+        (0, 0, 0, 0, False, 0, 0),  # row 1
+        (5, 5, 5, 0, False, 0, 0),  # row 2
+        (5, 3, 3, 0, True, 0, 0),  # row 3
+        (10, 10, 9, 1, False, 0, 0),  # row 4a
+        (10, 10, 3, 7, False, 0, 0),  # row 4b
+        (5, 4, 4, 0, False, 1, 0),  # row 5
+        (3, 3, 0, 0, False, 0, 0),  # row 6
+        (3, 3, 0, 3, False, 0, 0),  # row 7
+        (6, 6, 0, 0, False, 0, 6),  # row 9
     ]
 
     def _verdict(
         self,
-        scenario: tuple[int, int, int, int, bool, int],
+        scenario: tuple[int, int, int, int, bool, int, int],
     ) -> RunVerdict:
-        fs, wa, cm, er, be, sn = scenario
+        fs, wa, cm, er, be, sn, st = scenario
         return compute_verdict(
             files_selected=fs,
             work_attempted=wa,
@@ -327,18 +437,19 @@ class TestExitCodeContract:
             errors=er,
             budget_exhausted=be,
             skipped_no_work=sn,
+            stuck=st,
         )
 
     def test_label_color_matches_exit_code(self) -> None:
         for s in self.SCENARIOS:
             v = self._verdict(s)
-            if v.label.startswith("GREEN"):
+            if v.label.startswith(("GREEN", "YELLOW")):
                 assert v.exit_code == EXIT_GREEN, f"{s} -> {v}"
             elif v.label.startswith("RED"):
                 assert v.exit_code == EXIT_RED, f"{s} -> {v}"
             else:
                 raise AssertionError(
-                    f"verdict label must start with GREEN or RED: {v.label}",
+                    f"verdict label must start with GREEN/YELLOW/RED: {v.label}",
                 )
 
 

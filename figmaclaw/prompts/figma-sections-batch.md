@@ -18,7 +18,7 @@ Follow this workflow exactly:
 
 3. Build the descriptions JSON. Include:
    - Described frames from screenshots: `{"node_id": "description", ...}`
-   - Failed frames (from the `failed` list): `{"node_id": "(screenshot unavailable)", ...}`
+   - Failed frames (from the `failed` list): `{"node_id": "(no screenshot available)", ...}`
 
    This ensures failed frames don't stay as "(no description yet)" forever.
 
@@ -40,5 +40,8 @@ IMPORTANT:
 - Use write-descriptions, NOT write-body. One call updates all described frames.
 - Do NOT call mark-enriched — that happens after ALL sections are complete.
 - Descriptions must be valid JSON strings (escape quotes with \").
-- ALWAYS include failed frames with "(screenshot unavailable)" — do NOT leave them as "(no description yet)".
+- ALWAYS include failed frames with "(no screenshot available)" — do NOT leave them as "(no description yet)". This marker is unresolved and retryable in future runs.
 - If there were more than 80 pending screenshots, you will be called again for the rest.
+- If push is rejected, use ONLY: `git pull --no-rebase && git push`
+- NEVER use `git stash`, `git stash pop`, `git reset --hard`, `git checkout --`, or `rm` for recovery.
+- NEVER delete `.figma-sync/*` files to make git/push succeed.

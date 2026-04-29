@@ -153,6 +153,7 @@ _EXPECTED_PUBLIC_NAMES: frozenset[str] = frozenset(
         "ParsedSection",
         "section_line_ranges",
         "parse_sections",
+        "frame_row_count",
     }
 )
 

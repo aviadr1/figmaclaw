@@ -22,6 +22,7 @@ Current: see test_schema_upgrade_does_not_cause_infinite_loop_with_max_pages (v2
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -51,7 +52,7 @@ from tests.conftest import (
 # Schema version registry — must contain every version that has been superseded.
 # When you bump CURRENT_PULL_SCHEMA_VERSION from N to N+1, add N here and add
 # a corresponding convergence test (like test_schema_upgrade_does_not_cause_infinite_loop_with_max_pages).
-TESTED_UPGRADE_FROM_VERSIONS: frozenset[int] = frozenset({1, 2, 3, 4, 5})
+TESTED_UPGRADE_FROM_VERSIONS: frozenset[int] = frozenset({1, 2, 3, 4, 5, 6, 7, 8})
 
 
 def test_schema_upgrade_coverage_is_current():
@@ -567,6 +568,183 @@ async def test_pull_file_has_more_false_when_all_pages_written(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_pull_file_fetches_pages_concurrently_in_sequential_mode(tmp_path: Path):
+    """INVARIANT: max_pages mode must fetch page nodes concurrently within each
+    chunk, not one at a time. Before this fix, a resynced file with N unchanged
+    pages cost N × per-call latency serialised (observed: 34 pages × ~8s = 274s).
+    Concurrent chunked fetch collapses that to ~chunk_latency × ceil(N/chunk) —
+    for a 10-page chunk, roughly the slowest single call in the chunk.
+
+    We verify concurrency by timing N slow mock fetches: if serial, total time
+    would be N * sleep_s; if concurrent, total ≈ sleep_s regardless of N."""
+    import time
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    n_pages = 8
+    per_call_sleep_s = 0.3  # each mock get_page takes 0.3s
+
+    async def slow_get_page(_fk: str, pid: str):
+        await asyncio.sleep(per_call_sleep_s)
+        return fake_page_node_for_id(pid, f"Page {pid}")
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta_multi(n_pages))
+    mock_client.get_page = AsyncMock(side_effect=slow_get_page)
+    mock_client.get_nodes = AsyncMock(return_value={})
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+
+    t0 = time.monotonic()
+    result = await pull_file(
+        mock_client,
+        "abc123",
+        state,
+        tmp_path,
+        force=False,
+        max_pages=n_pages,  # no write budget headroom — fetch+process all
+    )
+    elapsed = time.monotonic() - t0
+
+    # All pages should be written.
+    assert result.pages_written == n_pages
+
+    # Serial would be n_pages * per_call_sleep_s = 2.4s. Concurrent (one chunk)
+    # should complete in ~per_call_sleep_s plus overhead. Pick a threshold
+    # comfortably between the two: n*sleep - sleep*2 so even a very loaded CI
+    # machine shouldn't trip it without the fix genuinely being broken.
+    serial_floor_s = (n_pages - 2) * per_call_sleep_s
+    assert elapsed < serial_floor_s, (
+        f"pull_file fetched pages serially in {elapsed:.2f}s "
+        f"(serial floor would be {serial_floor_s:.2f}s for {n_pages} pages × "
+        f"{per_call_sleep_s}s). Chunk-parallel fetch is not wired up."
+    )
+
+
+@pytest.mark.asyncio
+async def test_pull_file_chunk_fetch_stops_when_budget_hit(tmp_path: Path):
+    """INVARIANT: when the write budget is hit inside a chunk, subsequent chunks
+    must NOT be fetched. Otherwise first-sync of a huge file would redo N ×
+    full-parallel-fetch work on every batch — same bad O(N²) pattern as before,
+    just with concurrency. Chunked early-stop preserves the sequential-mode API
+    budget while keeping parallel speedups within each chunk.
+
+    We verify by counting get_page calls: with chunk=10, max_pages=3,
+    n_pages=30, we should see exactly one chunk of fetches (10), not 30."""
+    from figmaclaw.pull_logic import PAGE_FETCH_CHUNK
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    n_pages = 3 * PAGE_FETCH_CHUNK  # ensures at least 3 chunks exist
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta_multi(n_pages))
+    mock_client.get_page = AsyncMock(
+        side_effect=lambda fk, pid: fake_page_node_for_id(pid, f"Page {pid}")
+    )
+    mock_client.get_nodes = AsyncMock(return_value={})
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+
+    result = await pull_file(
+        mock_client,
+        "abc123",
+        state,
+        tmp_path,
+        force=False,
+        max_pages=3,  # hit budget within the first chunk
+    )
+
+    assert result.pages_written == 3
+    assert result.has_more is True
+    # With first-chunk prefetch + mid-chunk budget hit, only the first chunk
+    # (PAGE_FETCH_CHUNK pages) should have been fetched — not all n_pages.
+    assert mock_client.get_page.await_count == PAGE_FETCH_CHUNK, (
+        f"expected {PAGE_FETCH_CHUNK} get_page calls (one chunk), got "
+        f"{mock_client.get_page.await_count}. Chunk-early-stop broken."
+    )
+
+
+@pytest.mark.asyncio
+async def test_pull_file_per_page_timeout_marks_stuck_page_errored_and_continues(
+    tmp_path: Path,
+):
+    """INVARIANT: one page whose get_page exceeds per_page_timeout_s must not
+    hang the whole file — it should be marked errored so subsequent pages still
+    get processed. This is the per-page analog of the shell-level batch timeout:
+    without it, a single slow page blocks all progress on the file forever."""
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    n_pages = 3
+    # fake_file_meta_multi emits page ids "100:1" … "100:N". Hang the first.
+    stuck_pid = "100:1"
+
+    async def maybe_hang(_fk: str, pid: str):
+        if pid == stuck_pid:
+            # Longer than the test's per-page timeout — wait_for must cancel us.
+            await asyncio.sleep(10.0)
+        return fake_page_node_for_id(pid, f"Page {pid}")
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta_multi(n_pages))
+    mock_client.get_page = AsyncMock(side_effect=maybe_hang)
+    mock_client.get_nodes = AsyncMock(return_value={})
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+
+    result = await pull_file(
+        mock_client,
+        "abc123",
+        state,
+        tmp_path,
+        force=False,
+        max_pages=5,  # sequential mode — uses the per-page get_page path we wrapped
+        per_page_timeout_s=0.1,
+    )
+
+    # The hung page is errored; the remaining two complete normally.
+    assert result.pages_errored == 1
+    assert result.pages_written == n_pages - 1
+    assert result.has_more is False
+
+
+@pytest.mark.asyncio
+async def test_pull_file_per_page_timeout_none_disables_wrapping(tmp_path: Path):
+    """INVARIANT: per_page_timeout_s=None preserves original behavior (no
+    asyncio.wait_for wrapping) — needed so callers that want to rely solely on
+    a higher-level timeout can opt out."""
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+    state.manifest.files["abc123"].version = "v1"
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta_multi(2))
+    mock_client.get_page = AsyncMock(
+        side_effect=lambda fk, pid: fake_page_node_for_id(pid, f"Page {pid}")
+    )
+
+    result = await pull_file(
+        mock_client,
+        "abc123",
+        state,
+        tmp_path,
+        force=False,
+        max_pages=5,
+        per_page_timeout_s=None,
+    )
+    assert result.pages_errored == 0
+    assert result.pages_written == 2
+
+
+@pytest.mark.asyncio
 async def test_pull_file_has_more_false_when_no_limit(tmp_path: Path):
     """INVARIANT: has_more is False when max_pages is not set."""
 
@@ -880,10 +1058,18 @@ async def test_pull_file_parallel_fetch_handles_individual_page_errors(tmp_path:
 
 
 def _make_state_with_file(tmp_path: Path, file_key: str, last_modified: str) -> FigmaSyncState:
+    from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
+
     state = FigmaSyncState(tmp_path)
     state.load()
     state.add_tracked_file(file_key, "My File")
     state.manifest.files[file_key].last_modified = last_modified
+    # Default to CURRENT schema so "unchanged file is skipped" tests are
+    # meaningful — a file at an older schema is intentionally pulled
+    # regardless of Figma activity (figmaclaw#123). Tests that want to
+    # exercise the schema-stale escape must set this to an older value
+    # explicitly.
+    state.manifest.files[file_key].pull_schema_version = CURRENT_PULL_SCHEMA_VERSION
     return state
 
 
@@ -990,6 +1176,53 @@ async def test_pull_cmd_skips_unchanged_files_via_listing(tmp_path: Path):
         await _run("key", tmp_path, None, False, None, False, 10, "team123", "all")
 
     mock_client.get_file_meta.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pull_cmd_bypasses_listing_prefilter_for_schema_stale_file(
+    tmp_path: Path,
+) -> None:
+    """INVARIANT (figmaclaw#123): a tracked file whose stored pull_schema_version
+    is below CURRENT must be pulled even when Figma reports it as unchanged.
+
+    Without this escape hatch, a schema bump (e.g. v6→v7) only propagates
+    to files that happen to be modified in Figma. Idle files stay at the
+    old schema forever — which is what left the linear-git stuck files
+    unhealed after figmaclaw#122 merged.
+    """
+    from figmaclaw.commands.pull import _run
+    from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
+
+    state = _make_state_with_file(tmp_path, "fileA", "2026-03-01T00:00:00Z")
+    # Simulate stored schema below CURRENT.
+    state.manifest.files["fileA"].pull_schema_version = CURRENT_PULL_SCHEMA_VERSION - 1
+    state.save()
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.list_team_projects = AsyncMock(return_value=[ProjectSummary(id="p1", name="Web")])
+    mock_client.list_project_files = AsyncMock(
+        return_value=[
+            # listing reports the same last_modified as stored (unchanged on Figma).
+            FileSummary(key="fileA", name="App", last_modified="2026-03-01T00:00:00Z"),
+        ]
+    )
+    mock_client.get_file_meta = AsyncMock(
+        return_value={
+            "version": "v2",
+            "lastModified": "2026-03-01T00:00:00Z",
+            "name": "App",
+            "document": {"children": []},
+        }
+    )
+
+    with patch("figmaclaw.commands.pull.FigmaClient", return_value=mock_client):
+        await _run("key", tmp_path, None, False, None, False, 10, "team123", "all")
+
+    # The schema-stale escape must have bypassed the pre-filter skip;
+    # get_file_meta is called because pull_file proceeded.
+    mock_client.get_file_meta.assert_called_once_with("fileA")
 
 
 @pytest.mark.asyncio
@@ -1116,6 +1349,124 @@ async def test_pull_cmd_forwards_prune_flag_to_pull_file(tmp_path: Path):
     assert mock_pull.await_count == 1
     assert mock_pull.await_args is not None
     assert mock_pull.await_args.kwargs["prune"] is False
+
+
+@pytest.mark.asyncio
+async def test_pull_cmd_emits_observability_lines(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    """INVARIANT: pull command emits structured SYNC_OBS_PULL lines for profiling."""
+    from figmaclaw.commands.pull import _run
+
+    state = _make_state_with_file(tmp_path, "fileA", "")
+    state.save()
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.get_file_meta = AsyncMock(
+        return_value={
+            "version": "v2",
+            "lastModified": "2026-03-01T00:00:00Z",
+            "name": "App",
+            "document": {"children": []},
+        }
+    )
+
+    with (
+        patch("figmaclaw.commands.pull.FigmaClient", return_value=mock_client),
+        patch(
+            "figmaclaw.commands.pull.pull_file",
+            AsyncMock(return_value=PullResult(file_key="fileA", skipped_file=True)),
+        ),
+    ):
+        await _run("key", tmp_path, None, False, None, False, 10, None, "all")
+
+    out = capsys.readouterr().out
+    assert "SYNC_OBS_PULL event=run_start" in out
+    assert "SYNC_OBS_PULL event=file_end file_key=fileA outcome=pull_skipped" in out
+    assert "SYNC_OBS_PULL event=run_end" in out
+
+
+@pytest.mark.asyncio
+async def test_pull_cmd_observability_uses_processed_no_writes_outcome(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """INVARIANT: non-skipped pulls with zero writes are labeled processed_no_writes."""
+    from figmaclaw.commands.pull import _run
+
+    state = _make_state_with_file(tmp_path, "fileA", "")
+    state.save()
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.get_file_meta = AsyncMock(
+        return_value={
+            "version": "v2",
+            "lastModified": "2026-03-01T00:00:00Z",
+            "name": "App",
+            "document": {"children": []},
+        }
+    )
+
+    with (
+        patch("figmaclaw.commands.pull.FigmaClient", return_value=mock_client),
+        patch(
+            "figmaclaw.commands.pull.pull_file",
+            AsyncMock(
+                return_value=PullResult(
+                    file_key="fileA",
+                    skipped_file=False,
+                    pages_written=0,
+                    component_sections_written=0,
+                    pages_schema_upgraded=0,
+                    pages_skipped=3,
+                )
+            ),
+        ),
+    ):
+        await _run("key", tmp_path, None, False, None, False, 10, None, "all")
+
+    out = capsys.readouterr().out
+    assert "SYNC_OBS_PULL event=file_end file_key=fileA outcome=processed_no_writes" in out
+
+
+@pytest.mark.asyncio
+async def test_pull_cmd_emits_file_heartbeat_for_long_pull(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """INVARIANT: long pull_file calls emit periodic file_heartbeat observability."""
+    from figmaclaw.commands.pull import _run
+
+    state = _make_state_with_file(tmp_path, "fileA", "")
+    state.save()
+    monkeypatch.setenv("FIGMACLAW_PULL_HEARTBEAT_SECONDS", "1")
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.get_file_meta = AsyncMock(
+        return_value={
+            "version": "v2",
+            "lastModified": "2026-03-01T00:00:00Z",
+            "name": "App",
+            "document": {"children": []},
+        }
+    )
+
+    async def _slow_pull_file(*_args, **_kwargs) -> PullResult:
+        await asyncio.sleep(1.2)
+        return PullResult(file_key="fileA", skipped_file=True)
+
+    with (
+        patch("figmaclaw.commands.pull.FigmaClient", return_value=mock_client),
+        patch("figmaclaw.commands.pull.pull_file", side_effect=_slow_pull_file),
+    ):
+        await _run("key", tmp_path, None, False, None, False, 10, None, "all")
+
+    out = capsys.readouterr().out
+    assert "SYNC_OBS_PULL event=file_heartbeat file_key=fileA" in out
 
 
 # --- _compute_raw_frames ---
@@ -1722,6 +2073,272 @@ async def test_schema_upgrade_does_not_cause_infinite_loop_with_max_pages(tmp_pa
 
     # pull_schema_version must be updated after a schema-only pass
     assert state.manifest.files["abc123"].pull_schema_version == CURRENT_PULL_SCHEMA_VERSION
+
+
+@pytest.mark.asyncio
+async def test_schema_upgrade_v6_to_v7_prunes_orphan_enriched_frame_hashes(tmp_path: Path):
+    """INVARIANT for figmaclaw#121 / v7 schema bump: when a v6 file is
+    refreshed to v7, orphan entries in ``enriched_frame_hashes`` for
+    node_ids no longer in ``frames`` are pruned by the
+    ``_build_frontmatter`` chokepoint.
+
+    This is what lets existing stuck files in consumer repos (the
+    linear-git showcase-v2 shape) converge to clean state on the next
+    pull without any manual intervention.
+    """
+    from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
+    from figmaclaw.figma_parse import parse_frontmatter
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+
+    mock_client = MagicMock(spec=FigmaClient)
+    page_node = fake_page_node_with_children()
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2", "2026-03-31T12:00:00Z"))
+    mock_client.get_page = AsyncMock(return_value=page_node)
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+    mock_client.get_nodes = AsyncMock(return_value=fake_get_nodes_response())
+
+    # First pull: write the page fresh (v7).
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+    md_rel = state.manifest.files["abc123"].pages["7741:45837"].md_path
+    assert md_rel is not None
+    md_path = tmp_path / md_rel
+
+    # Seed the showcase-v2 incident shape: orphan entries in
+    # enriched_frame_hashes that are NOT in the real frames list.
+    text = md_path.read_text()
+    fm = parse_frontmatter(text)
+    assert fm is not None
+    real_frames = set(fm.frames)
+    orphan_nids = {"99:99", "88:88"}
+    assert not orphan_nids & real_frames
+    # Directly inject a v6-era frontmatter with orphan enriched_frame_hashes.
+    # We splice the raw YAML to bypass the write-time chokepoint (the
+    # chokepoint is exactly what this test asserts will re-prune the
+    # orphans on the NEXT pull).
+    injected = text.replace(
+        "---\n",
+        (
+            "---\n"
+            "enriched_frame_hashes: "
+            "{'11:1': aaaaaaaa, '11:2': bbbbbbbb, "
+            "'99:99': deaddead, '88:88': feedbeef}\n"
+        ),
+        1,
+    )
+    md_path.write_text(injected)
+    state.manifest.files["abc123"].pull_schema_version = 6  # simulate v6
+    state.save()
+
+    # Second pull: v6 < v7 → schema-stale refresh. The chokepoint must
+    # drop the orphans from enriched_frame_hashes.
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    fm_after = parse_frontmatter(md_path.read_text())
+    assert fm_after is not None
+    assert state.manifest.files["abc123"].pull_schema_version == CURRENT_PULL_SCHEMA_VERSION
+    assert set(fm_after.enriched_frame_hashes.keys()) <= set(fm_after.frames)
+    assert not (set(fm_after.enriched_frame_hashes.keys()) & orphan_nids)
+
+
+@pytest.mark.asyncio
+async def test_schema_upgrade_v7_to_v8_heals_top_level_component_only_pages(tmp_path: Path):
+    """INVARIANT PP-1 / NC-1 / HSH-1: a v7-era page whose only children are
+    top-level COMPONENT_SETs gets re-rendered on the next pull.
+
+    Under v7, ``compute_page_hash`` produced ``sha256("[]")[:16]`` for these
+    pages and ``from_page_node`` produced ``sections=[]`` — the manifest
+    entry ended up as ``(md_path=null, component_md_paths=[])`` and the
+    page hash never invalidated, so Tier 2 looped on the same hash forever.
+
+    The v8 schema bump forces every file to re-render once, and the new
+    code in ``from_page_node`` synthesises an ``(Ungrouped components)``
+    section so the previously-empty page produces a real component .md.
+
+    Real-world reference: 9 pages in the linear-git ``❖ Design System``
+    file (✅ Tooltip & Help icon, ☼ Logo, ☼ App Icon, ☼ Date & Time Format,
+    ☼ Microcopy Guidelines, Textarea, Code, File organization, IN PROGRESS)
+    are stuck in this shape on every consumer repo until v8 lands.
+    """
+    from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "❖ Design System")
+
+    # Page with top-level COMPONENT_SETs only — no SECTION wrapper.
+    # Uses the same canvas page id (7741:45837) as fake_file_meta so the
+    # default fixture meta points at it, but with the real-world Tooltip
+    # page shape (top-level COMPONENT_SET children).
+    page_node_v7 = {
+        "id": "7741:45837",
+        "name": "✅ Tooltip & Help icon",
+        "type": "CANVAS",
+        "children": [
+            {
+                "id": "1478:11586",
+                "name": "Tooltip",
+                "type": "COMPONENT_SET",
+                "children": [
+                    {
+                        "id": "1478:11586:default",
+                        "name": "Default",
+                        "type": "COMPONENT",
+                        "children": [],
+                    }
+                ],
+            },
+            {
+                "id": "1478:12000",
+                "name": "Help icon",
+                "type": "COMPONENT_SET",
+                "children": [
+                    {
+                        "id": "1478:12000:default",
+                        "name": "Default",
+                        "type": "COMPONENT",
+                        "children": [],
+                    }
+                ],
+            },
+        ],
+    }
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2", "2026-03-31T12:00:00Z"))
+    mock_client.get_pages = AsyncMock(return_value={"1478:11585": page_node_v7})
+    mock_client.get_page = AsyncMock(return_value=page_node_v7)
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+    mock_client.get_nodes = AsyncMock(return_value={})
+
+    # First pull: should now produce a component .md (post-fix behavior).
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+    page_entry = state.manifest.files["abc123"].pages.get("7741:45837")
+    assert page_entry is not None
+    assert state.manifest.files["abc123"].pull_schema_version == CURRENT_PULL_SCHEMA_VERSION
+    # Either a component .md exists, or md_path is set — not the partial-pull shape.
+    assert page_entry.md_path is not None or page_entry.component_md_paths, (
+        "v8 pull on a top-level-COMPONENT_SETs page produced the partial-pull "
+        "shape (md_path=None AND component_md_paths=[]). The H2 fix was supposed "
+        "to make this impossible."
+    )
+
+    # Simulate a v7-era stored entry: pretend the file was last pulled under v7.
+    state.manifest.files["abc123"].pull_schema_version = 7
+    # Wipe md_path / component_md_paths to simulate the v7-era partial-pull state.
+    page_entry.md_path = None
+    page_entry.component_md_paths = []
+    page_entry.page_hash = "4f53cda18c2baa0c"  # sha256("[]")[:16] — the v7 empty-list hash
+    state.save()
+
+    # Second pull: schema-stale (v7 < v8) → re-render → synthetic component section appears.
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+    assert state.manifest.files["abc123"].pull_schema_version == CURRENT_PULL_SCHEMA_VERSION
+    healed = state.manifest.files["abc123"].pages["7741:45837"]
+    assert healed.md_path is not None or healed.component_md_paths, (
+        "v7→v8 schema upgrade did not heal a partial-pull page entry. "
+        "Either compute_page_hash still returns the empty-list digest for "
+        "top-level COMPONENT_SET pages, or the schema-stale code path "
+        "isn't re-rendering the file."
+    )
+    assert healed.page_hash != "4f53cda18c2baa0c", (
+        "compute_page_hash still returns the empty-list digest after the "
+        "schema upgrade — the v8 fix to include COMPONENT/COMPONENT_SET "
+        "nodes in the hash didn't take effect."
+    )
+
+
+@pytest.mark.asyncio
+async def test_schema_upgrade_v8_to_v9_picks_up_variant_changes(tmp_path: Path):
+    """INVARIANT HSH-1: a v8-era manifest entry whose page
+    has had a variant added inside a COMPONENT_SET must re-render after
+    the v9 upgrade, even though the v8 hash would have ignored the change.
+
+    Under v8, ``compute_page_hash`` did NOT descend into COMPONENT_SETs,
+    so adding a new variant inside an existing set left the hash
+    unchanged — Tier 2 short-circuit fired and the variant table on
+    disk was stale.
+
+    The v9 schema bump forces every file to re-render once, AND v9's
+    ``compute_page_hash`` includes COMPONENT children of COMPONENT_SETs.
+    After the upgrade, the stored v8-era hash must NOT match the new v9
+    hash for a page where variants have changed since the last pull.
+    """
+    from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "❖ Design System")
+
+    # Page with one COMPONENT_SET, two visible variants.
+    page_node = {
+        "id": "7741:45837",
+        "name": "✅ Toggle",
+        "type": "CANVAS",
+        "children": [
+            {
+                "id": "1500:1",
+                "name": "Toggle",
+                "type": "COMPONENT_SET",
+                "children": [
+                    {"id": "1500:1:on", "name": "On", "type": "COMPONENT", "children": []},
+                    {"id": "1500:1:off", "name": "Off", "type": "COMPONENT", "children": []},
+                ],
+            }
+        ],
+    }
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2", "2026-03-31T12:00:00Z"))
+    mock_client.get_pages = AsyncMock(return_value={"7741:45837": page_node})
+    mock_client.get_page = AsyncMock(return_value=page_node)
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+    mock_client.get_nodes = AsyncMock(return_value={})
+
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+    file_entry = state.manifest.files["abc123"]
+    page_entry = file_entry.pages["7741:45837"]
+    assert file_entry.pull_schema_version == CURRENT_PULL_SCHEMA_VERSION
+    v9_hash = page_entry.page_hash
+
+    # Compute what v8 would have stored: pre-v9, hash only included the
+    # COMPONENT_SET row, not its variants. We simulate that legacy hash
+    # by computing it from a pruned page node.
+    legacy_node = {**page_node, "children": [{**page_node["children"][0], "children": []}]}
+    from figmaclaw.figma_hash import compute_page_hash
+
+    v8_legacy_hash = compute_page_hash(legacy_node)
+    assert v8_legacy_hash != v9_hash, (
+        "v9 hash equals the v8-era empty-variants hash. The v9 fix to "
+        "descend into COMPONENT_SETs didn't take effect — Tier 2 will "
+        "still short-circuit on variant-content changes."
+    )
+
+    # Simulate a pre-v9 stored entry: v8-era hash, v8 schema version.
+    file_entry.pull_schema_version = 8
+    page_entry.page_hash = v8_legacy_hash
+    state.save()
+
+    # Add a new variant — what would happen if a designer added "Loading".
+    page_node["children"][0]["children"].append(
+        {"id": "1500:1:loading", "name": "Loading", "type": "COMPONENT", "children": []}
+    )
+    mock_client.get_pages = AsyncMock(return_value={"7741:45837": page_node})
+    mock_client.get_page = AsyncMock(return_value=page_node)
+
+    # Bump file version so file-level Tier 1 doesn't short-circuit.
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v3", "2026-04-01T12:00:00Z"))
+
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+    healed = state.manifest.files["abc123"].pages["7741:45837"]
+    assert state.manifest.files["abc123"].pull_schema_version == CURRENT_PULL_SCHEMA_VERSION
+    assert healed.page_hash not in (v8_legacy_hash, v9_hash), (
+        "v8→v9 upgrade did not pick up the new variant. The page hash "
+        "after the upgrade should reflect three variants, but it still "
+        f"matches the legacy hash {healed.page_hash!r}."
+    )
 
 
 @pytest.mark.asyncio

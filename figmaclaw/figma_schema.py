@@ -52,6 +52,21 @@ from dataclasses import dataclass
 #: enrichment prompts. Changing this requires updating the prompts too.
 PLACEHOLDER_DESCRIPTION: str = "(no description yet)"
 
+#: Canonical marker used when screenshot export failed for a frame.
+NO_SCREENSHOT_AVAILABLE: str = "(no screenshot available)"
+
+#: Legacy/alternate marker still seen in historical files and prompts.
+SCREENSHOT_UNAVAILABLE: str = "(screenshot unavailable)"
+
+#: Description-cell markers that mean the row is still unresolved/retryable.
+UNRESOLVED_DESCRIPTION_MARKERS: frozenset[str] = frozenset(
+    {
+        PLACEHOLDER_DESCRIPTION,
+        NO_SCREENSHOT_AVAILABLE,
+        SCREENSHOT_UNAVAILABLE,
+    }
+)
+
 #: Substitute for frame or section names that are empty / whitespace-only in
 #: the source Figma data. Making this visible in the rendered markdown is
 #: deliberate — a bare ``##  (`id`)`` heading is both ugly and historically
@@ -66,6 +81,19 @@ UNGROUPED_SECTION: str = "(Ungrouped)"
 #: correspond to a real Figma node — downstream consumers (screenshots,
 #: write-descriptions) must skip it when making API calls.
 UNGROUPED_NODE_ID: str = "ungrouped"
+
+#: Synthetic section name used when top-level COMPONENT/COMPONENT_SET nodes
+#: are not grouped by a SECTION parent in Figma. Pages with components placed
+#: directly on the canvas (no SECTION wrapper) used to drop silently — no
+#: section, no .md file, page hash collapsing to the empty-list digest. This
+#: synthetic section keeps them visible to pull and to the manifest. Marked
+#: ``is_component_library=True`` so downstream rendering writes a component
+#: .md alongside the page rather than a screen .md.
+UNGROUPED_COMPONENTS_SECTION: str = "(Ungrouped components)"
+
+#: Synthetic node_id for the ``(Ungrouped components)`` section. As with
+#: ``UNGROUPED_NODE_ID``, no real Figma node corresponds to this id.
+UNGROUPED_COMPONENTS_NODE_ID: str = "ungrouped-components"
 
 #: Section name used by component library files (``figma/*/components/*.md``).
 VARIANTS_SECTION: str = "Variants"
@@ -382,18 +410,29 @@ def is_table_separator(line: str) -> bool:
 
 
 def is_placeholder_row(line: str) -> bool:
-    """True if *line* is a frame table row whose description is the placeholder.
-
-    Implementation note: matches the literal substring ``| (no description
-    yet) |``, which is how :func:`render_frame_row` emits a frame with an
-    unfilled description.
-    """
+    """True if *line* still carries the canonical placeholder description."""
     return f"| {PLACEHOLDER_DESCRIPTION} |" in line
+
+
+def is_unresolved_row(line: str) -> bool:
+    """True if *line* has any unresolved/retryable description marker.
+
+    Includes the canonical placeholder and screenshot-unavailable markers.
+    """
+    return any(f"| {marker} |" in line for marker in UNRESOLVED_DESCRIPTION_MARKERS)
 
 
 # ---------------------------------------------------------------------------
 # Round-trip invariants (exposed for tests and runtime assertions).
 # ---------------------------------------------------------------------------
+
+
+def unresolved_row_node_id(line: str) -> str | None:
+    """Return node_id when *line* is an unresolved frame row, else None."""
+    if not is_unresolved_row(line):
+        return None
+    row = parse_frame_row(line)
+    return row.node_id if row is not None else None
 
 
 def assert_section_round_trip(name: str | None, node_id: str) -> None:

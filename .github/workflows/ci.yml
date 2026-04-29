@@ -26,7 +26,7 @@ jobs:
 
       - name: Detect Python-impacting changes
         id: changed
-        uses: tj-actions/changed-files@22103cc46bda19c2b464ffe86db46df6922fd323 # v47.0.5
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
         with:
           files: |
             **/*.py
@@ -61,7 +61,7 @@ jobs:
 
       - name: Detect Python-impacting changes
         id: changed
-        uses: tj-actions/changed-files@22103cc46bda19c2b464ffe86db46df6922fd323 # v47.0.5
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
         with:
           files: |
             **/*.py
@@ -96,7 +96,7 @@ jobs:
 
       - name: Detect changed Python files
         id: changed
-        uses: tj-actions/changed-files@22103cc46bda19c2b464ffe86db46df6922fd323 # v47.0.5
+        uses: tj-actions/changed-files@9426d40962ed5378910ee2e21d5f8c6fcbf2dd96 # v47.0.6
         with:
           files: |
             **/*.py
@@ -173,6 +173,7 @@ jobs:
 
   smoke-api:
     name: smoke-api-ci
+    if: github.event_name != 'pull_request' || github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -212,6 +213,7 @@ jobs:
 
   smoke-webhook:
     name: smoke-webhook-ci
+    if: github.event_name != 'pull_request' || github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -251,6 +253,7 @@ jobs:
 
   smoke-mcp:
     name: smoke-mcp-ci
+    if: github.event_name != 'pull_request' || github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 20
 

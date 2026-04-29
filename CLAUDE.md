@@ -1,5 +1,7 @@
 # figmaclaw
 
+> **For invariants, design decisions, and the data contract, see [`skills/figmaclaw-canon/SKILL.md`](skills/figmaclaw-canon/SKILL.md).** That document is authoritative; this one is a developer-onboarding pointer with brief summaries.
+
 ## Ecosystem ownership
 
 figmaclaw and issueclaw are **general-purpose open-source tools** — they work for any company, not just Gigaverse. Consumer repos (e.g. `gigaverse_app/linear-git`) are company-specific knowledge repositories.
@@ -10,67 +12,70 @@ figmaclaw and issueclaw are **general-purpose open-source tools** — they work 
 | **issueclaw** | General-purpose Linear→Git sync | CLI, sync/push/webhook logic, reusable CI workflows |
 | **Consumer repos** (e.g. linear-git) | Company-specific knowledge repo | Accumulated markdown data. Consumes figmaclaw + issueclaw via pip + reusable workflows |
 
-**The rule:** All reusable algorithms, scripts, CI workflows, and LLM prompts belong in the tooling repos (figmaclaw / issueclaw). Consumer repos are pure data — they call reusable workflows with repo-specific config (secrets, schedules, team IDs) but never define tooling logic locally. If you find tooling code in a consumer repo, port it upstream to the appropriate tooling repo.
+**The rule:** All reusable algorithms, scripts, CI workflows, and LLM prompts belong in the tooling repos (figmaclaw / issueclaw). Consumer repos are pure data — they call reusable workflows with repo-specific config (secrets, schedules, team IDs) but never define tooling logic locally. If you find tooling code in a consumer repo, port it upstream.
 
 **What belongs here (figmaclaw):**
-- `figmaclaw` CLI package — all commands (sync, pull, write-body, mark-enriched, screenshots, etc.)
-- `.github/workflows/sync.yml`, `webhook.yml`, `claude-run.yml` — reusable workflows called by consumer repos
+- `figmaclaw` CLI package — all commands (sync, pull, write-body, mark-enriched, screenshots, variables, census, etc.)
+- `.github/workflows/sync.yml`, `webhook.yml`, `claude-run.yml`, `census.yml`, `variables.yml` — reusable workflows called by consumer repos
 - `figmaclaw/skills/` — LLM skills (figma-enrich-page)
 - `figmaclaw/templates/` — workflow templates scaffolded to consumer repos by `figmaclaw init`
-- `scripts/claude_run.py` — generic Claude Code launcher for CI enrichment
 - `prompts/` — prompt templates for enrichment
-- `stream-formatter.py` — CI log formatter for Claude stream-json output
 - All tests for the above
 
 **What does NOT belong here:**
 - Figma page data (`.md` files with frontmatter) — those live in consumer repos
 - Repo-specific CI config (secrets, cron schedules, team IDs) — those live in consumer repo workflow callers
+- Customer-specific constants (library hashes, brand names, etc.) — see canon §5 D12
 
-## Output format — design contract
+## Data contract
 
-**Full format spec:** [`docs/figmaclaw-md-format.md`](docs/figmaclaw-md-format.md)
-**Body preservation invariants:** [`docs/body-preservation-invariants.md`](docs/body-preservation-invariants.md)
-**Frontmatter v2 design:** [`docs/frontmatter-v2-plan.md`](docs/frontmatter-v2-plan.md)
+The full three-layer contract is canonized in [`skills/figmaclaw-canon/SKILL.md` §1](skills/figmaclaw-canon/SKILL.md#1-three-layer-data-contract). Quick summary:
 
-**Design contract — this is law, never violate it:**
-- **Frontmatter** = machine-readable metadata about the page. Tracks what exists, what changed, and whether the body is stale. Use it to make enrichment decisions cheaply (no API calls).
-- **Body** = human/LLM prose + Mermaid charts. Written by humans and LLMs **only**. Never parsed by code. Never mechanically rewritten by code.
-- **Manifest** = sync engine cache. Recomputable, lossy. If deleted, sync re-fetches everything.
-- NEVER add `parse_page_summary()`, `parse_section_intros()`, or any code that reads prose from the body.
+- **Frontmatter** = machine-readable state. Code reads/writes freely.
+- **Body** = human/LLM prose. **Code never writes, regenerates, or parses.** No `parse_page_summary()`. No `parse_section_intros()`. No regex over body tables.
+- **Manifest** = sync-engine cache. Recomputable from REST.
+- **File-scope registries** (`ds_catalog.json`, `_census.md`) = file-scope cached answers. Recomputable from REST. New layer; see canon §1, D11.
 
-**Frontmatter fields:**
+**Detailed file format spec:** [`docs/figmaclaw-md-format.md`](docs/figmaclaw-md-format.md).
 
-| Field | Updated by | Purpose |
-|---|---|---|
-| `file_key` | `sync` | Figma file identity |
-| `page_node_id` | `sync` | Figma page identity |
-| `frames` | `sync` | List of frame node IDs — what screens exist |
-| `flows` | `sync`, `set-flows` | Prototype navigation edges |
-| `enriched_hash` | `mark-enriched` | Page hash at last enrichment (null = never) |
-| `enriched_at` | `mark-enriched` | Timestamp of last enrichment |
-| `enriched_frame_hashes` | `mark-enriched` | Per-frame content hashes at last enrichment |
-| `component_set_keys` | `pull` | Component sections only. Maps published component-set name → Figma key for `importComponentSetByKeyAsync()`. |
-| `raw_frames` | `pull` | Screen pages only. Sparse dict of frames with ≥1 raw (non-INSTANCE) child: `{node_id: {raw: N, ds: [names...]}}`. Absent = fully componentized. |
-
-**Commands:**
+## Commands
 
 | Command | What it does | Touches body? |
 |---|---|---|
 | `sync` | Fetch structure from Figma, update frontmatter + manifest | NEVER |
 | `pull` | Bulk sync all tracked files | NEVER |
+| `census` | Snapshot published component sets to `_census.md` | NEVER |
+| `variables` | Refresh DS variable catalog from `/variables/local` | NEVER |
+| `suggest-tokens` | Annotate token sidecars with DS-variable candidates | NEVER (writes sidecar only) |
 | `write-body` | LLM writes page prose | YES — preserves frontmatter |
 | `mark-enriched` | Snapshot current hashes as enriched | NO |
 | `mark-stale` | Force re-enrichment | NO |
 | `inspect` | Check page structure + enrichment state | NO (read-only) |
-| `set-flows` | LLM writes inferred flows | NO (frontmatter only) |
+| `set-flows` | Write inferred flows to frontmatter | NO (frontmatter only) |
 | `screenshots` | Download frame PNGs | NO |
+| `track` / `list` / `init` / `doctor` | Setup and discovery | NO |
 
-**Enrichment flow:**
-```
-inspect → screenshots --stale → LLM writes body → write-body → mark-enriched
-```
+**Enrichment flow:** `inspect → screenshots --stale → LLM writes body → write-body → mark-enriched`.
 
-**Body preservation invariants (BP-1 through BP-6):** No CLI command can destroy body content. Tested in `tests/test_body_preservation.py`.
+## Invariants — quick index
+
+The full text of every invariant lives in [canon §4](skills/figmaclaw-canon/SKILL.md#4-invariant-classes). Cite by ID in commit messages and PR review.
+
+| Class | Owns | Canon link |
+|---|---|---|
+| BP | Body preservation (`.md` body never destroyed by code) | [§4 BP](skills/figmaclaw-canon/SKILL.md#bp--body-preservation) |
+| SC | Scaffold (new files get LLM placeholders) | [§4 SC](skills/figmaclaw-canon/SKILL.md#sc--scaffold) |
+| FM | Frontmatter correctness | [§4 FM](skills/figmaclaw-canon/SKILL.md#fm--frontmatter-correctness) |
+| CL | CLI flag innocence (informational flags don't write) | [§4 CL](skills/figmaclaw-canon/SKILL.md#cl--cli-flag-innocence) |
+| W  | Write idempotency (skip if only timestamp would change) | [§4 W](skills/figmaclaw-canon/SKILL.md#w--write-idempotency) |
+| CR | Cross-run discipline (no same-input-same-expensive-output loops) | [§4 CR](skills/figmaclaw-canon/SKILL.md#cr--cross-run-discipline) |
+| KS | Frame-keyed key-set (`keys(d) ⊆ frames`) | [§4 KS](skills/figmaclaw-canon/SKILL.md#ks--frame-keyed-key-set) |
+| TS | Terminal-state for LLM-dispatched work (every "pending" has a tombstone) | [§4 TS](skills/figmaclaw-canon/SKILL.md#ts--terminal-state-for-llm-dispatched-work) |
+| CW | Canonical walker reuse (one body iterator) | [§4 CW](skills/figmaclaw-canon/SKILL.md#cw--canonical-walker-reuse) |
+| LW | Log-writer auto-heal or hard-fail (no WARN-and-drop) | [§4 LW](skills/figmaclaw-canon/SKILL.md#lw--log-writer-auto-heal) |
+| HE | Heal-at-entry (every reader normalizes on encounter) | [§4 HE](skills/figmaclaw-canon/SKILL.md#he--heal-at-entry) |
+| TC | Token catalog | [§4 TC](skills/figmaclaw-canon/SKILL.md#tc--token-catalog) |
+| TS-S | Token sidecar | [§4 TS-S](skills/figmaclaw-canon/SKILL.md#ts-s--token-sidecar) |
 
 ## Development
 
@@ -81,39 +86,46 @@ uv run pytest
 # Run with coverage
 uv run pytest --cov=figmaclaw --cov-report=term-missing
 
+# Type check
+uv run basedpyright
+
+# Lint
+uv run ruff check
+uv run ruff format --check
+
 # Install dev version
 ./install.sh
 ```
 
-## Write idempotency rule
-
-**Every function that writes a file must be idempotent: skip the write if only a timestamp (`generated_at`, `updated_at`, etc.) would change.**
-
-Rationale: figmaclaw runs in a CI loop. Any unconditional write — even just a timestamp — lands in a git commit, triggers Claude enrichment, and wastes CI budget. The pattern is: load existing content, strip timestamp fields, compare with new content (also stripped of timestamps); write only if data differs. See `_write_token_sidecar` and `save_catalog` for the reference implementation.
-
-**Corollary — bypass flags and `max_pages` budget:** Any flag that bypasses the page-hash check (currently `force`, `schema_stale`) must NOT also consume the `max_pages` budget for pages it processes. If a bypass flag causes every page to be "processed" while also consuming budget, the `while pull` loop will never terminate. Schema-only upgrades are the canonical example: they bypass the hash skip but do not increment `pages_written_this_call`.
-
 ## Code conventions
 
-- **Use pydantic, not dataclass**, for structured values (decisions, results, model
-  rows, anything with named fields). Use `pydantic.BaseModel` with
-  `model_config = pydantic.ConfigDict(frozen=True)` when immutability matters.
-  Rationale: validation, JSON-serialization, and consistency with existing
-  models (`ClaudeResult`, figma models) all come for free. `@dataclass` should
-  only appear if there is a concrete reason pydantic cannot meet (there almost
-  never is).
-- **Pure functions for decisions.** Budget decisions, verdict computation, and
-  other branching logic should be pure functions with explicit inputs. No
-  clock reads, no environment variables, no I/O inside the decision function.
-  Callers pass the observable state in; the decision function maps it to a
-  frozen pydantic model. This is what makes the logic testable with golden-log
-  assertions (see `figmaclaw/budget.py`, `figmaclaw/verdict.py`).
+- **Use pydantic, not dataclass**, for structured values (decisions, results, model rows, parser/validator outputs, anything with named fields). Use `pydantic.BaseModel` with `model_config = pydantic.ConfigDict(frozen=True)` when immutability matters. Rationale: validation, JSON-serialization, and consistency with existing models all come for free. `@dataclass` should only appear if there is a concrete reason pydantic cannot meet (there almost never is).
+- **Pure functions for decisions.** Budget decisions, verdict computation, and other branching logic should be pure functions with explicit inputs. No clock reads, no environment variables, no I/O inside the decision function. Callers pass the observable state in; the decision function maps it to a frozen pydantic model. This is what makes the logic testable with golden-log assertions (see `figmaclaw/budget.py`, `figmaclaw/verdict.py`).
+- **Library identity is data, never a constant.** No customer-specific hashes (library hash, file_key, brand name) in figmaclaw source. See canon §5 D12.
 
 ## Testing conventions
 
-- Write invariant-based tests (what should always be true), not bug-affirming tests
-- Use `patch.object` — never `patch` with string paths
-- Never mock Pydantic models — create real instances
-- All imports at file top, never inside functions
-- 100% coverage for new code
-- Exit code 0 = success, exit code 2 = error. Never use exit 1 for business logic.
+- Write **invariant-based tests** (what should always be true), not bug-affirming tests.
+- Use `patch.object` — never `patch` with string paths.
+- Never mock pydantic models — create real instances.
+- All imports at file top, never inside functions.
+- 100% coverage for new code.
+- Exit code 0 = success, exit code 2 = error. Never use exit 1 for business logic. (Canon §5 D6.)
+- Tests cite invariant IDs by name (e.g. `test_tc1_authoritative_source`).
+
+## Anti-loop policy summary
+
+The full text of dim 1–6 lives in canon §4 (CR, KS, TS, CW, LW, HE). When adding or modifying any enrichment / pull / logging code path, run through the canon's [anti-pattern checklist](skills/figmaclaw-canon/SKILL.md#8-anti-pattern-checklist-for-pr-review) before opening a PR. The same checklist below, abbreviated:
+
+- [ ] Loop-break? → cross-run test (CR-1).
+- [ ] Frame-keyed frontmatter field? → pruned at `_build_frontmatter` chokepoint + key-set test (KS-1).
+- [ ] New LLM row marker? → tombstone protocol same PR (TS-1).
+- [ ] Body iteration? → use `iter_body_frame_rows` / `section_line_ranges` (CW-1).
+- [ ] Log/schema writer? → auto-heal or hard-fail (LW-1, LW-2).
+- [ ] New `.md` reader entry? → `normalize_page_file` + register in `_HEALING_ENTRY_POINTS` (HE-1).
+- [ ] New writer? → strip timestamps before compare (W-1) + round-trip-assert after write (W-2).
+- [ ] Catalog field? → has a writer (TC-3) + correct `source` (TC-2, D14).
+- [ ] Catalog refresh? → page-independent (TC-5).
+- [ ] `classify_variable_id`? → library identity passed in as data (D12).
+- [ ] Sidecar schema change? → migration preserves `fix_variable_id` (LW-2, TS-S-5).
+- [ ] New catalog consumer? → CR-2 staleness-check before producing results.

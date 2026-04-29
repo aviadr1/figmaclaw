@@ -10,6 +10,11 @@ INVARIANTS:
 
 from __future__ import annotations
 
+import asyncio
+import time
+from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime
+from itertools import pairwise
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -171,6 +176,72 @@ async def test_retries_on_429():
 
     assert call_count == 3
     assert meta.version == "123456"
+
+
+def test_default_rate_limit_matches_figma_tier_one_guidance():
+    """INVARIANT: default client pacing is 15 RPM / 4s, not a burstier setting."""
+    client = FigmaClient(api_key="figd_test")
+
+    assert client._min_interval == 4.0
+
+
+@pytest.mark.asyncio
+async def test_concurrent_requests_are_paced_serially():
+    """INVARIANT: concurrent callers share one pacing gate.
+
+    Pull refreshes fetch page chunks concurrently. Without a lock around the
+    pacer, every waiting task can wake at the same time and burst into Figma,
+    which defeats the proactive rate limit and produces 429s.
+    """
+    request_times: list[float] = []
+
+    with respx.mock:
+
+        def record_request(request: httpx.Request) -> httpx.Response:
+            request_times.append(time.monotonic())
+            return httpx.Response(200, json=_meta_response())
+
+        respx.get(f"https://api.figma.com/v1/files/{FILE_KEY}").mock(side_effect=record_request)
+
+        async with FigmaClient(api_key="figd_test", rate_limit_rpm=1200) as client:
+            await asyncio.gather(
+                client.get_file_meta(FILE_KEY),
+                client.get_file_meta(FILE_KEY),
+                client.get_file_meta(FILE_KEY),
+            )
+
+    assert len(request_times) == 3
+    gaps = [b - a for a, b in pairwise(request_times)]
+    assert min(gaps) >= 0.04
+
+
+@pytest.mark.asyncio
+async def test_retries_on_429_with_http_date_retry_after():
+    """INVARIANT: Retry-After supports both seconds and HTTP-date forms."""
+    call_count = 0
+    retry_at = format_datetime(datetime.now(UTC) + timedelta(seconds=30), usegmt=True)
+
+    with respx.mock:
+
+        def rate_limited_then_ok(request: httpx.Request) -> httpx.Response:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return httpx.Response(429, headers={"retry-after": retry_at})
+            return httpx.Response(200, json=_meta_response())
+
+        respx.get(f"https://api.figma.com/v1/files/{FILE_KEY}").mock(
+            side_effect=rate_limited_then_ok
+        )
+
+        with patch("asyncio.sleep", new_callable=AsyncMock) as sleep_mock:
+            async with FigmaClient(api_key="figd_test") as client:
+                meta = await client.get_file_meta(FILE_KEY)
+
+    assert call_count == 2
+    assert meta.version == "123456"
+    assert sleep_mock.await_args_list
+    assert max(call.args[0] for call in sleep_mock.await_args_list) >= 5
 
 
 @pytest.mark.asyncio
@@ -393,3 +464,137 @@ async def test_list_project_files_returns_empty_list_when_none():
             files = await client.list_project_files(project_id)
 
     assert files == []
+
+
+# ---------------------------------------------------------------------------
+# get_local_variables — canon §4 TC-1, §5 D14
+# ---------------------------------------------------------------------------
+
+
+def _local_variables_response() -> dict:
+    """Synthetic /variables/local response with one collection, two modes,
+    one COLOR variable with mode-specific values, and one FLOAT variable."""
+    return {
+        "status": 200,
+        "error": False,
+        "meta": {
+            "variables": {
+                "VariableID:abc/1:1": {
+                    "id": "VariableID:abc/1:1",
+                    "name": "fg/primary",
+                    "key": "abc-fg-primary",
+                    "variableCollectionId": "VariableCollectionId:abc/1:0",
+                    "resolvedType": "COLOR",
+                    "valuesByMode": {
+                        "1:0": {"r": 0.06, "g": 0.15, "b": 0.22, "a": 1.0},
+                        "1:1": {"r": 1.0, "g": 1.0, "b": 1.0, "a": 1.0},
+                    },
+                    "remote": False,
+                    "scopes": ["ALL_FILLS"],
+                    "codeSyntax": {"WEB": "fg-primary"},
+                },
+                "VariableID:abc/2:1": {
+                    "id": "VariableID:abc/2:1",
+                    "name": "radius/md",
+                    "key": "abc-radius-md",
+                    "variableCollectionId": "VariableCollectionId:abc/1:0",
+                    "resolvedType": "FLOAT",
+                    "valuesByMode": {"1:0": 12.0, "1:1": 12.0},
+                    "scopes": ["CORNER_RADIUS"],
+                },
+            },
+            "variableCollections": {
+                "VariableCollectionId:abc/1:0": {
+                    "id": "VariableCollectionId:abc/1:0",
+                    "name": "Primitives",
+                    "key": "abc-primitives",
+                    "modes": [
+                        {"modeId": "1:0", "name": "Light"},
+                        {"modeId": "1:1", "name": "Dark"},
+                    ],
+                    "defaultModeId": "1:0",
+                    "variableIds": [
+                        "VariableID:abc/1:1",
+                        "VariableID:abc/2:1",
+                    ],
+                }
+            },
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_local_variables_returns_typed_response_on_success():
+    """INVARIANT (TC-1): get_local_variables returns a typed LocalVariablesResponse
+    with full identity per variable (name, collection, valuesByMode, scopes, codeSyntax)."""
+    with respx.mock:
+        respx.get(f"https://api.figma.com/v1/files/{FILE_KEY}/variables/local").mock(
+            return_value=httpx.Response(200, json=_local_variables_response())
+        )
+        async with FigmaClient(api_key="figd_test") as client:
+            response = await client.get_local_variables(FILE_KEY)
+
+    assert response is not None
+    assert response.status == 200
+    assert response.error is False
+    assert len(response.meta.variables) == 2
+
+    fg = response.meta.variables["VariableID:abc/1:1"]
+    assert fg.name == "fg/primary"
+    assert fg.resolvedType == "COLOR"
+    assert set(fg.valuesByMode.keys()) == {"1:0", "1:1"}  # TC-4 mode-aware
+    assert fg.scopes == ["ALL_FILLS"]
+    assert fg.codeSyntax == {"WEB": "fg-primary"}
+
+    coll = response.meta.variableCollections["VariableCollectionId:abc/1:0"]
+    assert coll.name == "Primitives"
+    assert coll.defaultModeId == "1:0"
+    assert len(coll.modes) == 2
+    assert coll.modes[0].name == "Light"
+
+
+@pytest.mark.asyncio
+async def test_get_local_variables_returns_none_on_403():
+    """INVARIANT (D14): when Enterprise scope `file_variables:read` is not granted,
+    Figma returns 403. The client maps this to None so callers can fall back to
+    seeded:* catalog entries instead of crashing."""
+    with respx.mock:
+        respx.get(f"https://api.figma.com/v1/files/{FILE_KEY}/variables/local").mock(
+            return_value=httpx.Response(403, json={"status": 403, "error": True})
+        )
+        async with FigmaClient(api_key="figd_test") as client:
+            response = await client.get_local_variables(FILE_KEY)
+
+    assert response is None
+
+
+@pytest.mark.asyncio
+async def test_get_local_variables_propagates_non_403_errors():
+    """INVARIANT (LW-1): non-403 errors must NOT be silently swallowed (warn-and-drop).
+    They propagate to the caller, which decides whether to retry or skip the file."""
+    # Use 401 — never retried by the client, so the error surfaces directly.
+    with respx.mock:
+        respx.get(f"https://api.figma.com/v1/files/{FILE_KEY}/variables/local").mock(
+            return_value=httpx.Response(401, json={"status": 401, "error": True})
+        )
+        async with FigmaClient(api_key="figd_test") as client:  # noqa: SIM117
+            with pytest.raises(httpx.HTTPStatusError) as exc_info:
+                await client.get_local_variables(FILE_KEY)
+
+    assert exc_info.value.response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_get_local_variables_handles_empty_meta():
+    """INVARIANT: a file with no variables (empty meta) returns an empty,
+    valid response — not None, not an error."""
+    with respx.mock:
+        respx.get(f"https://api.figma.com/v1/files/{FILE_KEY}/variables/local").mock(
+            return_value=httpx.Response(200, json={"status": 200, "error": False, "meta": {}})
+        )
+        async with FigmaClient(api_key="figd_test") as client:
+            response = await client.get_local_variables(FILE_KEY)
+
+    assert response is not None
+    assert response.meta.variables == {}
+    assert response.meta.variableCollections == {}

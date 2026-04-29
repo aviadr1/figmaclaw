@@ -16,6 +16,7 @@ from pathlib import Path
 import click
 import yaml
 
+from figmaclaw.body_validation import validate_markdown_contract
 from figmaclaw.figma_frontmatter import CURRENT_ENRICHMENT_SCHEMA_VERSION
 from figmaclaw.figma_parse import parse_frontmatter, split_frontmatter
 from figmaclaw.figma_render import _FlowDict, _FlowList, _FrontmatterDumper
@@ -44,6 +45,16 @@ def mark_enriched_cmd(ctx: click.Context, md_path: Path, auto_commit: bool) -> N
     fm = parse_frontmatter(md_text)
     if fm is None:
         click.echo(f"error: {md_path}: no figmaclaw frontmatter found", err=True)
+        ctx.exit(2)
+        return
+
+    contract = validate_markdown_contract(md_text, fm.frames)
+    if not contract.ok:
+        click.echo(
+            "error: body/frontmatter contract validation failed before mark-enriched:\n"
+            + "\n".join(f"- {m}" for m in contract.messages()),
+            err=True,
+        )
         ctx.exit(2)
         return
 

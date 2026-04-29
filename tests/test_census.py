@@ -169,6 +169,40 @@ class TestCensusSkipBehavior:
         assert out.read_text() != content_before
 
     @pytest.mark.asyncio
+    async def test_census_reports_empty_registry_for_explicit_file_key(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ):
+        """INVARIANT REG-1: explicit census probes persist empty registry state.
+
+        Silent no-op is fine for whole-repo census because most product files
+        are not libraries. For ``--file-key`` diagnostics, the repo artifact
+        must distinguish "probed and empty" from "not probed".
+        """
+        state = FigmaSyncState(tmp_path)
+        state.load()
+        state.add_tracked_file("key1", "Tap In Design System")
+        state.save()
+
+        mock_client = AsyncMock()
+        mock_client.get_component_sets = AsyncMock(return_value=[])
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client_class = MagicMock(return_value=mock_client)
+
+        with patch.object(census_module, "FigmaClient", mock_client_class):
+            await _run("fake-api-key", tmp_path, "key1", auto_commit=False, force=False)
+
+        assert "Tap In Design System: 0 published component set(s)" in capsys.readouterr().out
+        out = tmp_path / "figma" / file_slug_for_key("Tap In Design System", "key1") / "_census.md"
+        assert out.exists()
+        text = out.read_text()
+        assert "component_set_count: 0" in text
+        assert "content_hash: 4f53cda18c2baa0c" in text
+        assert "# Tap In Design System — Published Component Sets" in text
+
+    @pytest.mark.asyncio
     async def test_census_uses_latest_file_name_slug_from_manifest(self, tmp_path: Path):
         """INVARIANT: census path follows latest manifest file_name for this file key."""
         state = FigmaSyncState(tmp_path)

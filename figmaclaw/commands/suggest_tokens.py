@@ -8,7 +8,8 @@ from pathlib import Path
 
 import click
 
-from figmaclaw.token_catalog import load_catalog, suggest_for_sidecar
+from figmaclaw.commands._shared import load_state
+from figmaclaw.token_catalog import catalog_staleness_errors, load_catalog, suggest_for_sidecar
 
 
 @click.command("suggest-tokens")
@@ -44,6 +45,11 @@ def suggest_tokens_cmd(
 
     sidecar_file = Path(sidecar_path)
     sidecar = json.loads(sidecar_file.read_text(encoding="utf-8"))
+    file_key = sidecar.get("file_key")
+    if file_key:
+        errors = catalog_staleness_errors(catalog, load_state(repo_dir), file_key)
+        if errors:
+            raise click.ClickException(errors[0])
 
     # Apply frame filter if requested
     if frames:
@@ -62,9 +68,22 @@ def suggest_tokens_cmd(
 
     frames_processed = len(filtered_frames)
 
-    # Count catalog stats
-    color_vars = sum(1 for v in catalog.variables.values() if v.hex is not None)
-    numeric_vars = sum(1 for v in catalog.variables.values() if v.numeric_value is not None)
+    # Count catalog stats — use the schema-v2 values_by_mode shape.
+    # (Pre-v2 catalogs are migrated on load; here we only see v2 entries.)
+    def _has_color(v: object) -> bool:
+        for value in getattr(v, "values_by_mode", {}).values():
+            if getattr(value, "hex", None):
+                return True
+        return False
+
+    def _has_numeric(v: object) -> bool:
+        for value in getattr(v, "values_by_mode", {}).values():
+            if getattr(value, "numeric_value", None) is not None:
+                return True
+        return False
+
+    color_vars = sum(1 for v in catalog.variables.values() if _has_color(v))
+    numeric_vars = sum(1 for v in catalog.variables.values() if _has_numeric(v))
     total_vars = len(catalog.variables)
 
     click.echo(f"Catalog: {total_vars} variables ({color_vars} color, {numeric_vars} numeric)")

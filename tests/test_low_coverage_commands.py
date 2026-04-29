@@ -57,6 +57,7 @@ def test_mark_stale_handles_already_stale_and_no_frontmatter(tmp_path: Path) -> 
 file_key: abc123
 page_node_id: "1:1"
 frames: ["2:2"]
+enriched_schema_version: 0
 ---
 Body\n""",
         encoding="utf-8",
@@ -107,10 +108,15 @@ def test_suggest_tokens_dry_run_and_frame_filtered_write(tmp_path: Path) -> None
         encoding="utf-8",
     )
 
+    # Catalog stub uses the v2 values_by_mode shape (canon TC-4).
     catalog = SimpleNamespace(
         variables={
-            "a": SimpleNamespace(hex="#FFFFFF", numeric_value=None),
-            "b": SimpleNamespace(hex=None, numeric_value=8),
+            "a": SimpleNamespace(
+                values_by_mode={"_default": SimpleNamespace(hex="#FFFFFF", numeric_value=None)}
+            ),
+            "b": SimpleNamespace(
+                values_by_mode={"_default": SimpleNamespace(hex=None, numeric_value=8)}
+            ),
         }
     )
 
@@ -167,6 +173,98 @@ def test_suggest_tokens_dry_run_and_frame_filtered_write(tmp_path: Path) -> None
     # Filtered write should not alter non-matching frame
     assert "suggest_status" not in written["frames"]["11:2"]["issues"][0]
     assert written["suggested_at"] == "2026-04-15T12:00:00Z"
+
+
+def test_suggest_tokens_refuses_stale_catalog(tmp_path: Path) -> None:
+    """INVARIANT (CR-2, TC-7): suggest-tokens exits before using stale catalog data."""
+    state = FigmaSyncState(tmp_path)
+    state.add_tracked_file("abc123", "Design System")
+    state.set_file_meta(
+        "abc123",
+        version="v2",
+        last_modified="2026-04-28T00:00:00Z",
+        last_checked_at="2026-04-28T00:00:00Z",
+        file_name="Design System",
+    )
+    state.save()
+
+    catalog_path = tmp_path / ".figma-sync" / "ds_catalog.json"
+    catalog_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "libraries": {
+                    "libabc": {
+                        "name": "Design System",
+                        "source_file_key": "abc123",
+                        "source_version": "v1",
+                    }
+                },
+                "variables": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    sidecar = tmp_path / "page.tokens.json"
+    sidecar.write_text(
+        json.dumps({"file_key": "abc123", "frames": {}}),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        ["--repo-dir", str(tmp_path), "suggest-tokens", "--sidecar", str(sidecar)],
+    )
+
+    assert result.exit_code != 0
+    assert "ds_catalog.json is stale" in result.output
+    assert "figmaclaw variables --file-key abc123" in result.output
+
+
+def test_suggest_tokens_accepts_catalog_newer_than_manifest(tmp_path: Path) -> None:
+    """A standalone variables refresh can observe a newer Figma version than manifest state."""
+    state = FigmaSyncState(tmp_path)
+    state.add_tracked_file("abc123", "Design System")
+    state.set_file_meta(
+        "abc123",
+        version="100",
+        last_modified="2026-04-28T00:00:00Z",
+        last_checked_at="2026-04-28T00:00:00Z",
+        file_name="Design System",
+    )
+    state.save()
+
+    catalog_path = tmp_path / ".figma-sync" / "ds_catalog.json"
+    catalog_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "libraries": {
+                    "local:abc123": {
+                        "name": "Design System",
+                        "source_file_key": "abc123",
+                        "source_version": "101",
+                    }
+                },
+                "variables": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    sidecar = tmp_path / "page.tokens.json"
+    sidecar.write_text(
+        json.dumps({"file_key": "abc123", "frames": {}}),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        ["--repo-dir", str(tmp_path), "suggest-tokens", "--sidecar", str(sidecar), "--dry-run"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    assert "Catalog:" in result.output
 
 
 def test_self_skill_list_print_specific_and_not_found(
@@ -278,3 +376,23 @@ def test_git_utils_commit_returns_false_on_no_diff(tmp_path: Path) -> None:
 
     assert committed is False
     assert not any(cmd[-1] == "commit" for cmd in calls)
+
+
+def test_mark_stale_migrates_missing_enrichment_schema_version(tmp_path: Path) -> None:
+    md = tmp_path / "legacy.md"
+    md.write_text(
+        """---
+file_key: abc123
+page_node_id: "1:1"
+frames: ["2:2"]
+---
+Body
+""",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    res = runner.invoke(cli, ["--repo-dir", str(tmp_path), "mark-stale", str(md)])
+    assert res.exit_code == 0
+    assert "cleared enrichment state" in res.output
+    assert "enriched_schema_version: 0" in md.read_text(encoding="utf-8")

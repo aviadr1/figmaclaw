@@ -18,8 +18,11 @@ import pytest
 from figmaclaw.commands import screenshots as screenshots_module
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection
+from figmaclaw.figma_paths import screenshot_cache_path
 from figmaclaw.figma_render import scaffold_page
-from figmaclaw.figma_sync_state import PageEntry
+from figmaclaw.figma_sync_state import FileEntry, PageEntry
+
+_VALID_PNG_HEADER = b"\x89PNG\r\n\x1a\n"
 
 
 def _make_page(node_ids: list[str] | None = None, described: bool = False) -> FigmaPage:
@@ -61,6 +64,11 @@ def _write_md(tmp_path: Path, page: FigmaPage) -> Path:
     return p
 
 
+def _write_valid_png(path: Path, payload: bytes = b"cached") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(_VALID_PNG_HEADER + payload)
+
+
 @pytest.mark.asyncio
 async def test_screenshots_returns_manifest_with_file_key(tmp_path: Path) -> None:
     """INVARIANT: screenshots result always contains file_key."""
@@ -74,7 +82,7 @@ async def test_screenshots_returns_manifest_with_file_key(tmp_path: Path) -> Non
             "11:3": "http://example.com/3.png",
         }
     )
-    mock_client.download_url = AsyncMock(return_value=b"\x89PNG\r\n")
+    mock_client.download_url = AsyncMock(return_value=_VALID_PNG_HEADER + b"ok")
 
     with patch.object(screenshots_module, "FigmaClient") as MockClientClass:
         MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
@@ -100,7 +108,7 @@ async def test_screenshots_successful_downloads_in_manifest(tmp_path: Path) -> N
             "11:2": "http://example.com/2.png",
         }
     )
-    mock_client.download_url = AsyncMock(return_value=b"\x89PNG\r\n")
+    mock_client.download_url = AsyncMock(return_value=_VALID_PNG_HEADER + b"ok")
 
     with patch.object(screenshots_module, "FigmaClient") as MockClientClass:
         MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
@@ -213,7 +221,7 @@ async def test_screenshots_pending_only_skips_described_frames(tmp_path: Path) -
 
     mock_client = MagicMock(spec=FigmaClient)
     mock_client.get_image_urls = AsyncMock(return_value={"11:2": "http://example.com/2.png"})
-    mock_client.download_url = AsyncMock(return_value=b"\x89PNG\r\n")
+    mock_client.download_url = AsyncMock(return_value=_VALID_PNG_HEADER + b"ok")
 
     with patch.object(screenshots_module, "FigmaClient") as MockClientClass:
         MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
@@ -229,7 +237,285 @@ async def test_screenshots_pending_only_skips_described_frames(tmp_path: Path) -
     assert node_ids == {"11:2"}
 
 
+@pytest.mark.asyncio
+async def test_screenshots_non_stale_reuses_existing_cache(tmp_path: Path) -> None:
+    """INVARIANT: non-stale runs skip re-downloading already cached screenshots."""
+    md_path = _write_md(tmp_path, _make_page(["11:1", "11:2"]))
+    cached = screenshot_cache_path(tmp_path, "abc123", "11:1")
+    _write_valid_png(cached)
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_image_urls = AsyncMock(return_value={"11:2": "http://example.com/2.png"})
+    mock_client.download_url = AsyncMock(return_value=_VALID_PNG_HEADER + b"fresh")
+
+    with patch.object(screenshots_module, "FigmaClient") as MockClientClass:
+        MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        result = await screenshots_module._run(
+            "fake-key", tmp_path, md_path, pending_only=False, stale_only=False
+        )
+
+    # Existing cached frame is skipped from fetch list.
+    mock_client.get_image_urls.assert_called_once_with("abc123", ["11:2"])
+    mock_client.download_url.assert_called_once_with("http://example.com/2.png")
+    node_ids = [s["node_id"] for s in result["screenshots"]]
+    assert node_ids == ["11:1", "11:2"]
+    assert result["failed"] == []
+
+
+@pytest.mark.asyncio
+async def test_screenshots_non_stale_all_cached_skips_figma_fetch(tmp_path: Path) -> None:
+    """INVARIANT: non-stale runs do zero Figma calls when all requested frames are cached."""
+    md_path = _write_md(tmp_path, _make_page(["11:1", "11:2"]))
+    cached_1 = screenshot_cache_path(tmp_path, "abc123", "11:1")
+    cached_2 = screenshot_cache_path(tmp_path, "abc123", "11:2")
+    _write_valid_png(cached_1, b"cached-1")
+    _write_valid_png(cached_2, b"cached-2")
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_image_urls = AsyncMock(return_value={})
+    mock_client.download_url = AsyncMock(return_value=_VALID_PNG_HEADER + b"fresh")
+
+    with patch.object(screenshots_module, "FigmaClient") as MockClientClass:
+        MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        result = await screenshots_module._run(
+            "fake-key", tmp_path, md_path, pending_only=False, stale_only=False
+        )
+
+    mock_client.get_image_urls.assert_not_called()
+    mock_client.download_url.assert_not_called()
+    node_ids = [s["node_id"] for s in result["screenshots"]]
+    assert node_ids == ["11:1", "11:2"]
+    assert result["failed"] == []
+
+
+@pytest.mark.asyncio
+async def test_screenshots_non_stale_invalid_cache_is_refetched(tmp_path: Path) -> None:
+    """INVARIANT: invalid cache artifacts (e.g., empty file) are treated as misses."""
+    md_path = _write_md(tmp_path, _make_page(["11:1"]))
+    invalid_cache = screenshot_cache_path(tmp_path, "abc123", "11:1")
+    invalid_cache.parent.mkdir(parents=True, exist_ok=True)
+    invalid_cache.write_bytes(b"")
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_image_urls = AsyncMock(return_value={"11:1": "http://example.com/1.png"})
+    mock_client.download_url = AsyncMock(return_value=_VALID_PNG_HEADER + b"fresh")
+
+    with patch.object(screenshots_module, "FigmaClient") as MockClientClass:
+        MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        result = await screenshots_module._run(
+            "fake-key", tmp_path, md_path, pending_only=False, stale_only=False
+        )
+
+    mock_client.get_image_urls.assert_called_once_with("abc123", ["11:1"])
+    mock_client.download_url.assert_called_once_with("http://example.com/1.png")
+    assert [s["node_id"] for s in result["screenshots"]] == ["11:1"]
+    assert result["failed"] == []
+
+
+@pytest.mark.asyncio
+async def test_screenshots_non_stale_corrupt_png_is_refetched(tmp_path: Path) -> None:
+    """INVARIANT: non-image content with .png extension is treated as invalid cache."""
+    md_path = _write_md(tmp_path, _make_page(["11:1"]))
+    corrupt = screenshot_cache_path(tmp_path, "abc123", "11:1")
+    corrupt.parent.mkdir(parents=True, exist_ok=True)
+    corrupt.write_bytes(b"<html>error</html>")
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_image_urls = AsyncMock(return_value={"11:1": "http://example.com/1.png"})
+    mock_client.download_url = AsyncMock(return_value=_VALID_PNG_HEADER + b"fresh")
+
+    with patch.object(screenshots_module, "FigmaClient") as MockClientClass:
+        MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        result = await screenshots_module._run(
+            "fake-key", tmp_path, md_path, pending_only=False, stale_only=False
+        )
+
+    mock_client.get_image_urls.assert_called_once_with("abc123", ["11:1"])
+    mock_client.download_url.assert_called_once_with("http://example.com/1.png")
+    assert [s["node_id"] for s in result["screenshots"]] == ["11:1"]
+    assert result["failed"] == []
+
+
+@pytest.mark.asyncio
+async def test_screenshots_non_stale_unsupported_extension_is_refetched(tmp_path: Path) -> None:
+    """INVARIANT: cache files with unsupported extension are treated as invalid."""
+    md_path = _write_md(tmp_path, _make_page(["11:1"]))
+    unsupported = tmp_path / ".figma-cache" / "screenshots" / "abc123" / "11-1.webp"
+    unsupported.parent.mkdir(parents=True, exist_ok=True)
+    unsupported.write_bytes(b"RIFF....WEBP")
+
+    def _cache_path(_: Path, __: str, node_id: str) -> Path:
+        if node_id == "11:1":
+            return unsupported
+        raise AssertionError(f"unexpected node id {node_id}")
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_image_urls = AsyncMock(return_value={"11:1": "http://example.com/1.png"})
+    mock_client.download_url = AsyncMock(return_value=_VALID_PNG_HEADER + b"fresh")
+
+    with (
+        patch.object(screenshots_module, "screenshot_cache_path", side_effect=_cache_path),
+        patch.object(screenshots_module, "FigmaClient") as MockClientClass,
+    ):
+        MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
+        result = await screenshots_module._run(
+            "fake-key", tmp_path, md_path, pending_only=False, stale_only=False
+        )
+
+    mock_client.get_image_urls.assert_called_once_with("abc123", ["11:1"])
+    mock_client.download_url.assert_called_once_with("http://example.com/1.png")
+    assert [s["node_id"] for s in result["screenshots"]] == ["11:1"]
+    assert result["failed"] == []
+
+
+@pytest.mark.asyncio
+async def test_screenshots_non_stale_preserves_requested_node_order(tmp_path: Path) -> None:
+    """INVARIANT: screenshot manifest preserves source node order with mixed cache hits/misses."""
+    md_path = _write_md(tmp_path, _make_page(["11:1", "11:2", "11:3"]))
+    cached = screenshot_cache_path(tmp_path, "abc123", "11:2")
+    _write_valid_png(cached)
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_image_urls = AsyncMock(
+        return_value={
+            "11:1": "http://example.com/1.png",
+            "11:3": "http://example.com/3.png",
+        }
+    )
+    mock_client.download_url = AsyncMock(return_value=_VALID_PNG_HEADER + b"fresh")
+
+    with patch.object(screenshots_module, "FigmaClient") as MockClientClass:
+        MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        result = await screenshots_module._run(
+            "fake-key", tmp_path, md_path, pending_only=False, stale_only=False
+        )
+
+    assert [s["node_id"] for s in result["screenshots"]] == ["11:1", "11:2", "11:3"]
+    assert result["failed"] == []
+
+
+@pytest.mark.asyncio
+async def test_screenshots_stale_mode_downloads_even_if_cached(tmp_path: Path) -> None:
+    """INVARIANT: --stale always refreshes selected stale frames, ignoring cache presence."""
+    md_path = _write_md(tmp_path, _make_page(["11:1", "11:2"]))
+    cached = screenshot_cache_path(tmp_path, "abc123", "11:1")
+    _write_valid_png(cached, b"old")
+
+    state = screenshots_module.load_state(tmp_path)
+    state.manifest.files["abc123"] = FileEntry(
+        file_name="Web App",
+        version="v1",
+        last_modified="2026-03-31T00:00:00Z",
+        pages={},
+    )
+    page_entry = PageEntry(
+        page_name="Onboarding",
+        page_slug="onboarding",
+        md_path=str(md_path.relative_to(tmp_path)),
+        page_hash="deadbeef",
+        last_refreshed_at="2026-03-31T00:00:00Z",
+        frame_hashes={"11:1": "new-h1", "11:2": "new-h2"},
+    )
+    state.set_page_entry("abc123", "7741:45837", page_entry)
+    state.save()
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_image_urls = AsyncMock(
+        return_value={"11:1": "http://example.com/1.png", "11:2": "http://example.com/2.png"}
+    )
+    mock_client.download_url = AsyncMock(return_value=_VALID_PNG_HEADER + b"fresh")
+
+    with patch.object(screenshots_module, "FigmaClient") as MockClientClass:
+        MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        result = await screenshots_module._run(
+            "fake-key", tmp_path, md_path, pending_only=False, stale_only=True
+        )
+
+    # Both stale frames are fetched, including one with an existing local cache file.
+    mock_client.get_image_urls.assert_called_once_with("abc123", ["11:1", "11:2"])
+    assert mock_client.download_url.call_count == 2
+    node_ids = {s["node_id"] for s in result["screenshots"]}
+    assert node_ids == {"11:1", "11:2"}
+
+
+@pytest.mark.asyncio
+async def test_screenshots_logs_cache_summary_for_fast_path(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """INVARIANT: non-stale all-cached path emits cache hit/miss observability logs."""
+    md_path = _write_md(tmp_path, _make_page(["11:1", "11:2"]))
+    for node_id in ("11:1", "11:2"):
+        cached = screenshot_cache_path(tmp_path, "abc123", node_id)
+        _write_valid_png(cached)
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_image_urls = AsyncMock(return_value={})
+    mock_client.download_url = AsyncMock(return_value=_VALID_PNG_HEADER + b"fresh")
+
+    with patch.object(screenshots_module, "FigmaClient") as MockClientClass:
+        MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
+        await screenshots_module._run(
+            "fake-key", tmp_path, md_path, pending_only=False, stale_only=False
+        )
+
+    captured = capsys.readouterr()
+    assert "cache hits=2 misses=0 invalid=0" in captured.err
+    assert "cache satisfied all 2 frame(s); no fetch needed" in captured.err
+
+
 def test_screenshots_semaphore_limit_constant() -> None:
     """INVARIANT: The max concurrent downloads constant is set to a sensible limit (<= 20)."""
     assert screenshots_module._MAX_CONCURRENT_DOWNLOADS <= 20
     assert screenshots_module._MAX_CONCURRENT_DOWNLOADS >= 1
+
+
+@pytest.mark.asyncio
+async def test_screenshots_pending_only_includes_unavailable_markers(tmp_path: Path) -> None:
+    """INVARIANT: --pending includes rows marked screenshot-unavailable for retry."""
+    md_path = tmp_path / "page.md"
+    md_path.write_text(
+        "---\n"
+        "file_key: abc123\n"
+        "page_node_id: '7741:45837'\n"
+        "frames: ['11:1', '11:2']\n"
+        "---\n\n"
+        "## Auth (`10:1`)\n\n"
+        "| Screen | Node ID | Description |\n"
+        "|--------|---------|-------------|\n"
+        "| Login | `11:1` | (screenshot unavailable) |\n"
+        "| Signup | `11:2` | Ready and described |\n",
+        encoding="utf-8",
+    )
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.download_url = AsyncMock(return_value=b"\x89PNG\r\n")
+
+    with (
+        patch.object(
+            screenshots_module, "get_image_urls_batched", AsyncMock(return_value={"11:1": None})
+        ),
+        patch.object(screenshots_module, "FigmaClient") as MockClientClass,
+    ):
+        MockClientClass.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        MockClientClass.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        result = await screenshots_module._run(
+            "fake-key", tmp_path, md_path, pending_only=True, stale_only=False
+        )
+
+    assert result["screenshots"] == []
+    assert result["failed"] == ["11:1"]

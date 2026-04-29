@@ -11,6 +11,8 @@ breaks the entire enrichment pipeline (24+ hours of silent CI failures).
 
 from __future__ import annotations
 
+import csv
+import json
 import py_compile
 import textwrap
 from pathlib import Path
@@ -20,6 +22,7 @@ from click.testing import CliRunner
 
 from figmaclaw.commands import claude_run as claude_run_mod
 from figmaclaw.commands.claude_run import (
+    ENRICHMENT_LOG_SCHEMA_VERSION,
     build_prompt,
     collect_files,
     enrichment_info,
@@ -94,6 +97,7 @@ class TestEnrichmentInfo:
             page_node_id: "0:1"
             enriched_hash: "sha256:abcdef1234567890"
             enriched_at: "2026-04-01T00:00:00Z"
+            enriched_schema_version: 1
             ---
 
             # Page Title
@@ -130,6 +134,31 @@ class TestEnrichmentInfo:
         needs, count = enrichment_info(md)
         assert needs is True
         assert count == 2
+
+    def test_enriched_hash_with_llm_marker_still_needs_enrichment(self, tmp_path: Path) -> None:
+        """LLM marker rows must override enriched_hash and force re-enrichment."""
+        md = tmp_path / "page.md"
+        md.write_text(
+            textwrap.dedent("""            ---
+            file_key: abc123
+            page_node_id: "0:1"
+            enriched_hash: "sha256:abcdef1234567890"
+            enriched_at: "2026-04-01T00:00:00Z"
+            enriched_schema_version: 1
+            ---
+
+            # Page Title
+
+            <!-- LLM: needs rewrite for stale prose -->
+
+            | Screen | Node ID | Description |
+            |--------|---------|-------------|
+            | Login  | `1:1`   | Login screen with email/password form |
+        """)
+        )
+        needs, count = enrichment_info(md)
+        assert needs is True
+        assert count == 1
 
     def test_counts_frame_rows_correctly(self, tmp_path: Path) -> None:
         """Frame count = table rows with backtick node IDs, excluding header/separator."""
@@ -214,6 +243,24 @@ class TestEnrichmentInfo:
         assert needs is True
         assert count == 1
 
+    def test_census_file_is_never_enrichable(self, tmp_path: Path) -> None:
+        """_census.md is an inventory artifact and must never enter enrichment."""
+        md = tmp_path / "_census.md"
+        md.write_text(
+            textwrap.dedent("""\
+            ---
+            file_key: abc123
+            ---
+
+            | Component set | Key | Page | Updated |
+            |---|---|---|---|
+            | `Button` | `k1` | Components | 2026-04-15 |
+        """)
+        )
+        needs, count = enrichment_info(md)
+        assert needs is False
+        assert count == 0
+
 
 # ---------------------------------------------------------------------------
 # collect_files — file discovery and filtering
@@ -228,6 +275,7 @@ class TestCollectFiles:
         fm_lines = ["---", "file_key: abc", 'page_node_id: "0:1"']
         if enriched:
             fm_lines.append('enriched_hash: "sha256:abc"')
+            fm_lines.append("enriched_schema_version: 1")
         fm_lines.append("---")
         fm_lines.append("")
         fm_lines.append("| Screen | Node ID | Description |")
@@ -244,6 +292,13 @@ class TestCollectFiles:
         result = collect_files(md, "**/*.md", changed_only=False)
         assert result == [md]
 
+    def test_single_file_target_census_is_skipped(self, tmp_path: Path) -> None:
+        """Single-file census targets are ignored as non-enrichable artifacts."""
+        census = tmp_path / "_census.md"
+        census.write_text("---\nfile_key: abc123\n---\n")
+        result = collect_files(census, "**/*.md", changed_only=False)
+        assert result == []
+
     def test_directory_glob(self, tmp_path: Path) -> None:
         """Directory target → glob matches."""
         pages = tmp_path / "figma" / "pages"
@@ -252,6 +307,16 @@ class TestCollectFiles:
         (tmp_path / "figma" / "other.txt").write_text("not a match")
         result = collect_files(tmp_path / "figma", "**/*.md", changed_only=False)
         assert len(result) == 2
+
+    def test_directory_glob_skips_census_even_without_needs_enrichment(
+        self, tmp_path: Path
+    ) -> None:
+        """Census files are excluded during discovery even without needs_enrichment."""
+        root = tmp_path / "figma" / "web-app-abc123"
+        self._make_page(root / "pages" / "a.md")
+        (root / "_census.md").write_text("---\nfile_key: abc123\n---\n")
+        result = collect_files(tmp_path / "figma", "**/*.md", changed_only=False)
+        assert [p.name for p in result] == ["a.md"]
 
     def test_needs_enrichment_filters_enriched(self, tmp_path: Path) -> None:
         """needs_enrichment=True filters out files with enriched_hash."""
@@ -321,6 +386,27 @@ class TestCollectFiles:
             tmp_path / "figma", "**/*.md", changed_only=False, needs_enrichment=True
         )
         assert [r.name for r in result] == ["small.md", "medium.md", "big.md"]
+
+    def test_needs_enrichment_skips_census_files(self, tmp_path: Path) -> None:
+        """Census markdown files must never be selected for enrichment."""
+        figma_dir = tmp_path / "figma" / "design-system-abc123"
+        pages = figma_dir / "pages"
+        self._make_page(pages / "pending.md", enriched=False, frames=3)
+        (figma_dir / "_census.md").write_text(
+            textwrap.dedent("""\
+            ---
+            file_key: abc123
+            ---
+
+            | Component set | Key | Page | Updated |
+            |---|---|---|---|
+            | `Button` | `k1` | Components | 2026-04-15 |
+        """)
+        )
+        result = collect_files(
+            tmp_path / "figma", "**/*.md", changed_only=False, needs_enrichment=True
+        )
+        assert [r.name for r in result] == ["pending.md"]
 
     def test_empty_directory(self, tmp_path: Path) -> None:
         """Empty directory → empty list, no crash."""
@@ -704,9 +790,18 @@ class TestClaudeRunExecutionBranches:
         md = tmp_path / "page.md"
         self._write_placeholder_page(md)
 
-        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p: (True, 120))
-        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p: [])
-        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p: False)
+        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p, **_kw: (True, 120))
+        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p, **_kw: [])
+        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p, **_kw: False)
+        monkeypatch.setattr(
+            claude_run_mod, "_is_schema_upgrade_only_candidate", lambda _p, **_kw: False
+        )
+        monkeypatch.setattr(
+            claude_run_mod, "_is_llm_marker_only_candidate", lambda _p, **_kw: False
+        )
+        monkeypatch.setattr(
+            claude_run_mod, "_classify_no_work_candidate", lambda _p, **_kw: "phantom"
+        )
         monkeypatch.setattr(
             claude_run_mod.subprocess,
             "run",
@@ -731,28 +826,188 @@ class TestClaudeRunExecutionBranches:
         assert "PHANTOM SELECTION" in result.output
         assert "Verdict (row 5)" in result.output
 
-    def test_section_mode_stuck_detection_breaks_after_retries(
+    def test_section_mode_llm_marker_only_candidate_is_skipped_not_phantom(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        md = tmp_path / "marker-only.md"
+        md.write_text(
+            textwrap.dedent(
+                """                ---
+                file_key: abc123
+                page_node_id: "0:1"
+                enriched_hash: deadbeefcafebabe
+                enriched_schema_version: 1
+                ---
+
+                <!-- LLM: rewrite this section -->
+
+                | Screen | Node ID | Description |
+                |--------|---------|-------------|
+                | Login | `1:1` | already described |
+                """
+            )
+        )
+
+        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p, **_kw: (True, 120))
+        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p, **_kw: [])
+        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p, **_kw: False)
+        monkeypatch.setattr(
+            claude_run_mod, "_is_schema_upgrade_only_candidate", lambda _p, **_kw: False
+        )
+        monkeypatch.setattr(claude_run_mod, "_is_llm_marker_only_candidate", lambda _p, **_kw: True)
+        monkeypatch.setattr(
+            claude_run_mod.subprocess,
+            "run",
+            lambda *args, **kwargs: Mock(stdout="", returncode=0),
+        )
+        run_mock = Mock()
+        monkeypatch.setattr(claude_run_mod, "_run_claude", run_mock)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "claude-run",
+                str(md),
+                "--section-mode",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "skip (LLM-marker-only candidate)" in result.output
+        assert "PHANTOM SELECTION" not in result.output
+        assert run_mock.call_count == 0
+
+    def test_section_mode_malformed_frontmatter_fails_closed_not_dispatch_crash(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        md = tmp_path / "malformed.md"
+        md.write_text(
+            textwrap.dedent(
+                """                ---
+                file_key: abc123
+                page_node_id: "0:1"
+                enriched_hash: deadbeefcafebabe
+                enriched_schema_version: bad
+                ---
+
+                | Screen | Node ID | Description |
+                |--------|---------|-------------|
+                | Login | `1:1` | already described |
+                """
+            )
+        )
+
+        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p, **_kw: (True, 120))
+        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p, **_kw: [])
+        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p, **_kw: False)
+        monkeypatch.setattr(
+            claude_run_mod.subprocess,
+            "run",
+            lambda *args, **kwargs: Mock(stdout="", returncode=0),
+        )
+        run_mock = Mock()
+        monkeypatch.setattr(claude_run_mod, "_run_claude", run_mock)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "claude-run",
+                str(md),
+                "--section-mode",
+            ],
+        )
+
+        assert result.exit_code == 2
+        assert "MALFORMED FRONTMATTER" in result.output
+        assert "Verdict (row 5)" in result.output
+        assert "RED (dispatch crash)" not in result.output
+        assert run_mock.call_count == 0
+
+    def test_section_mode_schema_only_candidate_is_skipped_not_phantom(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        md = tmp_path / "schema-only.md"
+        md.write_text(
+            textwrap.dedent(
+                """                ---
+                file_key: abc123
+                page_node_id: "0:1"
+                enriched_hash: deadbeefcafebabe
+                enriched_schema_version: 0
+                ---
+
+                | Screen | Node ID | Description |
+                |--------|---------|-------------|
+                | Login | `1:1` | already described |
+                """
+            )
+        )
+
+        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p, **_kw: (True, 120))
+        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p, **_kw: [])
+        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p, **_kw: False)
+        monkeypatch.setattr(
+            claude_run_mod, "_is_schema_upgrade_only_candidate", lambda _p, **_kw: True
+        )
+        monkeypatch.setattr(
+            claude_run_mod, "_is_llm_marker_only_candidate", lambda _p, **_kw: False
+        )
+        monkeypatch.setattr(
+            claude_run_mod.subprocess,
+            "run",
+            lambda *args, **kwargs: Mock(stdout="", returncode=0),
+        )
+        run_mock = Mock()
+        monkeypatch.setattr(claude_run_mod, "_run_claude", run_mock)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "claude-run",
+                str(md),
+                "--section-mode",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "skip (schema-only candidate)" in result.output
+        assert "PHANTOM SELECTION" not in result.output
+        assert run_mock.call_count == 0
+
+    def test_section_mode_stuck_detection_breaks_on_first_no_progress(
         self, tmp_path: Path, monkeypatch
     ) -> None:
         md = tmp_path / "page.md"
         self._write_placeholder_page(md)
 
         sections = [{"node_id": "10:1", "name": "Auth", "pending_frames": 2}]
-        # Initial load + two post-batch refreshes; third loop detects "stuck" and exits.
-        pending = [sections, sections, sections]
+        pending = [sections, sections]
 
-        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p: (True, 120))
-        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p: pending.pop(0))
-        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p: False)
+        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p, **_kw: (True, 120))
+        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p, **_kw: pending.pop(0))
+        monkeypatch.setattr(
+            claude_run_mod, "pending_frame_node_ids", lambda _p, **_kw: {"11:1", "11:2"}
+        )
+        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p, **_kw: False)
         monkeypatch.setattr(
             claude_run_mod,
             "decide_next_batch",
             lambda **_: self._budget_decision(True, "[budget] go"),
         )
+        run_mock = Mock(return_value=claude_run_mod.ClaudeResult(exit_code=0))
         monkeypatch.setattr(
             claude_run_mod,
             "_run_claude",
-            lambda **_: claude_run_mod.ClaudeResult(exit_code=0),
+            run_mock,
         )
         monkeypatch.setattr(claude_run_mod, "count_commits_since", lambda *_args, **_kwargs: 1)
         monkeypatch.setattr(
@@ -776,14 +1031,63 @@ class TestClaudeRunExecutionBranches:
         )
 
         assert result.exit_code == 0
-        assert "STUCK:" in result.output
+        assert "NO-PROGRESS" in result.output
+        assert run_mock.call_count == 1
         assert "Verdict (row 2)" in result.output
+
+    def test_section_mode_phantom_selection_stops_run_immediately(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        page_a = tmp_path / "a.md"
+        page_b = tmp_path / "b.md"
+        self._write_placeholder_page(page_a)
+        self._write_placeholder_page(page_b)
+
+        monkeypatch.setattr(
+            claude_run_mod, "collect_files", lambda *args, **kwargs: [page_a, page_b]
+        )
+        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p, **_kw: (True, 120))
+        monkeypatch.setattr(claude_run_mod, "pending_sections", lambda _p, **_kw: [])
+        monkeypatch.setattr(claude_run_mod, "needs_finalization", lambda _p, **_kw: False)
+        monkeypatch.setattr(
+            claude_run_mod, "_is_schema_upgrade_only_candidate", lambda _p, **_kw: False
+        )
+        monkeypatch.setattr(
+            claude_run_mod, "_is_llm_marker_only_candidate", lambda _p, **_kw: False
+        )
+        monkeypatch.setattr(
+            claude_run_mod, "_classify_no_work_candidate", lambda _p, **_kw: "phantom"
+        )
+        monkeypatch.setattr(
+            claude_run_mod.subprocess,
+            "run",
+            lambda *args, **kwargs: Mock(stdout="", returncode=0),
+        )
+        run_mock = Mock()
+        monkeypatch.setattr(claude_run_mod, "_run_claude", run_mock)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "claude-run",
+                str(page_a),
+                "--section-mode",
+            ],
+        )
+
+        assert result.exit_code == 2
+        assert "PHANTOM SELECTION" in result.output
+        assert "[2/2]" not in result.output
+        assert run_mock.call_count == 0
 
     def test_dispatch_crash_is_always_red(self, tmp_path: Path, monkeypatch) -> None:
         md = tmp_path / "page.md"
         self._write_placeholder_page(md)
 
-        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p: (True, 1))
+        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p, **_kw: (True, 1))
         monkeypatch.setattr(
             claude_run_mod,
             "decide_next_batch",
@@ -816,3 +1120,549 @@ class TestClaudeRunExecutionBranches:
 
         assert "CRASH in dispatch loop: RuntimeError: boom" in result.output
         assert result.exit_code == 2
+
+
+def test_collect_files_matches_inspect_enrich_must_schema_upgrade(tmp_path: Path) -> None:
+    """Selector and inspect must agree when schema requires re-enrichment.
+
+    Repro for figmaclaw issue #111:
+    - inspect marks file as needs_enrichment=True via ENRICH MUST
+    - collect_files(..., needs_enrichment=True) currently drops it
+    """
+    page = tmp_path / "figma" / "pages" / "schema-stale.md"
+    page.parent.mkdir(parents=True, exist_ok=True)
+    page.write_text(
+        textwrap.dedent(
+            """\
+            ---
+            file_key: abc123
+            page_node_id: "0:1"
+            frames: ["1:1"]
+            enriched_hash: deadbeefcafebabe
+            enriched_schema_version: 0
+            ---
+
+            # File / Page
+
+            ## Auth (`10:1`)
+
+            | Screen | Node ID | Description |
+            |--------|---------|-------------|
+            | Login | `1:1` | A described frame |
+            """
+        )
+    )
+
+    runner = CliRunner()
+    inspect_res = runner.invoke(
+        cli,
+        ["--repo-dir", str(tmp_path), "inspect", str(page), "--json"],
+        catch_exceptions=False,
+    )
+    assert inspect_res.exit_code == 0
+    inspect_data = json.loads(inspect_res.output)
+    assert inspect_data["needs_enrichment"] is True
+    assert inspect_data["enrichment_must_update"] is True
+
+    selected = collect_files(
+        tmp_path / "figma",
+        "**/*.md",
+        changed_only=False,
+        needs_enrichment=True,
+    )
+    assert selected == [page]
+
+
+def test_collect_files_matches_inspect_llm_marker_signal(tmp_path: Path) -> None:
+    """Selector and inspect must agree on <!-- LLM: ... --> enrichment signal."""
+    page = tmp_path / "figma" / "pages" / "llm-marker.md"
+    page.parent.mkdir(parents=True, exist_ok=True)
+    page.write_text(
+        textwrap.dedent(
+            """            ---
+            file_key: abc123
+            page_node_id: "0:1"
+            frames: ["1:1"]
+            ---
+
+            # File / Page
+
+            <!-- LLM: rewrite section intro to reflect latest frame changes -->
+
+            ## Auth (`10:1`)
+
+            | Screen | Node ID | Description |
+            |--------|---------|-------------|
+            | Login | `1:1` | A described frame |
+            """
+        )
+    )
+
+    runner = CliRunner()
+    inspect_res = runner.invoke(
+        cli,
+        ["--repo-dir", str(tmp_path), "inspect", str(page), "--json"],
+        catch_exceptions=False,
+    )
+    assert inspect_res.exit_code == 0
+    inspect_data = json.loads(inspect_res.output)
+    assert inspect_data["needs_enrichment"] is True
+
+    selected = collect_files(
+        tmp_path / "figma",
+        "**/*.md",
+        changed_only=False,
+        needs_enrichment=True,
+    )
+    assert selected == [page]
+
+
+def test_collect_files_migrates_missing_schema_version_and_matches_inspect(tmp_path: Path) -> None:
+    """Legacy enriched files without explicit schema version are migrated and selected.
+
+    Invariant:
+    - collect_files(... needs_enrichment=True) migrates missing enriched_schema_version
+      to explicit 0 and agrees with inspect ENRICH MUST.
+    """
+    page = tmp_path / "figma" / "pages" / "legacy-no-schema.md"
+    page.parent.mkdir(parents=True, exist_ok=True)
+    page.write_text(
+        textwrap.dedent(
+            """\
+            ---
+            file_key: abc123
+            page_node_id: "0:1"
+            frames: ["1:1"]
+            enriched_hash: deadbeefcafebabe
+            ---
+
+            # File / Page
+
+            ## Auth (`10:1`)
+
+            | Screen | Node ID | Description |
+            |--------|---------|-------------|
+            | Login | `1:1` | A described frame |
+            """
+        )
+    )
+
+    selected = collect_files(
+        tmp_path / "figma",
+        "**/*.md",
+        changed_only=False,
+        needs_enrichment=True,
+    )
+    assert selected == [page]
+
+    # Migration persisted explicitly.
+    migrated_text = page.read_text()
+    assert "enriched_schema_version: 0" in migrated_text
+
+    runner = CliRunner()
+    inspect_res = runner.invoke(
+        cli,
+        ["--repo-dir", str(tmp_path), "inspect", str(page), "--json"],
+        catch_exceptions=False,
+    )
+    assert inspect_res.exit_code == 0
+    inspect_data = json.loads(inspect_res.output)
+    assert inspect_data["needs_enrichment"] is True
+    assert inspect_data["enrichment_must_update"] is True
+
+
+def test_enrichment_info_treats_no_screenshot_available_as_unresolved(tmp_path: Path) -> None:
+    """Rows marked (no screenshot available) remain pending and retryable."""
+    md = tmp_path / "page.md"
+    md.write_text(
+        textwrap.dedent(
+            """\
+            ---
+            file_key: abc123
+            page_node_id: "0:1"
+            enriched_hash: "sha256:abcdef1234567890"
+            enriched_at: "2026-04-01T00:00:00Z"
+            enriched_schema_version: 1
+            ---
+
+            | Screen | Node ID | Description |
+            |--------|---------|-------------|
+            | Login  | `1:1`   | (no screenshot available) |
+            """
+        )
+    )
+    needs, count = enrichment_info(md)
+    assert needs is True
+    assert count == 1
+
+
+def test_enrichment_info_treats_screenshot_unavailable_as_unresolved(tmp_path: Path) -> None:
+    """Rows marked (screenshot unavailable) remain pending and retryable."""
+    md = tmp_path / "page.md"
+    md.write_text(
+        textwrap.dedent(
+            """\
+            ---
+            file_key: abc123
+            page_node_id: "0:1"
+            enriched_hash: "sha256:abcdef1234567890"
+            enriched_at: "2026-04-01T00:00:00Z"
+            enriched_schema_version: 1
+            ---
+
+            | Screen | Node ID | Description |
+            |--------|---------|-------------|
+            | Login  | `1:1`   | (screenshot unavailable) |
+            """
+        )
+    )
+    needs, count = enrichment_info(md)
+    assert needs is True
+    assert count == 1
+
+
+def test_pending_sections_counts_unavailable_rows_as_pending(tmp_path: Path) -> None:
+    """pending_sections counts screenshot-unavailable rows as pending work."""
+    md = tmp_path / "page.md"
+    md.write_text(
+        "---\n"
+        "file_key: abc\n"
+        "page_node_id: '1:1'\n"
+        "---\n\n"
+        "## Auth (`10:1`)\n\n"
+        "| Screen | Node ID | Description |\n"
+        "|--------|---------|-------------|\n"
+        "| Login | `11:1` | (screenshot unavailable) |\n"
+        "| Signup | `11:2` | (no screenshot available) |\n"
+    )
+    sections = pending_sections(md)
+    assert len(sections) == 1
+    assert sections[0]["pending_frames"] == 2
+
+
+def test_needs_finalization_false_when_unavailable_rows_remain(tmp_path: Path) -> None:
+    """Finalization must not run while unavailable screenshot markers remain."""
+    md = tmp_path / "page.md"
+    md.write_text(
+        "---\n"
+        "file_key: abc\n"
+        "page_node_id: '1:1'\n"
+        "---\n\n"
+        "## Auth (`10:1`)\n\n"
+        "| Screen | Node ID | Description |\n"
+        "|--------|---------|-------------|\n"
+        "| Login | `11:1` | (screenshot unavailable) |\n"
+    )
+    assert needs_finalization(md) is False
+
+
+class TestEnrichmentLogSchemaAndIdempotency:
+    """enrichment-log.csv is schema-stable, append-safe, and idempotent."""
+
+    def test_log_writes_schema_header_and_event_id(self, tmp_path: Path) -> None:
+        md = tmp_path / "figma" / "pages" / "a.md"
+        md.parent.mkdir(parents=True, exist_ok=True)
+        md.write_text("---\nfile_key: a\n---\n")
+
+        claude_run_mod._log_enrichment(
+            tmp_path,
+            md,
+            "batch",
+            12,
+            31.0,
+            True,
+            section_name="Auth",
+            claude=claude_run_mod.ClaudeResult(
+                turns=3,
+                cost_usd=0.1234,
+                duration_ms=31000,
+                stop_reason="end_turn",
+            ),
+        )
+
+        log_path = tmp_path / claude_run_mod.ENRICHMENT_LOG
+        with log_path.open(newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["schema_version"] == str(ENRICHMENT_LOG_SCHEMA_VERSION)
+        assert row["event_id"] != ""
+        assert row["mode"] == "batch"
+        assert row["frames"] == "12"
+        assert row["duration_s"] == "31"
+
+    def test_log_is_idempotent_for_duplicate_event(self, tmp_path: Path) -> None:
+        md = tmp_path / "figma" / "pages" / "a.md"
+        md.parent.mkdir(parents=True, exist_ok=True)
+        md.write_text("---\nfile_key: a\n---\n")
+
+        args = (tmp_path, md, "whole-page", 20, 42.0, True)
+        kwargs = {"section_name": "", "claude": claude_run_mod.ClaudeResult(exit_code=0)}
+        claude_run_mod._log_enrichment(*args, **kwargs)
+        claude_run_mod._log_enrichment(*args, **kwargs)
+
+        log_path = tmp_path / claude_run_mod.ENRICHMENT_LOG
+        with log_path.open(newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+        assert len(rows) == 1
+
+    def test_log_migrates_legacy_header_to_schema_versioned(self, tmp_path: Path) -> None:
+        log_path = tmp_path / claude_run_mod.ENRICHMENT_LOG
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(
+            "timestamp,file,mode,frames,duration_s,success,section,"
+            "turns,cost_usd,claude_duration_ms,stop_reason\n"
+            "2026-04-15T00:00:00+00:00,figma/a.md,batch,10,50,True,Auth,2,0.1111,50000,end_turn\n",
+            encoding="utf-8",
+        )
+
+        md = tmp_path / "figma" / "pages" / "a.md"
+        md.parent.mkdir(parents=True, exist_ok=True)
+        md.write_text("---\nfile_key: a\n---\n")
+        claude_run_mod._log_enrichment(tmp_path, md, "batch", 12, 31.0, True)
+
+        with log_path.open(newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+            assert reader.fieldnames is not None
+            assert "schema_version" in reader.fieldnames
+            assert "event_id" in reader.fieldnames
+        assert len(rows) == 2
+        assert rows[0]["schema_version"] in {"0", str(ENRICHMENT_LOG_SCHEMA_VERSION)}
+        assert rows[0]["event_id"] != ""
+        assert rows[1]["schema_version"] == str(ENRICHMENT_LOG_SCHEMA_VERSION)
+
+    def test_log_csv_escaping_preserves_commas_and_newlines(self, tmp_path: Path) -> None:
+        md = tmp_path / "figma" / "pages" / "a.md"
+        md.parent.mkdir(parents=True, exist_ok=True)
+        md.write_text("---\nfile_key: a\n---\n")
+
+        section = "Auth, Login\nFlow"
+        stop_reason = "tool_error, retry\nneeded"
+        claude_run_mod._log_enrichment(
+            tmp_path,
+            md,
+            "batch",
+            5,
+            19.0,
+            False,
+            section_name=section,
+            claude=claude_run_mod.ClaudeResult(stop_reason=stop_reason),
+        )
+
+        log_path = tmp_path / claude_run_mod.ENRICHMENT_LOG
+        with log_path.open(newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+
+        assert len(rows) == 1
+        assert rows[0]["section"] == section
+        assert rows[0]["stop_reason"] == stop_reason
+
+
+def test_log_keeps_distinct_runs_with_identical_payload(tmp_path: Path) -> None:
+    """INVARIANT: dedupe is run-scoped, not global across different runs."""
+    md = tmp_path / "figma" / "pages" / "a.md"
+    md.parent.mkdir(parents=True, exist_ok=True)
+    md.write_text("---\nfile_key: a\n---\n")
+
+    claude_run_mod._log_enrichment(
+        tmp_path,
+        md,
+        "whole-page",
+        20,
+        42.0,
+        True,
+        run_id="run-a",
+    )
+    claude_run_mod._log_enrichment(
+        tmp_path,
+        md,
+        "whole-page",
+        20,
+        42.0,
+        True,
+        run_id="run-b",
+    )
+
+    log_path = tmp_path / claude_run_mod.ENRICHMENT_LOG
+    with log_path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 2
+
+
+def test_log_migrates_minimal_legacy_header_without_optional_columns(tmp_path: Path) -> None:
+    """7-column legacy logs should auto-migrate to canonical schema-v1."""
+    log_path = tmp_path / claude_run_mod.ENRICHMENT_LOG
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(
+        "timestamp,file,mode,frames,duration_s,success,section\n"
+        "2026-04-15T00:00:00+00:00,figma/a.md,batch,10,50,True,Auth\n",
+        encoding="utf-8",
+    )
+
+    md = tmp_path / "figma" / "pages" / "a.md"
+    md.parent.mkdir(parents=True, exist_ok=True)
+    md.write_text("---\nfile_key: a\n---\n")
+
+    claude_run_mod._log_enrichment(tmp_path, md, "batch", 12, 31.0, True, run_id="run-x")
+
+    with log_path.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+        assert reader.fieldnames is not None
+        assert tuple(reader.fieldnames) == claude_run_mod.ENRICHMENT_LOG_FIELDS
+    assert len(rows) == 2
+    assert rows[0]["schema_version"] in {"0", str(ENRICHMENT_LOG_SCHEMA_VERSION)}
+    assert rows[0]["event_id"] != ""
+
+
+def test_log_migrates_real_world_linear_git_legacy_fixture(tmp_path: Path) -> None:
+    """Real legacy header fixture from linear-git must auto-migrate and append."""
+    fixture = (
+        Path(__file__).parent
+        / "fixtures"
+        / "enrichment_log_headers"
+        / "linear_git_minimal_legacy_2026-04-03.csv"
+    )
+    log_path = tmp_path / claude_run_mod.ENRICHMENT_LOG
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(fixture.read_text(encoding="utf-8"), encoding="utf-8")
+
+    md = tmp_path / "figma" / "pages" / "a.md"
+    md.parent.mkdir(parents=True, exist_ok=True)
+    md.write_text("---\nfile_key: a\n---\n")
+
+    claude_run_mod._log_enrichment(tmp_path, md, "batch", 12, 31.0, True, run_id="run-x")
+
+    with log_path.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+
+    assert reader.fieldnames is not None
+    assert tuple(reader.fieldnames) == claude_run_mod.ENRICHMENT_LOG_FIELDS
+    assert len(rows) == 5
+    assert rows[-1]["schema_version"] == str(ENRICHMENT_LOG_SCHEMA_VERSION)
+    assert rows[-1]["event_id"] != ""
+
+
+def test_log_unknown_header_self_heals_by_archiving_and_starting_fresh(
+    tmp_path: Path,
+) -> None:
+    """Unsupported header must not become a silent-drop terminal state.
+
+    Contract (figmaclaw#121 anti-loop policy #5): if schema migration is
+    possible, auto-heal; if not, archive the prior file with a timestamp
+    and start a fresh schema-v1 log. Never leave the writer in a "warn
+    and skip forever" loop where every run loses its data.
+    """
+    log_path = tmp_path / claude_run_mod.ENRICHMENT_LOG
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text("foo,bar,baz\n1,2,3\n", encoding="utf-8")
+
+    md = tmp_path / "figma" / "pages" / "a.md"
+    md.parent.mkdir(parents=True, exist_ok=True)
+    md.write_text("---\nfile_key: a\n---\n")
+
+    claude_run_mod._log_enrichment(tmp_path, md, "batch", 1, 1.0, True, run_id="run-x")
+
+    # 1. A loud error line is emitted so humans can notice the archive event
+    err = tmp_path / claude_run_mod.ENRICHMENT_LOG_ERROR
+    assert err.exists()
+    err_text = err.read_text(encoding="utf-8")
+    assert "unrecognized enrichment log schema" in err_text
+    assert "archived prior log" in err_text
+
+    # 2. The prior log was archived with a .bak. prefix (not deleted)
+    log_dir = log_path.parent
+    backups = list(log_dir.glob(f"{log_path.stem}.bak.*{log_path.suffix}"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == "foo,bar,baz\n1,2,3\n"
+
+    # 3. A fresh schema-v1 log replaced it, and the caller's row landed
+    with log_path.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+    assert tuple(reader.fieldnames or ()) == claude_run_mod.ENRICHMENT_LOG_FIELDS
+    assert len(rows) == 1
+    assert rows[0]["mode"] == "batch"
+    assert rows[0]["frames"] == "1"
+
+
+def test_log_unknown_header_second_run_does_not_warn_again(tmp_path: Path) -> None:
+    """After self-healing on run N, run N+1 must NOT re-emit the error.
+
+    This is the cross-run idempotency shape from CLAUDE.md policy #1:
+    a fix-once event should not be a fix-every-run event. If the warn
+    recurred forever we'd still be silently losing signal.
+    """
+    log_path = tmp_path / claude_run_mod.ENRICHMENT_LOG
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text("foo,bar,baz\n1,2,3\n", encoding="utf-8")
+
+    md = tmp_path / "figma" / "pages" / "a.md"
+    md.parent.mkdir(parents=True, exist_ok=True)
+    md.write_text("---\nfile_key: a\n---\n")
+
+    # Run 1 — archives + appends
+    claude_run_mod._log_enrichment(tmp_path, md, "batch", 1, 1.0, True, run_id="run-1")
+    err = tmp_path / claude_run_mod.ENRICHMENT_LOG_ERROR
+    err_len_after_run1 = len(err.read_text(encoding="utf-8"))
+
+    # Run 2 — clean log, should append without any new error line
+    claude_run_mod._log_enrichment(tmp_path, md, "batch", 2, 2.0, True, run_id="run-2")
+
+    assert len(err.read_text(encoding="utf-8")) == err_len_after_run1
+
+    with log_path.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+    assert len(rows) == 2
+
+
+def test_log_malformed_legacy_csv_is_observable_and_does_not_crash(tmp_path: Path) -> None:
+    """Malformed legacy CSV should degrade safely (warn + skip), not raise."""
+    log_path = tmp_path / claude_run_mod.ENRICHMENT_LOG
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(
+        "timestamp,file,mode,frames,duration_s,success,section,turns,cost_usd,claude_duration_ms,stop_reason\n"
+        '2026-04-15T00:00:00+00:00,figma/a.md,batch,10,50,True,"broken,2,0.1111,50000,end_turn\n',
+        encoding="utf-8",
+    )
+
+    md = tmp_path / "figma" / "pages" / "a.md"
+    md.parent.mkdir(parents=True, exist_ok=True)
+    md.write_text("---\nfile_key: a\n---\n")
+
+    claude_run_mod._log_enrichment(tmp_path, md, "batch", 2, 2.0, True, run_id="run-x")
+
+    err = tmp_path / claude_run_mod.ENRICHMENT_LOG_ERROR
+    if err.exists():
+        assert "failed reading rows" in err.read_text(encoding="utf-8")
+    else:
+        # Some malformed rows are still parseable by csv.DictReader; ensure write path survives.
+        assert "schema_version,event_id" in log_path.read_text(encoding="utf-8")
+
+
+def test_log_normalizes_header_with_extra_columns(tmp_path: Path) -> None:
+    """Headers that include required columns + extras are normalized to canonical schema."""
+    log_path = tmp_path / claude_run_mod.ENRICHMENT_LOG
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(
+        "timestamp,file,mode,frames,duration_s,success,section,turns,cost_usd,claude_duration_ms,stop_reason,extra\n"
+        "2026-04-15T00:00:00+00:00,figma/a.md,batch,10,50,True,Auth,2,0.1111,50000,end_turn,ignored\n",
+        encoding="utf-8",
+    )
+
+    md = tmp_path / "figma" / "pages" / "a.md"
+    md.parent.mkdir(parents=True, exist_ok=True)
+    md.write_text("---\nfile_key: a\n---\n")
+
+    claude_run_mod._log_enrichment(tmp_path, md, "batch", 12, 31.0, True, run_id="run-x")
+
+    with log_path.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+        assert reader.fieldnames is not None
+        assert tuple(reader.fieldnames) == claude_run_mod.ENRICHMENT_LOG_FIELDS
+    assert len(rows) == 2

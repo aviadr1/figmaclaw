@@ -11,6 +11,14 @@ on:
       webhook_payload:
         required: true
         type: string
+      figmaclaw_ref:
+        required: false
+        type: string
+        default: main
+      target_ref:
+        required: false
+        type: string
+        default: main
     secrets:
       FIGMA_API_KEY:
         required: true
@@ -39,10 +47,10 @@ jobs:
           enable-cache: true
 
       - name: Install figmaclaw
-        run: uv tool install git+https://github.com/aviadr1/figmaclaw
+        run: uv tool install "git+https://github.com/aviadr1/figmaclaw@${{ inputs.figmaclaw_ref }}"
 
       - name: Pull latest changes
-        run: git pull --no-rebase --ff-only origin main
+        run: git pull --no-rebase --ff-only origin "${{ inputs.target_ref }}"
 
       - name: Apply webhook
         id: apply
@@ -62,7 +70,7 @@ jobs:
         run: |
           git config user.name "figmaclaw[bot]"
           git config user.email "figmaclaw[bot]@users.noreply.github.com"
-          git pull --no-rebase --ff-only origin main
+          git pull --no-rebase --ff-only origin "${{ inputs.target_ref }}"
           git add figma/ .figma-sync/
           if git diff --cached --quiet; then
             echo "Nothing to commit."

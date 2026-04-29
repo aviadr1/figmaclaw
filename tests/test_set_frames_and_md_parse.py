@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import textwrap
 
-from figmaclaw.figma_md_parse import parse_sections, section_line_ranges
+from figmaclaw.figma_md_parse import frame_row_count, parse_sections, section_line_ranges
 from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection
 from figmaclaw.figma_render import scaffold_page
 from figmaclaw.figma_sync_state import PageEntry
@@ -327,3 +327,14 @@ def test_render_then_parse_preserves_all_frames_even_with_empty_section_name():
     # legacy headings.
     assert "## (Unnamed) (`20:1`)" in md
     assert "##  (`20:1`)" not in md  # the legacy two-space form is NOT emitted
+
+
+def test_frame_row_count_counts_only_frame_sections() -> None:
+    """INVARIANT: frame_row_count counts rows from frame sections only."""
+    assert frame_row_count(_MULTI_SECTION_MD) == 3
+
+
+def test_frame_row_count_ignores_non_table_content() -> None:
+    """INVARIANT: frame_row_count returns 0 when body has no frame tables."""
+    md = """---\nfile_key: abc\npage_node_id: '1:1'\n---\n\n## Notes (`10:1`)\n\nJust prose.\n"""
+    assert frame_row_count(md) == 0

@@ -12,10 +12,12 @@ import os
 import pytest
 
 from figmaclaw.figma_mcp import FigmaMcpClient, FigmaMcpError
+from figmaclaw.figma_variables_mcp import get_local_variables_via_mcp
 from tests.smoke.live_gate import require_live_credential
 
 # Web App file used in linear-git
 TEST_FILE_KEY = "hOV4QMBnDIG5s5OYkSrX9E"
+DS_FILE_KEY = "dcDETwKMNGpK39FfApg7Ki"
 
 
 @pytest.fixture
@@ -63,3 +65,19 @@ async def test_session_reuse_makes_two_calls(mcp_client: FigmaMcpClient) -> None
 
     assert not r1.get("isError", False), f"call 1 returned isError=True: {r1}"
     assert not r2.get("isError", False), f"call 2 returned isError=True: {r2}"
+
+
+@pytest.mark.smoke_mcp
+@pytest.mark.asyncio
+async def test_mcp_exports_design_system_variable_definitions(
+    mcp_client: FigmaMcpClient,
+) -> None:
+    """Smoke: MCP returns actual DS variable names/collections/modes."""
+    response = await get_local_variables_via_mcp(DS_FILE_KEY, client=mcp_client)
+
+    assert response.meta.variables, "MCP export returned no variables"
+    assert response.meta.variableCollections, "MCP export returned no collections"
+    assert any(v.name for v in response.meta.variables.values()), "variables have no names"
+    assert any(c.modes for c in response.meta.variableCollections.values()), (
+        "collections have no modes"
+    )

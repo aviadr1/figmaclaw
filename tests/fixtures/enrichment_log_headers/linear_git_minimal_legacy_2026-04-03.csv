@@ -1,0 +1,5 @@
+timestamp,file,mode,frames,duration_s,success,section
+2026-04-03T20:23:19.477528+00:00,figma/README.md,whole-page,14,15,True,
+2026-04-03T20:26:00.576054+00:00,figma/web-app/pages/login-sign-up-1-209.md,whole-page,36,160,True,
+2026-04-03T20:30:34.051231+00:00,figma/24-mar-2025-community-in-live/pages/mobile-live-experience-0-1.md,whole-page,37,273,True,
+2026-04-03T20:34:25.847168+00:00,figma/mobile-streaming-interface/pages/interactions-api-5051-72993.md,whole-page,37,231,True,

@@ -1,12 +1,11 @@
-"""Tests for raw/stale/valid design token scanning.
+"""Tests for raw/unknown-library/valid design token scanning.
 
 INVARIANTS:
-- classify_variable_id correctly identifies DS lib hash as valid
-- classify_variable_id correctly identifies OLD lib prefix as stale
+- classify_variable_id correctly identifies catalog-known library hash as valid
+- classify_variable_id treats unknown library hashes as unknown_library
 - classify_variable_id returns raw for absent/empty IDs
-- classify_variable_id treats unknown library hashes as valid (no false positives)
 - scan_frame counts raw fills on nodes without boundVariables
-- scan_frame counts stale fills on nodes bound to OLD library
+- scan_frame counts unknown-library fills as actionable issues
 - scan_frame does not count fills covered by fillStyleId
 - scan_frame does not count font properties when textStyleId is set
 - scan_frame does not recurse into INSTANCE children
@@ -14,22 +13,21 @@ INVARIANTS:
 - scan_page returns only frames with at least one issue in frames dict
 - scan_page totals equal sum of per-frame totals
 - TokenIssue hex is set only for color properties
-- stale issues include stale_variable_id
+- unknown-library issues include library_hash
 """
 
 from __future__ import annotations
 
 from figmaclaw.token_scan import (
-    DS_LIB_HASH,
-    OLD_LIB_PREFIX,
     classify_variable_id,
     scan_frame,
     scan_page,
 )
 
+DS_LIB_HASH = "knownlib1234567890"
 DS_VAR_ID = f"VariableID:{DS_LIB_HASH}/1234:5"
-STALE_VAR_ID = f"VariableID:{OLD_LIB_PREFIX}abc123/1234:5"
 OTHER_VAR_ID = "VariableID:deadbeef1234567890abcdef12345678/9999:1"
+LIBRARIES = {DS_LIB_HASH: object()}
 
 RED_COLOR = {"r": 1.0, "g": 0.0, "b": 0.0, "a": 1.0}
 DARK_COLOR = {"r": 0.08, "g": 0.08, "b": 0.12, "a": 1.0}
@@ -152,11 +150,11 @@ def _page(children: list[dict]) -> dict:
 
 
 def test_classify_ds_lib_hash_is_valid():
-    assert classify_variable_id(DS_VAR_ID) == "valid"
+    assert classify_variable_id(DS_VAR_ID, libraries=LIBRARIES) == "valid"
 
 
-def test_classify_old_lib_prefix_is_stale():
-    assert classify_variable_id(STALE_VAR_ID) == "stale"
+def test_classify_unknown_lib_is_unknown_library():
+    assert classify_variable_id(OTHER_VAR_ID, libraries=LIBRARIES) == "unknown_library"
 
 
 def test_classify_none_is_raw():
@@ -167,11 +165,6 @@ def test_classify_empty_string_is_raw():
     assert classify_variable_id("") == "raw"
 
 
-def test_classify_unknown_lib_is_valid():
-    """Unknown library hash → valid (conservative, no false positives)."""
-    assert classify_variable_id(OTHER_VAR_ID) == "valid"
-
-
 # --- scan_frame: fills ---
 
 
@@ -179,7 +172,7 @@ def test_scan_frame_raw_fill_is_counted():
     """INVARIANT: a fill with no variable binding is counted as raw."""
     fill, _ = _solid_fill(RED_COLOR)
     frame = _frame(children=[_rect(fills=[fill])])
-    result = scan_frame(frame)
+    result = scan_frame(frame, libraries=LIBRARIES)
     assert result.raw == 1
     assert result.stale == 0
     assert len(result.issues) == 1
@@ -194,28 +187,28 @@ def test_scan_frame_valid_fill_not_in_issues():
     """INVARIANT: a DS-bound fill produces no issue and is counted as valid."""
     fill, bv_entry = _solid_fill(RED_COLOR, var_id=DS_VAR_ID)
     frame = _frame(children=[_rect(fills=[fill], fills_bv=[bv_entry])])
-    result = scan_frame(frame)
+    result = scan_frame(frame, libraries=LIBRARIES)
     assert result.raw == 0
     assert result.valid == 1
     assert result.issues == []
 
 
-def test_scan_frame_stale_fill_is_counted():
-    """INVARIANT: a fill bound to the OLD library is counted as stale."""
-    fill, bv_entry = _solid_fill(DARK_COLOR, var_id=STALE_VAR_ID)
+def test_scan_frame_unknown_library_fill_is_counted():
+    """INVARIANT: a fill bound to an unknown library is counted as actionable."""
+    fill, bv_entry = _solid_fill(DARK_COLOR, var_id=OTHER_VAR_ID)
     frame = _frame(children=[_rect(fills=[fill], fills_bv=[bv_entry])])
-    result = scan_frame(frame)
+    result = scan_frame(frame, libraries=LIBRARIES)
     assert result.stale == 1
     assert result.raw == 0
-    assert result.issues[0].classification == "stale"
-    assert result.issues[0].stale_variable_id == STALE_VAR_ID
+    assert result.issues[0].classification == "unknown_library"
+    assert result.issues[0].library_hash == "deadbeef1234567890abcdef12345678"
 
 
 def test_scan_frame_fill_style_id_is_valid():
     """INVARIANT: a fill covered by fillStyleId is treated as valid (no issue)."""
     fill, _ = _solid_fill(RED_COLOR)
     frame = _frame(children=[_rect(fills=[fill], fill_style_id="S:abc123")])
-    result = scan_frame(frame)
+    result = scan_frame(frame, libraries=LIBRARIES)
     assert result.raw == 0
     assert result.valid == 1
     assert result.issues == []
@@ -225,7 +218,7 @@ def test_scan_frame_invisible_fill_skipped():
     """INVARIANT: invisible fills (visible=False) are not classified."""
     fill = {"type": "SOLID", "color": RED_COLOR, "visible": False}
     frame = _frame(children=[_rect(fills=[fill])])
-    result = scan_frame(frame)
+    result = scan_frame(frame, libraries=LIBRARIES)
     assert result.raw == 0
     assert result.issues == []
 
@@ -234,7 +227,7 @@ def test_scan_frame_non_solid_fill_skipped():
     """INVARIANT: non-SOLID fills (gradients, images) are not classified."""
     fill = {"type": "GRADIENT_LINEAR", "gradientStops": []}
     frame = _frame(children=[_rect(fills=[fill])])
-    result = scan_frame(frame)
+    result = scan_frame(frame, libraries=LIBRARIES)
     assert result.raw == 0
     assert result.issues == []
 
@@ -246,14 +239,14 @@ def test_scan_frame_own_fill_is_checked():
     """INVARIANT: the frame node's own fills are included in the scan."""
     fill, _ = _solid_fill(RED_COLOR)
     frame = _frame(fills=[fill])
-    result = scan_frame(frame)
+    result = scan_frame(frame, libraries=LIBRARIES)
     assert result.raw == 1
 
 
 def test_scan_frame_corner_radius_raw():
     """INVARIANT: a non-zero cornerRadius without binding is counted as raw."""
     frame = _frame(children=[_rect(corner_radius=8.0)])
-    result = scan_frame(frame)
+    result = scan_frame(frame, libraries=LIBRARIES)
     assert result.raw == 1
     assert result.issues[0].property == "cornerRadius"
     assert result.issues[0].index is None
@@ -263,7 +256,7 @@ def test_scan_frame_corner_radius_raw():
 def test_scan_frame_corner_radius_valid():
     """INVARIANT: cornerRadius bound to DS lib is counted as valid."""
     frame = _frame(children=[_rect(corner_radius=8.0, corner_radius_bv=DS_VAR_ID)])
-    result = scan_frame(frame)
+    result = scan_frame(frame, libraries=LIBRARIES)
     assert result.valid == 1
     assert result.raw == 0
     assert result.issues == []
@@ -272,7 +265,7 @@ def test_scan_frame_corner_radius_valid():
 def test_scan_frame_zero_corner_radius_skipped():
     """INVARIANT: cornerRadius == 0 is not counted (no meaningful constraint)."""
     frame = _frame(children=[_rect(corner_radius=0)])
-    result = scan_frame(frame)
+    result = scan_frame(frame, libraries=LIBRARIES)
     assert result.raw == 0
 
 
@@ -283,7 +276,7 @@ def test_scan_frame_raw_stroke_is_counted():
     """INVARIANT: a stroke with no variable binding is counted as raw."""
     stroke = {"type": "SOLID", "color": RED_COLOR}
     frame = _frame(children=[_rect(strokes=[stroke])])
-    result = scan_frame(frame)
+    result = scan_frame(frame, libraries=LIBRARIES)
     assert result.raw >= 1
     stroke_issues = [i for i in result.issues if i.property == "stroke"]
     assert len(stroke_issues) == 1
@@ -335,7 +328,7 @@ def test_scan_frame_valid_font_size_not_in_issues():
     """INVARIANT: DS-bound fontSize produces no issue."""
     text = _text(font_size=16.0, font_size_bv=DS_VAR_ID)
     frame = _frame(children=[text])
-    result = scan_frame(frame)
+    result = scan_frame(frame, libraries=LIBRARIES)
     font_issues = [i for i in result.issues if i.property == "fontSize"]
     assert font_issues == []
 
@@ -349,7 +342,7 @@ def test_scan_frame_instance_own_fill_checked():
     inst = _instance(node_id="9:1")
     inst["fills"] = [fill]
     frame = _frame(children=[inst])
-    result = scan_frame(frame)
+    result = scan_frame(frame, libraries=LIBRARIES)
     assert result.raw == 1
 
 
@@ -387,14 +380,14 @@ def test_scan_frame_hex_not_set_for_scalar_issues():
 
 
 def test_scan_page_sparse_only_frames_with_issues():
-    """INVARIANT: scan_page result.frames only contains frames with raw or stale issues."""
+    """INVARIANT: scan_page result.frames only contains frames with actionable issues."""
     fill, bv = _solid_fill(RED_COLOR, var_id=DS_VAR_ID)
     clean_frame = _frame(node_id="1:1", children=[_rect(fills=[fill], fills_bv=[bv])])
     raw_fill, _ = _solid_fill(RED_COLOR)
     dirty_frame = _frame(node_id="2:1", children=[_rect(fills=[raw_fill])])
     page = _page([clean_frame, dirty_frame])
 
-    result = scan_page(page, {"1:1", "2:1"})
+    result = scan_page(page, {"1:1", "2:1"}, libraries=LIBRARIES)
     assert "1:1" not in result.frames
     assert "2:1" in result.frames
 
@@ -455,7 +448,7 @@ def test_scan_frame_fills_bv_shorter_than_fills():
     # fills has 2 entries, fills_bv has only 1
     node = _rect(node_id="2:1", fills=[fill_a, fill_b], fills_bv=[bv_a])
     frame = _frame(children=[node])
-    result = scan_frame(frame)
+    result = scan_frame(frame, libraries=LIBRARIES)
 
     assert result.valid == 1
     assert result.raw == 1

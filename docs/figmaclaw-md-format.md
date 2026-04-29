@@ -1,5 +1,7 @@
 # figmaclaw `.md` File Format Specification
 
+> **Canon cross-reference:** the data contract (frontmatter as state, body as prose) is canonized in [`figmaclaw-canon` §1](../skills/figmaclaw-canon/SKILL.md#1-three-layer-data-contract). This document remains authoritative for the *file format* — frontmatter schema, single-line flow YAML rule, body structure, command table.
+
 Every Figma page is rendered as one `.md` file under `figma/{file-slug}/pages/` (screen pages) or `figma/{file-slug}/components/` (component library sections). This document is the authoritative specification for that format.
 
 ---

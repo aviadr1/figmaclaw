@@ -45,6 +45,8 @@ from pathlib import Path
 import httpx
 from pydantic import BaseModel, Field
 
+from figmaclaw.body_validation import iter_body_frame_rows
+from figmaclaw.figma_api_models import LocalVariablesResponse
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_frontmatter import (
     CURRENT_PULL_SCHEMA_VERSION,
@@ -54,7 +56,7 @@ from figmaclaw.figma_frontmatter import (
 )
 from figmaclaw.figma_hash import compute_frame_hashes, compute_page_hash
 from figmaclaw.figma_models import FigmaPage, FigmaSection, from_page_node
-from figmaclaw.figma_parse import parse_flows, parse_frontmatter
+from figmaclaw.figma_parse import parse_flows, parse_frontmatter, split_frontmatter
 from figmaclaw.figma_paths import (
     census_path,
     component_path,
@@ -66,22 +68,47 @@ from figmaclaw.figma_paths import (
 from figmaclaw.figma_render import (
     build_component_frontmatter,
     build_page_frontmatter,
+    page_frame_ids,
     render_component_section,
     scaffold_page,
+    section_frame_ids,
 )
+from figmaclaw.figma_schema import UNGROUPED_COMPONENTS_NODE_ID
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
 from figmaclaw.figma_utils import write_json_if_changed
 from figmaclaw.prune_utils import (
+    LEGACY_UNGROUPED_COMPONENTS_BASENAME,
     entry_paths,
     find_generated_orphans,
     remove_generated_relpath,
 )
 from figmaclaw.schema_status import is_pull_schema_stale
-from figmaclaw.token_catalog import load_catalog, merge_bindings, save_catalog
+from figmaclaw.token_catalog import (
+    library_hashes_for_file,
+    load_catalog,
+    mark_local_variables_unavailable,
+    merge_bindings,
+    merge_local_variables,
+    save_catalog,
+)
 from figmaclaw.token_scan import PageTokenScan, scan_page
 
 log = logging.getLogger(__name__)
 TOKEN_SIDECAR_SCHEMA_VERSION = 2
+
+# Per-page API-call timeout. Applied around each concurrent get_page and the
+# sequential-mode get_nodes call so one stuck page can't hang an entire batch.
+# None disables per-page timeouts (falls back to the caller's wall-clock limit).
+DEFAULT_PER_PAGE_TIMEOUT_S: float = 240.0
+
+# Concurrent page-node fetches per chunk. Sized to get most of the parallel-speedup
+# (a 30-page file completes in ~3 chunks, ~3× timeout_s wall-clock max) without
+# unbounded concurrency: 100 simultaneous Figma HTTP requests works fine against
+# connection pooling but spikes memory and plays poorly with provider throttling.
+# 10 has been stable in production sync runs. Not currently exposed on the CLI —
+# bump if you observe chunks dominating batch time (i.e. throughput is CPU, not
+# API-bound).
+PAGE_FETCH_CHUNK: int = 10
 
 
 def _all_manifest_generated_paths(state: FigmaSyncState) -> set[str]:
@@ -233,17 +260,23 @@ def update_page_frontmatter(
     enriched_hash = existing_fm.enriched_hash if existing_fm else None
     enriched_at = existing_fm.enriched_at if existing_fm else None
     enriched_frame_hashes = existing_fm.enriched_frame_hashes if existing_fm else None
+    enriched_schema_version = existing_fm.enriched_schema_version if existing_fm else 0
+    unresolvable_frames = existing_fm.unresolvable_frames if existing_fm else None
 
     new_fm = build_page_frontmatter(
         page,
         enriched_hash=enriched_hash,
         enriched_at=enriched_at,
         enriched_frame_hashes=enriched_frame_hashes or None,
+        enriched_schema_version=enriched_schema_version,
         raw_frames=raw_frames,
         raw_tokens=raw_tokens,
         frame_sections=frame_sections,
+        unresolvable_frames=unresolvable_frames or None,
     )
-    _rewrite_frontmatter_preserving_body(out_path, md_text, new_fm)
+    _rewrite_frontmatter_preserving_body(
+        out_path, md_text, new_fm, allowed_frame_ids=set(page_frame_ids(page))
+    )
     return out_path
 
 
@@ -283,6 +316,8 @@ def update_component_frontmatter(
     enriched_hash = existing_fm.enriched_hash if existing_fm else None
     enriched_at = existing_fm.enriched_at if existing_fm else None
     enriched_frame_hashes = existing_fm.enriched_frame_hashes if existing_fm else None
+    enriched_schema_version = existing_fm.enriched_schema_version if existing_fm else 0
+    unresolvable_frames = existing_fm.unresolvable_frames if existing_fm else None
 
     new_fm = build_component_frontmatter(
         section,
@@ -291,19 +326,74 @@ def update_component_frontmatter(
         enriched_hash=enriched_hash,
         enriched_at=enriched_at,
         enriched_frame_hashes=enriched_frame_hashes or None,
+        enriched_schema_version=enriched_schema_version,
+        unresolvable_frames=unresolvable_frames or None,
     )
-    _rewrite_frontmatter_preserving_body(out_path, md_text, new_fm)
+    _rewrite_frontmatter_preserving_body(
+        out_path, md_text, new_fm, allowed_frame_ids=set(section_frame_ids(section))
+    )
     return out_path
 
 
-def _rewrite_frontmatter_preserving_body(out_path: Path, md_text: str, new_fm: str) -> None:
-    """Rewrite frontmatter while preserving markdown body byte-for-byte."""
-    from figmaclaw.figma_parse import split_frontmatter
+def _rewrite_frontmatter_preserving_body(
+    out_path: Path,
+    md_text: str,
+    new_fm: str,
+    *,
+    allowed_frame_ids: set[str] | None = None,
+) -> None:
+    """Rewrite frontmatter and structurally prune orphan frame rows from body.
 
+    Frontmatter is replaced wholesale. Body prose is preserved verbatim — we
+    do NOT parse or rewrite prose. The only body edit this function performs
+    is surgical removal of canonical frame *rows* whose node_id is not in
+    *allowed_frame_ids*. Table headers, separators, prose, section headings,
+    and Mermaid blocks are untouched.
+
+    *allowed_frame_ids* is the authoritative set of frame node_ids for the
+    page — callers get it from :func:`figma_render.page_frame_ids` (screen
+    pages) or :func:`figma_render.section_frame_ids` (component sections).
+    None means "do not prune" (used by code paths that don't own the
+    authoritative frame list, e.g. legacy call sites).
+
+    This is a structural operation, not a prose rewrite: a row whose node_id
+    points to a frame that no longer exists cannot possibly be correct, so
+    dropping it is the narrow exception to the "code never rewrites body"
+    rule. See figmaclaw#121 — orphan rows left behind by a shrinking pull are
+    what drive cross-run enrichment loops.
+    """
     parts = split_frontmatter(md_text)
     assert parts is not None, f"Failed to parse frontmatter from {out_path}"
     _, body = parts
+
+    if allowed_frame_ids is not None:
+        body = _prune_orphan_frame_rows(body, allowed_frame_ids)
+
     out_path.write_text(f"{new_fm}\n{body}")
+
+
+def _prune_orphan_frame_rows(body: str, allowed_frame_ids: set[str]) -> str:
+    """Remove canonical frame rows whose node_id is not in *allowed_frame_ids*.
+
+    Uses :func:`figmaclaw.body_validation.iter_body_frame_rows` — the single
+    canonical body frame-row walker (fence-aware, exact-header match). Prose,
+    section headings, table headers, separators, and Mermaid blocks are
+    preserved verbatim because they are not yielded by the walker.
+
+    Returns *body* unchanged when *allowed_frame_ids* is empty (nothing to
+    enforce against).
+    """
+    if not allowed_frame_ids:
+        return body
+
+    orphan_line_indices = {
+        row.line_index for row in iter_body_frame_rows(body) if row.node_id not in allowed_frame_ids
+    }
+    if not orphan_line_indices:
+        return body
+
+    lines = body.splitlines(keepends=True)
+    return "".join(line for i, line in enumerate(lines) if i not in orphan_line_indices)
 
 
 def _aggregate_issues(issues: list) -> list[dict]:
@@ -326,6 +416,7 @@ def _aggregate_issues(issues: list) -> list[dict]:
         hex_val = issue.hex
         cur_val = issue.current_value
         stale_var = issue.stale_variable_id
+        library_hash = getattr(issue, "library_hash", None)
 
         # Normalize current_value for grouping: round floats, stringify dicts
         if isinstance(cur_val, float):
@@ -336,7 +427,7 @@ def _aggregate_issues(issues: list) -> list[dict]:
         else:
             norm_val = cur_val
 
-        key = (prop, cls, hex_val, norm_val, stale_var)
+        key = (prop, cls, hex_val, norm_val, stale_var, library_hash)
         buckets[key] += 1
 
         if key not in representatives:
@@ -347,6 +438,8 @@ def _aggregate_issues(issues: list) -> list[dict]:
                 entry["current_value"] = cur_val
             if stale_var is not None:
                 entry["stale_variable_id"] = stale_var
+            if library_hash is not None:
+                entry["library_hash"] = library_hash
             representatives[key] = entry
 
     result = []
@@ -601,6 +694,7 @@ async def pull_file(
     prune: bool = True,
     progress: Callable[[str], None] | None = None,
     on_page_written: Callable[[str, list[str]], None] | None = None,
+    per_page_timeout_s: float | None = DEFAULT_PER_PAGE_TIMEOUT_S,
 ) -> PullResult:
     """Pull all (or up to max_pages) changed pages for a tracked Figma file.
 
@@ -720,6 +814,40 @@ async def pull_file(
         file_name=file_name,
     )
 
+    # Tier 1.5 file-scope registry refresh: variables are file-level data and
+    # must not be gated by per-page hashes (canon TC-5 / D11).
+    try:
+        local_variables = await client.get_local_variables(file_key)
+        if local_variables is None:
+            mark_local_variables_unavailable(
+                catalog,
+                file_key=file_key,
+                file_name=file_name,
+                file_version=api_version,
+            )
+        elif not isinstance(local_variables, LocalVariablesResponse):
+            log.warning(
+                "Unexpected variables response type (%s) — continuing with existing catalog",
+                type(local_variables).__name__,
+            )
+        else:
+            merge_local_variables(
+                catalog,
+                local_variables,
+                file_key=file_key,
+                file_name=file_name,
+                file_version=api_version,
+            )
+        save_catalog(catalog, repo_root)
+        hashes = library_hashes_for_file(catalog, file_key)
+        if hashes:
+            state.manifest.files[file_key].library_hash = hashes[0]
+    except Exception as exc:
+        log.warning(
+            "Failed to refresh variables catalog (%s) — continuing with existing catalog",
+            type(exc).__name__,
+        )
+
     # Fetch component sets once per changed file. Used to populate component_set_keys
     # in component section .md frontmatter so build skills can skip search_design_system().
     try:
@@ -736,25 +864,61 @@ async def pull_file(
     total_pages = len(page_stubs)
     pages_written_this_call = 0
 
-    # Fetch all page nodes concurrently when there is no page limit (fastest path).
-    # With a page limit, fetch sequentially to avoid wasting API calls on pages we
-    # will never process in this batch.
-    # skip_pages stubs are excluded from the parallel fetch to avoid wasted API calls.
+    # Fetch page nodes concurrently in bounded chunks.
+    #
+    # Why not serial (prior behaviour in max_pages mode): the only case where
+    # fetching one page at a time saved API calls was first-sync of a file with
+    # many pages. For the common case (resync of an already-synced file where
+    # most pages are content_unchanged), every page still has to be fetched to
+    # compute its hash — serial fetching just serialises N round-trips. Observed
+    # against a 34-page file on 2026-04-21: 274s serial vs ~32s chunked.
+    #
+    # Why not full parallel (all pages at once): first-sync of a huge file would
+    # fetch all N pages per batch even though only max_pages get written. Chunks
+    # give us a stopping point: if the write budget is hit mid-way through a
+    # file, we can skip fetching the remaining chunks and let a later batch pick
+    # them up. Same asymptotic API cost as the old serial path, far better wall
+    # clock.
+    #
+    # Exceptions from any one page_id's fetch (including per-page timeouts) are
+    # stored in the map and surface as pages_errored in the processing loop —
+    # one bad page does not poison the chunk.
+    fetch_stubs = [s for s in page_stubs if not state.should_skip_page(s.name)]
+
+    async def _fetch_page(node_id: str) -> dict | Exception:
+        try:
+            if per_page_timeout_s is not None:
+                return await asyncio.wait_for(
+                    client.get_page(file_key, node_id),
+                    timeout=per_page_timeout_s,
+                )
+            return await client.get_page(file_key, node_id)
+        except Exception as exc:
+            return exc
+
+    page_nodes_map: dict[str, dict | Exception] = {}
+
+    async def _fetch_chunk(start: int) -> None:
+        end = min(start + PAGE_FETCH_CHUNK, len(fetch_stubs))
+        chunk = fetch_stubs[start:end]
+        if not chunk:
+            return
+        fetched = await asyncio.gather(*[_fetch_page(s.id) for s in chunk])
+        for stub, result in zip(chunk, fetched, strict=False):
+            page_nodes_map[stub.id] = result
+
     if max_pages is None:
-        fetch_stubs = [s for s in page_stubs if not state.should_skip_page(s.name)]
-
-        async def _fetch(node_id: str) -> dict | Exception:
-            try:
-                return await client.get_page(file_key, node_id)
-            except Exception as exc:
-                return exc
-
-        fetched = await asyncio.gather(*[_fetch(s.id) for s in fetch_stubs])
-        page_nodes_map: dict[str, dict | Exception] = {
-            stub.id: result for stub, result in zip(fetch_stubs, fetched, strict=False)
-        }
+        # No write budget to guard — pre-fetch every page in chunks. Still chunked
+        # (not one giant gather) so very large files don't burst hundreds of
+        # concurrent HTTPs at Figma.
+        for chunk_start in range(0, len(fetch_stubs), PAGE_FETCH_CHUNK):
+            await _fetch_chunk(chunk_start)
     else:
-        page_nodes_map = {}  # populated lazily below
+        # First chunk only. Subsequent chunks are fetched lazily inside the
+        # processing loop when it reaches an unfetched page — that way, once
+        # pages_written_this_call hits max_pages and we break out of the loop,
+        # we also stop fetching further chunks.
+        await _fetch_chunk(0)
 
     # Batch-fetch direct children of ALL screen frames across ALL pages in one get_nodes call.
     # This is O(1) per file instead of O(pages), which makes schema-stale backfills fast.
@@ -812,40 +976,60 @@ async def pull_file(
             result.pages_skipped += 1
             continue
 
-        # Level 2: structural hash check
-        if max_pages is None:
-            # Already fetched above
-            page_node_or_exc = page_nodes_map[page_node_id]
-            if isinstance(page_node_or_exc, Exception):
-                log.error(
-                    "Failed to fetch page %r (%s): %s — skipping",
-                    page_name,
-                    page_node_id,
-                    page_node_or_exc,
-                )
-                result.pages_errored += 1
-                continue
-            page_node: dict = page_node_or_exc
-        else:
-            # Sequential fetch.
-            # When schema is current: stop before fetching if content-change budget is hit.
-            # When schema is stale: always fetch so we can upgrade frontmatter format.
-            # Schema-only upgrades (hash unchanged) don't consume the budget, so they
-            # can't cause has_more=True and won't block pull_schema_version from updating.
+        # Level 2: structural hash check. Page nodes come from the chunk-fetched
+        # page_nodes_map. In max_pages mode we may need to fetch the next chunk
+        # lazily here so we don't prefetch work we won't use once budget is hit.
+        if max_pages is not None and page_node_id not in page_nodes_map:
+            # Check write budget before fetching the next chunk: if we've already
+            # written max_pages content-changed pages, stop fetching. Schema-stale
+            # pages still need to be processed (they don't consume the budget) so
+            # keep fetching in that case.
             if not schema_stale and pages_written_this_call >= max_pages:
                 result.has_more = True
                 _progress(
                     f"  [{page_idx}/{total_pages}] {page_name} — reached max_pages={max_pages}, stopping"
                 )
                 break
-            try:
-                page_node = await client.get_page(file_key, page_node_id)
-            except Exception as exc:
-                log.error(
-                    "Failed to fetch page %r (%s): %s — skipping", page_name, page_node_id, exc
+            # Fetch the chunk that contains this stub. We know fetch_stubs order
+            # matches page_stubs order for non-skip_pages entries.
+            chunk_start = (
+                next(
+                    (i for i, s in enumerate(fetch_stubs) if s.id == page_node_id),
+                    -1,
                 )
-                result.pages_errored += 1
-                continue
+                // PAGE_FETCH_CHUNK
+            ) * PAGE_FETCH_CHUNK
+            await _fetch_chunk(chunk_start)
+
+        page_node_or_exc = page_nodes_map.get(page_node_id)
+        if isinstance(page_node_or_exc, asyncio.TimeoutError):
+            log.error(
+                "get_page timed out after %ss for page %r (%s) — skipping",
+                per_page_timeout_s,
+                page_name,
+                page_node_id,
+            )
+            _progress(
+                f"  [{page_idx}/{total_pages}] {page_name} — timed out after {per_page_timeout_s}s, skipping"
+            )
+            result.pages_errored += 1
+            continue
+        if isinstance(page_node_or_exc, Exception):
+            log.error(
+                "Failed to fetch page %r (%s): %s — skipping",
+                page_name,
+                page_node_id,
+                page_node_or_exc,
+            )
+            result.pages_errored += 1
+            continue
+        if page_node_or_exc is None:
+            # Shouldn't happen — fetch_stubs excludes skip_pages and we fetched
+            # the containing chunk above. Treat as an error to be safe.
+            log.error("Page %r (%s) missing from fetch map — skipping", page_name, page_node_id)
+            result.pages_errored += 1
+            continue
+        page_node: dict = page_node_or_exc
 
         new_hash = compute_page_hash(page_node)
         stored_hash = state.get_page_hash(file_key, page_node_id)
@@ -961,8 +1145,21 @@ async def pull_file(
                 else:
                     # Sequential mode: must fetch per-page (we don't have all page nodes upfront).
                     try:
-                        frame_docs = await client.get_nodes(file_key, screen_frame_ids, depth=2)
+                        if per_page_timeout_s is not None:
+                            frame_docs = await asyncio.wait_for(
+                                client.get_nodes(file_key, screen_frame_ids, depth=2),
+                                timeout=per_page_timeout_s,
+                            )
+                        else:
+                            frame_docs = await client.get_nodes(file_key, screen_frame_ids, depth=2)
                         raw_frames, frame_sections = _compute_raw_frames(frame_docs)
+                    except TimeoutError:
+                        log.warning(
+                            "get_nodes timed out after %ss for page %r (%s) — raw_frames will be omitted",
+                            per_page_timeout_s,
+                            page_name,
+                            page_node_id,
+                        )
                     except Exception as exc:
                         log.warning(
                             "Failed to fetch frame children for page %r (%s): %s — raw_frames will be omitted",
@@ -980,7 +1177,11 @@ async def pull_file(
             )
             if should_scan_tokens:
                 try:
-                    token_scan = scan_page(page_node, set(screen_frame_ids))
+                    token_scan = scan_page(
+                        page_node,
+                        set(screen_frame_ids),
+                        libraries=catalog.libraries,
+                    )
                     # Sparse frontmatter summary — only frames with at least one issue
                     raw_tokens = {
                         fid: RawTokenCounts(raw=fscan.raw, stale=fscan.stale, valid=fscan.valid)
@@ -1045,11 +1246,20 @@ async def pull_file(
 
             written_component_rels: list[str] = []
             previous_component_by_suffix: dict[str, str] = {}
+            # Canon MIG-1 / SI-1: the pre-H6 legacy synthetic path used a constant filename
+            # shared across every page that had top-level COMPONENT_SETs
+            # (last writer wins; data is corrupt). On the v9 transition
+            # we want to migrate this away exactly once — whichever page
+            # is processed first inherits the legacy file's content; the
+            # rest write fresh. Better than leaving the orphan on disk.
+            previous_legacy_synthetic: str | None = None
             if previous_entry:
                 for comp_path in previous_entry.component_md_paths:
                     suffix = _node_suffix_from_relpath(comp_path)
                     if suffix:
                         previous_component_by_suffix[suffix] = comp_path
+                    elif Path(comp_path).name == LEGACY_UNGROUPED_COMPONENTS_BASENAME:
+                        previous_legacy_synthetic = comp_path
             for section in component_sections:
                 if not section.frames:
                     continue
@@ -1057,6 +1267,17 @@ async def pull_file(
                 sect_slug = f"{slugify(section.name)}-{sect_suffix}"
                 comp_rel = component_path(file_slug, sect_slug)
                 old_comp_rel = previous_component_by_suffix.get(sect_suffix)
+                # Fall back to the legacy synthetic if there was no
+                # canonical-suffix match — first synthetic section wins
+                # the migration; subsequent calls find old_comp_rel
+                # already migrated away and write fresh.
+                if (
+                    old_comp_rel is None
+                    and previous_legacy_synthetic
+                    and section.node_id.startswith(UNGROUPED_COMPONENTS_NODE_ID)
+                ):
+                    old_comp_rel = previous_legacy_synthetic
+                    previous_legacy_synthetic = None  # consume once per page
                 if old_comp_rel and old_comp_rel != comp_rel and prune:
                     _migrate_generated_path(
                         repo_root,

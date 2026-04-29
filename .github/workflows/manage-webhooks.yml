@@ -24,6 +24,10 @@ on:
         required: false
         type: boolean
         default: false
+      figmaclaw_ref:
+        required: false
+        type: string
+        default: main
     secrets:
       FIGMA_API_KEY:
         required: true
@@ -39,7 +43,7 @@ jobs:
           fetch-depth: 1
 
       - name: Install figmaclaw
-        run: pip install uv && uv tool install git+https://github.com/aviadr1/figmaclaw
+        run: pip install uv && uv tool install "git+https://github.com/aviadr1/figmaclaw@${{ inputs.figmaclaw_ref }}"
 
       - name: Run figmaclaw webhooks ${{ inputs.command }}
         env:

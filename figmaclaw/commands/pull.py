@@ -4,18 +4,27 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
+import time
 from pathlib import Path
+from typing import Any
 
 import click
 
-from figmaclaw.commands._shared import load_state, require_figma_api_key, require_tracked_files
+from figmaclaw.commands._shared import (
+    figma_variables_api_key,
+    load_state,
+    require_figma_api_key,
+    require_tracked_files,
+)
 from figmaclaw.figma_api_models import FileSummary, ProjectSummary
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_sync_state import FigmaSyncState
 from figmaclaw.figma_utils import parse_since
 from figmaclaw.git_utils import git_commit, git_push
 from figmaclaw.prune_utils import prune_file_artifacts_from_manifest
-from figmaclaw.pull_logic import PullResult, pull_file
+from figmaclaw.pull_logic import DEFAULT_PER_PAGE_TIMEOUT_S, PullResult, pull_file
+from figmaclaw.schema_status import is_pull_schema_stale
 from figmaclaw.status_markers import COMMIT_MSG_PREFIX, HAS_MORE_TRUE
 
 
@@ -64,6 +73,17 @@ from figmaclaw.status_markers import COMMIT_MSG_PREFIX, HAS_MORE_TRUE
     show_default=True,
     help="Prune stale generated figma artifacts (orphans, old rename paths, removed pages).",
 )
+@click.option(
+    "--per-page-timeout-s",
+    "per_page_timeout_s",
+    default=DEFAULT_PER_PAGE_TIMEOUT_S,
+    type=float,
+    show_default=True,
+    help=(
+        "Abort get_page/get_nodes for a single page after this many seconds and "
+        "mark it errored so the loop can continue. Pass 0 to disable."
+    ),
+)
 @click.pass_context
 def pull_cmd(
     ctx: click.Context,
@@ -75,10 +95,15 @@ def pull_cmd(
     team_id: str | None,
     since: str,
     prune: bool,
+    per_page_timeout_s: float,
 ) -> None:
     """Pull all tracked Figma files and write changed pages to disk."""
     repo_dir = Path(ctx.obj["repo_dir"])
     api_key = require_figma_api_key()
+
+    # 0 = caller opts out of per-page timeouts. Map to None to keep the signature
+    # explicit in pull_logic.pull_file (None => no asyncio.wait_for wrapping).
+    resolved_timeout: float | None = per_page_timeout_s if per_page_timeout_s > 0 else None
 
     asyncio.run(
         _run(
@@ -92,6 +117,7 @@ def pull_cmd(
             team_id,
             since,
             prune=prune,
+            per_page_timeout_s=resolved_timeout,
         )
     )
 
@@ -103,6 +129,108 @@ def _git_commit_page(repo_dir: Path, page_label: str) -> bool:
 
 def _git_push(repo_dir: Path) -> None:
     git_push(repo_dir)
+
+
+def _obs_s(value: object) -> str:
+    return str(value).replace("\n", " ").replace("\r", " ").replace(" ", "_")
+
+
+def _emit_pull_obs(event: str, **fields: object) -> None:
+    parts = [f"event={_obs_s(event)}"]
+    for key, value in fields.items():
+        parts.append(f"{key}={_obs_s(value)}")
+    click.echo("SYNC_OBS_PULL " + " ".join(parts))
+
+
+class _PullObs:
+    """Structured pull observability emitter + counters."""
+
+    def __init__(
+        self,
+        *,
+        force: bool,
+        max_pages: int | None,
+        team_id: str | None,
+        since: str,
+        prune: bool,
+    ) -> None:
+        self.run_start = time.monotonic()
+        self.files_seen = 0
+        self.files_attempted_pull = 0
+        self.files_skipped_prefilter = 0
+        self.files_errors = 0
+        self.files_no_access = 0
+        self.files_updated = 0
+        self.files_skipped = 0
+        self.emit(
+            "run_start",
+            force=force,
+            max_pages=max_pages if max_pages is not None else "none",
+            team_id=team_id if team_id is not None else "none",
+            since=since,
+            prune=prune,
+        )
+
+    def emit(self, event: str, **fields: Any) -> None:
+        _emit_pull_obs(event, **fields)
+
+    def duration(self) -> float:
+        return round(time.monotonic() - self.run_start, 3)
+
+    def set_files_seen(self, n: int) -> None:
+        self.files_seen = n
+
+    def file_end(self, file_key: str, outcome: str, file_start: float, **fields: Any) -> None:
+        self.emit(
+            "file_end",
+            file_key=file_key,
+            outcome=outcome,
+            duration_s=round(time.monotonic() - file_start, 3),
+            **fields,
+        )
+
+    def run_end(self, *, has_more_global: bool, reason: str | None = None) -> None:
+        payload: dict[str, Any] = {
+            "duration_s": self.duration(),
+            "files_seen": self.files_seen,
+            "files_attempted_pull": self.files_attempted_pull,
+            "files_skipped_prefilter": self.files_skipped_prefilter,
+            "files_errors": self.files_errors,
+            "files_no_access": self.files_no_access,
+            "files_updated": self.files_updated,
+            "files_skipped": self.files_skipped,
+            "has_more_global": has_more_global,
+        }
+        if reason is not None:
+            payload["reason"] = reason
+        self.emit("run_end", **payload)
+
+
+def _pull_heartbeat_seconds() -> int:
+    raw = os.getenv("FIGMACLAW_PULL_HEARTBEAT_SECONDS", "30").strip()
+    with contextlib.suppress(ValueError):
+        val = int(raw)
+        return max(val, 0)
+    return 30
+
+
+async def _file_heartbeat_loop(
+    obs: _PullObs, *, file_key: str, file_start: float, stop_event: asyncio.Event, interval_s: int
+) -> None:
+    if interval_s <= 0:
+        return
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval_s)
+            return
+        except TimeoutError:
+            obs.emit(
+                "file_heartbeat",
+                file_key=file_key,
+                elapsed_s=round(time.monotonic() - file_start, 3),
+                interval_s=interval_s,
+                note="still_processing",
+            )
 
 
 async def _listing_prefilter(
@@ -181,10 +309,19 @@ async def _run(
     team_id: str | None,
     since: str,
     prune: bool = True,
+    per_page_timeout_s: float | None = None,
 ) -> None:
     state = load_state(repo_dir)
 
     commit_count = 0
+    obs = _PullObs(
+        force=force,
+        max_pages=max_pages,
+        team_id=team_id,
+        since=since,
+        prune=prune,
+    )
+    heartbeat_interval_s = _pull_heartbeat_seconds()
 
     def on_page_written(page_label: str, paths: list[str]) -> None:
         nonlocal commit_count
@@ -202,33 +339,52 @@ async def _run(
     pages_budget = max_pages
     has_more_global = False
 
-    async with FigmaClient(api_key) as client:
+    async with FigmaClient(api_key, variables_api_key=figma_variables_api_key(api_key)) as client:
         # Fast listing pre-filter: one listing pass replaces N individual get_file_meta
         # calls for unchanged files. Also handles auto-discovery when team_id is set.
         # None means "no listing available" (team_id not set); {} means "listing ran but
         # returned no files" — both are handled correctly by the is not None check below.
         listing_last_modified: dict[str, str] | None = None
         if team_id and not file_key:
+            listing_t0 = time.monotonic()
+            tracked_before = len(state.manifest.tracked_files)
             listing_last_modified = await _listing_prefilter(client, team_id, state, since)
             state.save()  # persist any newly tracked files before pulling
+            listing_duration_s = round(time.monotonic() - listing_t0, 3)
+            tracked_after = len(state.manifest.tracked_files)
+            _emit_pull_obs(
+                "listing_prefilter",
+                duration_s=listing_duration_s,
+                listed_files=len(listing_last_modified),
+                tracked_before=tracked_before,
+                tracked_after=tracked_after,
+            )
 
         if not require_tracked_files(state):
+            obs.run_end(has_more_global=False, reason="no_tracked_files")
             return
 
         keys = [file_key] if file_key else list(state.manifest.tracked_files)
+        obs.set_files_seen(len(keys))
 
         for key in keys:
+            file_start = time.monotonic()
             if key not in state.manifest.tracked_files:
                 click.echo(f"File key {key!r} is not tracked. Run 'figmaclaw track {key}' first.")
+                obs.files_skipped += 1
+                obs.file_end(key, "not_tracked", file_start)
                 continue
 
             skip_reason = state.manifest.skipped_files.get(key)
             if skip_reason:
                 click.echo(f"{key}: skipped — {skip_reason}")
+                obs.files_skipped += 1
+                obs.file_end(key, "manifest_skipped", file_start)
                 continue
 
             if max_pages is not None and pages_budget is not None and pages_budget <= 0:
                 has_more_global = True
+                obs.file_end(key, "budget_exhausted", file_start)
                 break
 
             # Listing pre-filter: skip get_file_meta entirely when the listing tells us
@@ -237,26 +393,56 @@ async def _run(
             #     skip — if it's not reachable via the listing, it can't have changed
             #   - listing_lm == stored → last_modified unchanged; skip
             #   - listing_lm != stored → file changed; proceed to get_file_meta
+            #
+            # Exception (figmaclaw#123): a tracked file whose
+            # ``pull_schema_version`` is below CURRENT must be pulled even
+            # if Figma reports it unchanged — otherwise schema bumps never
+            # reach files that are idle on the Figma side. Before this
+            # escape hatch, the linear-git showcase-v2 stuck case sat in
+            # a listing-match skip forever and the v7 refresh never fired.
             if not force and listing_last_modified is not None:
                 listing_lm = listing_last_modified.get(key)
                 stored_entry = state.manifest.files.get(key)
                 stored_lm = stored_entry.last_modified if stored_entry else ""
-                if listing_lm is None or stored_lm == listing_lm:
+                stored_schema = stored_entry.pull_schema_version if stored_entry else 0
+                schema_needs_refresh = is_pull_schema_stale(stored_schema)
+                unchanged_on_figma = listing_lm is None or stored_lm == listing_lm
+                if unchanged_on_figma and not schema_needs_refresh:
+                    obs.files_skipped_prefilter += 1
+                    obs.file_end(key, "listing_prefilter_skip", file_start)
                     continue
 
             try:
-                result = await pull_file(
-                    client,
-                    key,
-                    state,
-                    repo_dir,
-                    force=force,
-                    max_pages=pages_budget,
-                    prune=prune,
-                    on_page_written=on_page_written,
+                obs.files_attempted_pull += 1
+                stop_heartbeat = asyncio.Event()
+                heartbeat_task = asyncio.create_task(
+                    _file_heartbeat_loop(
+                        obs,
+                        file_key=key,
+                        file_start=file_start,
+                        stop_event=stop_heartbeat,
+                        interval_s=heartbeat_interval_s,
+                    )
                 )
+                try:
+                    result = await pull_file(
+                        client,
+                        key,
+                        state,
+                        repo_dir,
+                        force=force,
+                        max_pages=pages_budget,
+                        prune=prune,
+                        on_page_written=on_page_written,
+                        per_page_timeout_s=per_page_timeout_s,
+                    )
+                finally:
+                    stop_heartbeat.set()
+                    await asyncio.gather(heartbeat_task, return_exceptions=True)
             except Exception as exc:
                 click.echo(f"{key}: error — {exc} (skipping)")
+                obs.files_errors += 1
+                obs.file_end(key, "error", file_start)
                 continue
             all_results.append(result)
 
@@ -268,6 +454,7 @@ async def _run(
                 has_more_global = True
 
             if result.no_access:
+                obs.files_no_access += 1
                 # Permanently inaccessible (restricted/deleted) — move out of tracked_files.
                 reason = "no access — get_file_meta returns 400/404"
                 pruned = prune_file_artifacts_from_manifest(
@@ -282,7 +469,9 @@ async def _run(
                     f"{key}: skipped — {reason} — removed from tracked_files "
                     f"(pruned {pruned} path(s))"
                 )
+                obs.file_end(key, "no_access_pruned", file_start, pruned_paths=pruned)
             elif result.skipped_file:
+                obs.files_skipped += 1
                 # If pull failed (e.g. 400 on get_file_meta) and we know the listing
                 # last_modified, stamp it into the manifest so future runs pre-filter
                 # this file without making a wasted API call.
@@ -292,7 +481,19 @@ async def _run(
                     if listing_lm and stored_entry and not stored_entry.last_modified:
                         stored_entry.last_modified = listing_lm
                 click.echo(f"{key}: unchanged (skipped)")
+                obs.file_end(key, "pull_skipped", file_start)
             else:
+                wrote_any = bool(
+                    result.pages_written
+                    or result.component_sections_written
+                    or result.pages_schema_upgraded
+                )
+                if wrote_any:
+                    obs.files_updated += 1
+                    outcome = "updated"
+                else:
+                    # Pull processed file-level metadata but wrote no page/component output.
+                    outcome = "processed_no_writes"
                 errored = f", {result.pages_errored} error(s)" if result.pages_errored else ""
                 upgraded = (
                     f", {result.pages_schema_upgraded} schema-upgraded"
@@ -306,6 +507,17 @@ async def _run(
                     click.echo(f"  → {path}")
                 for path in result.component_paths:
                     click.echo(f"  ❖ {path}")
+                obs.file_end(
+                    key,
+                    outcome,
+                    file_start,
+                    pages_written=result.pages_written,
+                    components_written=result.component_sections_written,
+                    pages_skipped=result.pages_skipped,
+                    pages_errors=result.pages_errored,
+                    schema_upgraded=result.pages_schema_upgraded,
+                    has_more=result.has_more,
+                )
 
     state.save()
 
@@ -326,3 +538,5 @@ async def _run(
 
     if has_more_global:
         click.echo(HAS_MORE_TRUE)
+
+    obs.run_end(has_more_global=has_more_global)

@@ -433,7 +433,11 @@ async def test_run_version_users_tracked(tmp_path: Path) -> None:
     canvas = _make_canvas("100:1", [_make_frame("11:1", "A"), _make_frame("11:3", "New")])
     old_canvas = _make_canvas("100:1", [_make_frame("11:1", "A")])
 
-    now = datetime.now(UTC)
+    # Compute fixture timestamps relative to the same _PINNED_NOW the
+    # test passes into _run so the 7d cutoff is deterministic. Previously
+    # this used datetime.now(UTC), which silently drifted into the range
+    # once wall-clock time advanced 15+ days past _PINNED_NOW.
+    now = _PINNED_NOW
     in_range_new = (
         (now - timedelta(days=2)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     )
