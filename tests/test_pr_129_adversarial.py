@@ -184,31 +184,15 @@ def test_compute_page_hash_changes_when_visibility_flips() -> None:
 
 
 # ---------------------------------------------------------------------------
-# DOCUMENTED GAP — variant-content-changes inside COMPONENT_SETs
+# Variant-content-change detection (closes the v8 GAP)
 # ---------------------------------------------------------------------------
 
 
-def test_GAP_adding_variant_inside_top_level_component_set_does_not_change_page_hash() -> None:
-    """Documents a known Tier-2 short-circuit gap: adding a new COMPONENT
-    *inside* an existing COMPONENT_SET does NOT change the page hash.
-
-    Concretely: ``compute_page_hash`` adds a tuple for the COMPONENT_SET
-    itself but never descends into its variants. So an internal variant
-    addition is invisible to the refresh ladder. The page is marked
-    ``content_unchanged`` (pull_logic.py:1044) and skipped — even though
-    the rendered variant table on disk is now stale.
-
-    This test PINS the current behavior so a future fix is forced to
-    update the assertion. It is NOT a fix; it is a regression contract
-    saying "if you change this, look at pull_logic Tier 2".
-
-    Real-world workaround: any time a designer touches a variant, they
-    typically also rename or reorder something at the COMPONENT_SET level,
-    or the file's `version` flips and ``last_modified`` advances —
-    figmaclaw refetches the file but the per-page short-circuit still
-    fires. Surgical fix would be to descend one more level into
-    COMPONENT_SETs and include their variants in the hash tuples.
-    """
+def test_adding_variant_inside_top_level_component_set_changes_page_hash() -> None:
+    """Adding a COMPONENT *inside* an existing COMPONENT_SET MUST bump the
+    page hash so the rendered variant table picks up the new row on the
+    next pull. Closed in pull-schema v9 by descending one level into
+    COMPONENT_SETs in compute_page_hash."""
     one_variant = _page(
         "1:0",
         "p",
@@ -225,37 +209,206 @@ def test_GAP_adding_variant_inside_top_level_component_set_does_not_change_page_
             )
         ],
     )
-    h1 = compute_page_hash(one_variant)
-    h2 = compute_page_hash(two_variants)
-    # PINNING the gap. Flip to `!=` when the hash starts descending into
-    # COMPONENT_SETs.
-    assert h1 == h2, (
-        "page_hash now distinguishes inside-COMPONENT_SET variant changes — "
-        "great! Update this test (flip the assertion) and check that "
-        "Tier 2 of pull_logic still skips correctly when the COMPONENT_SET "
-        "itself is unchanged."
+    assert compute_page_hash(one_variant) != compute_page_hash(two_variants)
+
+
+def test_renaming_variant_inside_top_level_component_set_changes_page_hash() -> None:
+    """Renaming a variant must bump the hash so the new variant name
+    flows through into the rendered .md."""
+    before = _page(
+        "1:0",
+        "p",
+        [_component_set("1:1", "Toggle", variants=[_component("1:1:on", "On")])],
     )
+    after = _page(
+        "1:0",
+        "p",
+        [_component_set("1:1", "Toggle", variants=[_component("1:1:on", "Enabled")])],
+    )
+    assert compute_page_hash(before) != compute_page_hash(after)
 
 
-def test_GAP_compute_frame_hashes_skips_top_level_component_sets() -> None:
-    """Documents that compute_frame_hashes() returns nothing for top-level
-    COMPONENT/COMPONENT_SETs. They are rendered as variant tables in a
-    component .md, not as frame rows in a screen .md, so per-frame staleness
-    detection does not apply. PINS the behavior so callers don't grow a
-    silent dependency on it. If component variant staleness ever needs to
-    be tracked, do it through a separate per-section content hash, not by
-    smuggling COMPONENT/COMPONENT_SET ids into frame_hashes."""
+def test_renaming_variant_inside_section_wrapped_component_set_changes_page_hash() -> None:
+    """Same property for the much more common SECTION-wrapped layout
+    (✅ Avatar / ✅ Button shape). Without this, every component-library
+    page on a real design system would have stale variant tables on disk
+    after a designer rename."""
+    before = _page(
+        "1:0",
+        "p",
+        [
+            _section(
+                "1:1",
+                "Buttons",
+                children=[
+                    _component_set(
+                        "1:2",
+                        "Button",
+                        variants=[_component("1:2:p", "Primary")],
+                    )
+                ],
+            )
+        ],
+    )
+    after = _page(
+        "1:0",
+        "p",
+        [
+            _section(
+                "1:1",
+                "Buttons",
+                children=[
+                    _component_set(
+                        "1:2",
+                        "Button",
+                        variants=[_component("1:2:p", "Primary/large")],
+                    )
+                ],
+            )
+        ],
+    )
+    assert compute_page_hash(before) != compute_page_hash(after)
+
+
+def test_invisible_variant_does_not_change_page_hash() -> None:
+    """A hidden variant does not appear in the rendered table, so the
+    hash must not be perturbed by toggling its visibility."""
+    visible = _page(
+        "1:0",
+        "p",
+        [_component_set("1:1", "Toggle", variants=[_component("1:1:on", "On")])],
+    )
+    plus_hidden = _page(
+        "1:0",
+        "p",
+        [
+            _component_set(
+                "1:1",
+                "Toggle",
+                variants=[
+                    _component("1:1:on", "On"),
+                    {**_component("1:1:wip", "WIP"), "visible": False},
+                ],
+            )
+        ],
+    )
+    assert compute_page_hash(visible) == compute_page_hash(plus_hidden)
+
+
+def test_variant_order_does_not_change_page_hash() -> None:
+    """Variant ordering is API-driven; figmaclaw must be order-stable."""
+    a = _page(
+        "1:0",
+        "p",
+        [
+            _component_set(
+                "1:1",
+                "Toggle",
+                variants=[
+                    _component("1:1:on", "On"),
+                    _component("1:1:off", "Off"),
+                ],
+            )
+        ],
+    )
+    b = _page(
+        "1:0",
+        "p",
+        [
+            _component_set(
+                "1:1",
+                "Toggle",
+                variants=[
+                    _component("1:1:off", "Off"),
+                    _component("1:1:on", "On"),
+                ],
+            )
+        ],
+    )
+    assert compute_page_hash(a) == compute_page_hash(b)
+
+
+def test_compute_frame_hashes_includes_top_level_component_sets() -> None:
+    """Closed in pull-schema v9: top-level COMPONENT_SETs now get
+    per-unit content hashes alongside FRAMEs. Required so per-variant
+    staleness detection can fire on component-library pages."""
     page_node = _page(
         "1:0",
         "p",
         [_component_set("1:1", "Tooltip"), _component_set("1:2", "Help icon")],
     )
     hashes = compute_frame_hashes(page_node)
-    assert hashes == {}, (
-        f"compute_frame_hashes returned non-empty {hashes!r} for a "
-        "component-only page. This is an API change — confirm that "
-        "stale_frame_ids and downstream consumers handle component ids."
+    assert set(hashes.keys()) == {"1:1", "1:2"}, hashes
+    assert all(len(h) == 8 for h in hashes.values())
+
+
+def test_compute_frame_hashes_includes_section_wrapped_component_sets() -> None:
+    """The SECTION-wrapped library layout (✅ Avatar / ✅ Button) must
+    also produce per-COMPONENT_SET content hashes."""
+    page_node = _page(
+        "1:0",
+        "p",
+        [
+            _section(
+                "1:1",
+                "Buttons",
+                children=[_component_set("1:2", "Button"), _component_set("1:3", "Icon button")],
+            )
+        ],
     )
+    hashes = compute_frame_hashes(page_node)
+    assert set(hashes.keys()) == {"1:2", "1:3"}, hashes
+
+
+def test_compute_frame_hashes_skips_invisible_components() -> None:
+    """Invisible components must not get a frame hash entry. Otherwise
+    stale-frame detection would think a hidden node became stale every
+    time it was hidden, triggering wasted work."""
+    page_node = _page(
+        "1:0",
+        "p",
+        [
+            _component_set("1:1", "Visible"),
+            _component_set("1:2", "Hidden", visible=False),
+        ],
+    )
+    hashes = compute_frame_hashes(page_node)
+    assert "1:1" in hashes
+    assert "1:2" not in hashes
+
+
+def test_compute_frame_hash_changes_on_variant_rename_via_frame_hashes() -> None:
+    """Renaming a variant inside a COMPONENT_SET changes that
+    COMPONENT_SET's per-unit content hash — so per-frame staleness
+    detection can pinpoint the affected unit instead of nuking the whole
+    page."""
+    before = compute_frame_hashes(
+        _page(
+            "1:0",
+            "p",
+            [
+                _component_set(
+                    "1:1",
+                    "Toggle",
+                    variants=[_component("1:1:on", "On")],
+                )
+            ],
+        )
+    )
+    after = compute_frame_hashes(
+        _page(
+            "1:0",
+            "p",
+            [
+                _component_set(
+                    "1:1",
+                    "Toggle",
+                    variants=[_component("1:1:on", "Enabled")],
+                )
+            ],
+        )
+    )
+    assert before["1:1"] != after["1:1"], (before, after)
 
 
 # ---------------------------------------------------------------------------
