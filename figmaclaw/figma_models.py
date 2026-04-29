@@ -12,6 +12,8 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field
 
 from figmaclaw.figma_schema import (
+    UNGROUPED_COMPONENTS_NODE_ID,
+    UNGROUPED_COMPONENTS_SECTION,
     UNGROUPED_NODE_ID,
     UNGROUPED_SECTION,
     is_component,
@@ -139,6 +141,13 @@ def from_page_node(page_node: dict, *, file_key: str, file_name: str) -> FigmaPa
 
     sections: list[FigmaSection] = []
     ungrouped_frames: list[FigmaFrame] = []
+    # Top-level COMPONENT/COMPONENT_SET nodes that aren't wrapped in a SECTION
+    # — collected into a synthetic component-library section below so the
+    # page produces a non-empty manifest entry and a component .md, instead
+    # of dropping silently with md_path=null and component_md_paths=[].
+    # Real Gigaverse pages with this shape: ✅ Tooltip & Help icon,
+    # ☼ Logo, ☼ App Icon, ☼ Date & Time Format. See agent-A H2.
+    ungrouped_components: list[FigmaFrame] = []
     all_frames_for_flows: list[dict] = []
 
     for child in children:
@@ -177,6 +186,13 @@ def from_page_node(page_node: dict, *, file_key: str, file_name: str) -> FigmaPa
             all_frames_for_flows.append(child)
             ungrouped_frames.append(_node_to_frame(child, file_key))
 
+        elif is_component(child):
+            # Top-level COMPONENT or COMPONENT_SET — no SECTION wrapper.
+            # Visibility already guarded above. We treat these as a
+            # synthetic component-library section (see UNGROUPED_COMPONENTS_*
+            # in figma_schema) so they don't drop silently.
+            ungrouped_components.append(_node_to_frame(child, file_key))
+
         # Every other top-level child type (CONNECTOR, TEXT, VECTOR, ...)
         # is skipped — not rendered to markdown.
 
@@ -186,6 +202,16 @@ def from_page_node(page_node: dict, *, file_key: str, file_name: str) -> FigmaPa
                 node_id=UNGROUPED_NODE_ID,
                 name=UNGROUPED_SECTION,
                 frames=ungrouped_frames,
+            )
+        )
+
+    if ungrouped_components:
+        sections.append(
+            FigmaSection(
+                node_id=UNGROUPED_COMPONENTS_NODE_ID,
+                name=UNGROUPED_COMPONENTS_SECTION,
+                frames=ungrouped_components,
+                is_component_library=True,
             )
         )
 

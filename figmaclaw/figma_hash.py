@@ -45,7 +45,7 @@ from __future__ import annotations
 import hashlib
 import json
 
-from figmaclaw.figma_schema import STRUCTURAL_NODE_TYPES, is_visible
+from figmaclaw.figma_schema import COMPONENT_NODE_TYPES, STRUCTURAL_NODE_TYPES, is_visible
 
 # Alias kept for any external importer of the old private name.
 _STRUCTURAL_TYPES = STRUCTURAL_NODE_TYPES
@@ -57,19 +57,32 @@ def compute_page_hash(page_node: dict) -> str:
     Returns a 16-character lowercase hex string. The hash is stable
     regardless of child ordering in the source JSON.
 
-    Includes visible FRAME and SECTION nodes at depth 1 and visible
-    FRAME / SECTION grandchildren inside visible SECTIONs. Excludes:
+    Includes:
+
+    * Visible FRAME and SECTION nodes at depth 1.
+    * Visible FRAME / SECTION grandchildren inside visible SECTIONs.
+    * Visible COMPONENT and COMPONENT_SET nodes at depth 1 (otherwise the
+      hash collapses to the empty-list digest for component-only pages
+      where designers placed COMPONENT_SETs directly on the canvas — Tier 2
+      of the refresh ladder then short-circuits forever and the page
+      never gets a local .md, manifest md_path stays null, and the user
+      hits the "Tooltip / Help icon / Logo missing" partial-pull bug).
+    * Visible COMPONENT and COMPONENT_SET grandchildren inside visible
+      SECTIONs (so the hash reflects component renames inside library
+      sections too).
+
+    Excludes:
 
     * Invisible nodes (``visible: false`` — see :func:`figma_schema.is_visible`).
     * Children of an invisible parent (inherited visibility).
-    * Non-structural types (CONNECTOR, TEXT, VECTOR, COMPONENT*, …).
+    * Non-renderable types (CONNECTOR, TEXT, VECTOR, …).
     """
     tuples: list[tuple[str, str, str, str]] = []
     page_id: str = page_node.get("id", "")
 
     for child in page_node.get("children", []):
         child_type = child.get("type", "")
-        if child_type not in STRUCTURAL_NODE_TYPES:
+        if child_type not in STRUCTURAL_NODE_TYPES and child_type not in COMPONENT_NODE_TYPES:
             continue
         if not is_visible(child):
             # Hidden parent → skip this node AND its descendants.
@@ -78,11 +91,12 @@ def compute_page_hash(page_node: dict) -> str:
 
         # Only descend into SECTIONs. Sub-frames inside a FRAME are
         # content (handled by compute_frame_hash), not page-level structure.
+        # COMPONENT/COMPONENT_SET children (variants) are also content.
         if child_type != "SECTION":
             continue
         for grandchild in child.get("children", []):
             gc_type = grandchild.get("type", "")
-            if gc_type not in STRUCTURAL_NODE_TYPES:
+            if gc_type not in STRUCTURAL_NODE_TYPES and gc_type not in COMPONENT_NODE_TYPES:
                 continue
             if not is_visible(grandchild):
                 continue
