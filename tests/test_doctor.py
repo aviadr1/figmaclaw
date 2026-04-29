@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 from click.testing import CliRunner
 
+from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
 from figmaclaw.main import cli
 
 
@@ -276,6 +277,45 @@ def test_doctor_ignores_partial_shape_when_page_matches_skip_pages(tmp_path: Pat
     assert "no partial-pull pages" in result.output, result.output
     assert "2 skipped empty page(s) matched skip_pages" in result.output, result.output
     assert "page(s) with md_path=null" not in result.output, result.output
+
+
+def test_doctor_reports_files_below_current_pull_schema(tmp_path: Path) -> None:
+    """INVARIANT: doctor surfaces schema-backlog files before users see stale pages."""
+
+    _init_git(tmp_path)
+    sync_dir = tmp_path / ".figma-sync"
+    sync_dir.mkdir()
+    manifest = {
+        "version": 1,
+        "tracked_files": ["abc", "def"],
+        "files": {
+            "abc": {
+                "file_name": "Old schema file",
+                "version": "v1",
+                "last_modified": "2026-04-29T00:00:00Z",
+                "pull_schema_version": CURRENT_PULL_SCHEMA_VERSION - 1,
+                "pages": {},
+            },
+            "def": {
+                "file_name": "Current schema file",
+                "version": "v1",
+                "last_modified": "2026-04-29T00:00:00Z",
+                "pull_schema_version": CURRENT_PULL_SCHEMA_VERSION,
+                "pages": {},
+            },
+        },
+        "skipped_files": {},
+    }
+    (sync_dir / "manifest.json").write_text(json.dumps(manifest))
+
+    runner = CliRunner()
+    with patch.dict("os.environ", {"FIGMA_API_KEY": ""}, clear=False):
+        result = runner.invoke(cli, ["--repo-dir", str(tmp_path), "doctor"])
+
+    assert "pull schema current" in result.output, result.output
+    assert "1 file(s) below" in result.output, result.output
+    assert "Old schema file" in result.output, result.output
+    assert "Current schema file" not in result.output, result.output
 
 
 def test_doctor_detects_figma_pages(tmp_path: Path) -> None:

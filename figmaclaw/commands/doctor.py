@@ -109,6 +109,7 @@ def doctor_cmd(ctx: click.Context) -> None:
     manifest_file = manifest_dir / "manifest.json"
     if manifest_file.exists():
         try:
+            from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
             from figmaclaw.figma_sync_state import FigmaSyncState
 
             state = FigmaSyncState(repo_dir)
@@ -121,6 +122,26 @@ def doctor_cmd(ctx: click.Context) -> None:
                 f"{n_files} file(s), {n_pages} page(s) tracked",
             )
             passed += 1
+
+            stale_schema_files = [
+                f"{file_entry.file_name} (v{file_entry.pull_schema_version})"
+                for file_entry in state.manifest.files.values()
+                if file_entry.pull_schema_version < CURRENT_PULL_SCHEMA_VERSION
+            ]
+            if stale_schema_files:
+                detail = "; ".join(stale_schema_files[:3])
+                if len(stale_schema_files) > 3:
+                    detail += f" (+{len(stale_schema_files) - 3} more)"
+                _check(
+                    "pull schema current",
+                    False,
+                    f"{len(stale_schema_files)} file(s) below "
+                    f"v{CURRENT_PULL_SCHEMA_VERSION}: {detail}",
+                )
+                warnings += 1
+            else:
+                _check("pull schema current", True, f"v{CURRENT_PULL_SCHEMA_VERSION}")
+                passed += 1
 
             # 6b. Partial-pull check (PR 129 H2): a page with md_path=None
             # AND component_md_paths=[] AND not a deliberate skip is the
