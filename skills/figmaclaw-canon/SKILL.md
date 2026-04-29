@@ -1,6 +1,6 @@
 ---
 name: figmaclaw canon
-description: Use when working with figmaclaw-generated data (figma/*.md pages, _census.md, ds_catalog.json, token sidecars) or modifying figmaclaw itself. Covers the four-layer data contract (frontmatter / body / manifest / file-scope registries), invariant classes (BP/SC/FM/CL/W/CR/KS/TS/CW/LW/HE/TC/TS-S), design decisions D1-D14, refresh-trigger ladder, and the failure-mode catalog F1-F10. Authoritative for "is this change safe?" questions.
+description: Use when working with figmaclaw-generated data (figma/*.md pages, _census.md, ds_catalog.json, token sidecars) or modifying figmaclaw itself. Covers the four-layer data contract (frontmatter / body / manifest / file-scope registries), invariant classes (BP/SC/FM/CL/W/CR/KS/TS/CW/LW/HE/TC/TS-S/REG/PP/NC/HSH/SI/MIG/AUTH/ERR/WF), design decisions D1-D14, refresh-trigger ladder, and the failure-mode catalog F1-F20. Authoritative for "is this change safe?" questions.
 ---
 
 # figmaclaw canon — invariants and design decisions
@@ -30,6 +30,15 @@ description: Use when working with figmaclaw-generated data (figma/*.md pages, _
    - [HE — Heal-at-entry](#he--heal-at-entry)
    - [TC — Token catalog](#tc--token-catalog)
    - [TS-S — Token sidecar](#ts-s--token-sidecar)
+   - [REG — File-registry state](#reg--file-registry-state)
+   - [PP — Pull terminal state](#pp--pull-terminal-state)
+   - [NC — Node coverage parity](#nc--node-coverage-parity)
+   - [HSH — Hash coverage](#hsh--hash-coverage)
+   - [SI — Synthetic identity](#si--synthetic-identity)
+   - [MIG — Generated-artifact migration](#mig--generated-artifact-migration)
+   - [AUTH — Authority claims](#auth--authority-claims)
+   - [ERR — Failure scoping](#err--failure-scoping)
+   - [WF — Workflow recovery](#wf--workflow-recovery)
 5. [Design decisions D1..D14](#5-design-decisions)
 6. [Failure-mode catalog](#6-failure-mode-catalog)
 7. [Document index](#7-document-index)
@@ -286,6 +295,79 @@ Per-page `*.tokens.json` files are the page-scope answer to "what raw or stale t
 | **TS-S-6 — Backfill.** | If a page `.md` exists but its sidecar is missing or schema-stale, the next pull writes it even if page content is unchanged (commit `e100631`, `6a666ac`). | `tests/test_sidecar_backfill.py` |
 | **TS-S-7 — Lifecycle.** | Sidecars are pruned alongside their parent `.md` when pages disappear (`prune_utils.py`). | `tests/test_prune_utils.py` |
 
+### REG — File-registry state
+
+File-scope registries are committed cache artifacts. Code and agents must be able to tell the difference between "not checked" and "checked, empty."
+
+| ID | Name | Description | Rationale | Proof |
+|---|---|---|---|---|
+| **REG-1** | Explicit registry state | For every tracked file registry, figmaclaw must distinguish three states: not probed, probed-empty, and probed-with-entries. A missing registry artifact is unknown; it is never proof that the upstream registry is empty. | Consumer repos use registry files to answer source-of-truth questions. If absence means both "not emitted" and "empty," agents and automation can incorrectly conclude that Figma has no published components or variables. | Tap In / LSN had zero published component sets, but missing `_census.md` was ambiguous until empty census output became explicit. Evidence: [PR #129 comment](https://github.com/aviadr1/figmaclaw/pull/129#issuecomment-4343662164), commit [`ed2312e`](https://github.com/aviadr1/figmaclaw/commit/ed2312e), `tests/test_census.py::test_census_reports_empty_registry_for_explicit_file_key`. |
+
+### PP — Pull terminal state
+
+Every manifest page entry is a promise about generated repo state. A pull may skip a page intentionally, but it must not silently remember a page that produced no artifact.
+
+| ID | Name | Description | Rationale | Proof |
+|---|---|---|---|---|
+| **PP-1** | No silent partial pull | Every non-skipped manifest page entry must end in a terminal data state: either `md_path` is present, or `component_md_paths` is non-empty, or the page is explicitly skipped with reason. The shape `md_path: null` with empty `component_md_paths` is invalid. | This prevents a stable manifest hash from hiding missing markdown forever. Component-only pages are valid, but only when their component markdown paths exist. | PR #129 found 215 pages across `linear-git` stuck in the invalid shape, including 9 design-system pages. Evidence: [PR #129 H2 comment](https://github.com/aviadr1/figmaclaw/pull/129#issuecomment-4340239749), commit [`2c3dc08`](https://github.com/aviadr1/figmaclaw/commit/2c3dc08), `tests/test_doctor.py::test_doctor_surfaces_partial_pull_pages`. |
+
+### NC — Node coverage parity
+
+figmaclaw has multiple walkers over the Figma node tree. They must agree on what counts as renderable input.
+
+| ID | Name | Description | Rationale | Proof |
+|---|---|---|---|---|
+| **NC-1** | Rendered unit coverage parity | The page parser, renderer, page-hash walker, frame-hash walker, manifest writer, and prune/migration logic must cover the same renderable Figma unit classes: supported `FRAME`, `COMPONENT`, and `COMPONENT_SET` nodes, whether top-level or section-wrapped. | If one subsystem sees a node and another ignores it, figmaclaw can write stale hashes, miss markdown files, or fail to prune generated artifacts. Coverage parity is what makes hash gating and generated output trustworthy. | Top-level `COMPONENT_SET` pages caused partial pulls until parser/hash coverage was aligned. Evidence: commit [`379aa41`](https://github.com/aviadr1/figmaclaw/commit/379aa41), commit [`3cabadc`](https://github.com/aviadr1/figmaclaw/commit/3cabadc), `tests/test_top_level_component_pages.py`, `tests/test_pr_129_adversarial.py`. |
+| **NC-2** | Mixed section preservation | A Figma `SECTION` containing both screen frames and component sets must preserve both classes in generated output. One supported child class must not cause another supported child class to disappear. | Figma sections are containers, not exclusive type declarations. Treating a mixed section as only "screens" or only "components" silently drops source data. | Mixed `SECTION` pages dropped component sets until sibling screen/component sections were emitted. Evidence: commit [`33e5c03`](https://github.com/aviadr1/figmaclaw/commit/33e5c03), `tests/test_pr_129_adversarial.py::test_mixed_section_with_frames_and_component_sets_emits_both_outputs`. |
+
+### HSH — Hash coverage
+
+Hash gates are only safe when they cover all source identity that affects generated output.
+
+| ID | Name | Description | Rationale | Proof |
+|---|---|---|---|---|
+| **HSH-1** | Hash covers rendered identity | Any visible Figma node identity that affects generated markdown must contribute to the relevant page and unit hashes. Invisible nodes stay excluded, and sibling order remains order-insensitive unless order itself is rendered. | Tier 2 and surgical enrichment depend on hashes being a complete summary of rendered source identity. If markdown can change while the hash stays stable, figmaclaw will skip required work. | Adding/renaming variants inside an existing `COMPONENT_SET` originally did not change page hashes or frame hashes. Evidence: commit [`3cabadc`](https://github.com/aviadr1/figmaclaw/commit/3cabadc), [Agent A report H8/H9](https://github.com/aviadr1/figmaclaw/blob/feat/canon-token-architecture-128/docs/pr-129-final-report-agent-A.md), `tests/test_pull_logic.py::test_schema_upgrade_v8_to_v9_picks_up_variant_changes`. |
+
+### SI — Synthetic identity
+
+Synthetic nodes are allowed only when Figma has no natural grouping node for output that figmaclaw must render. Once synthetic identity reaches paths or manifest state, it must be as collision-resistant as real source identity.
+
+| ID | Name | Description | Rationale | Proof |
+|---|---|---|---|---|
+| **SI-1** | Source-scoped synthetic identity | Synthetic sections, node IDs, and generated paths must encode enough source identity that two different source pages or sections cannot generate the same repo path. | A synthetic ID is not just an in-memory convenience; it becomes persistent manifest and filesystem identity. Generic synthetic IDs create last-writer-wins corruption. | Top-level component pages initially wrote every synthetic component section to `components/ungrouped-components-ungrouped-components.md`. Evidence: commit [`a384b47`](https://github.com/aviadr1/figmaclaw/commit/a384b47), `tests/test_pr_129_adversarial.py::test_synthetic_component_section_path_unique_across_two_real_pages`. |
+
+### MIG — Generated-artifact migration
+
+Generated artifacts are recomputable, but stale generated artifacts still mislead consumers until they are removed or migrated.
+
+| ID | Name | Description | Rationale | Proof |
+|---|---|---|---|---|
+| **MIG-1** | Own legacy generated names | When figmaclaw changes generated path schemes or schema versions, it must still narrowly recognize, migrate, or prune legacy generated artifacts from previous schemes. | Otherwise old generated files become permanent orphans: committed, stale, and not owned by the current manifest. Generated does not mean harmless once it is in git. | The legacy pre-H6 synthetic file lacked a numeric node suffix, so generated-file detection skipped it. Evidence: commit [`2fcd38b`](https://github.com/aviadr1/figmaclaw/commit/2fcd38b), [Agent A report H10](https://github.com/aviadr1/figmaclaw/blob/feat/canon-token-architecture-128/docs/pr-129-final-report-agent-A.md), `tests/test_pr_129_adversarial.py::test_legacy_ungrouped_components_file_is_generated`. |
+
+### AUTH — Authority claims
+
+Commands must not overstate what their data proves.
+
+| ID | Name | Description | Rationale | Proof |
+|---|---|---|---|---|
+| **AUTH-1** | Authority claims require authoritative sources | Any command or workflow that claims design-token coverage, or applies irreversible/token-writing decisions, must require catalog entries from authoritative sources (`figma_api` or `figma_mcp`) or explicitly refuse/degrade output. `observed`, `seeded:*`, and `unavailable` entries may support bridge/suggestion workflows only when the output is labeled as non-authoritative. | Observation proves only usage; seeded data is a bridge; unavailable proves absence of access. Treating those as authoritative causes automation to make token decisions from incomplete evidence, while still allowing safe advisory workflows such as seeded suggestions. | PR #129 added `figmaclaw variables --require-authoritative` and workflow gating after "green but unavailable" catalogs were possible. Evidence: [proof-gate comment](https://github.com/aviadr1/figmaclaw/pull/129#issuecomment-4340235267), [MCP authoritative Tap In proof](https://github.com/aviadr1/figmaclaw/pull/129#issuecomment-4340276811), commit [`a1151b9`](https://github.com/aviadr1/figmaclaw/commit/a1151b9). |
+
+### ERR — Failure scoping
+
+Retry suppression is part of the data contract whenever fallback readers exist. The scope of a cached failure must match the scope of the evidence.
+
+| ID | Name | Description | Rationale | Proof |
+|---|---|---|---|---|
+| **ERR-1** | Persistent and transient failures do not share cache semantics | Retry suppression may be cached across files or runs only for persistent configuration absence, such as missing credentials. Per-file or transient API/MCP failures must remain scoped and retryable for later files/runs. | A transient reader error is not evidence that the reader is unavailable everywhere. Caching it globally silently downgrades unrelated files to `unavailable` and loses authoritative data. | Live `linear-git` CI exposed a transient MCP read-only error that poisoned later files until the cache semantics were split. Evidence: [PR #129 comment](https://github.com/aviadr1/figmaclaw/pull/129#issuecomment-4341220608), commit [`19cd1c0`](https://github.com/aviadr1/figmaclaw/commit/19cd1c0), `tests/test_mcp_variable_export.py`. |
+
+### WF — Workflow recovery
+
+Reusable workflows write generated cache artifacts in shared git branches. Their recovery behavior must preserve the "generated from source" contract.
+
+| ID | Name | Description | Rationale | Proof |
+|---|---|---|---|---|
+| **WF-1** | Replay deterministic generated artifacts | When a workflow push is rejected for deterministic generated artifacts, recovery must recompute those artifacts from the latest remote source state instead of text-merging stale generated JSON/markdown. | Generated artifacts are cache snapshots. Text-merging two snapshots can create a state that was never generated from any Figma/Linear source. Reset-and-replay preserves determinism and avoids cache corruption. | Concurrent variables/census/enrichment pushes produced generated JSON conflicts. Evidence: [PR #129 replay note](https://github.com/aviadr1/figmaclaw/pull/129#issuecomment-4341938356), commit [`60bfbb4`](https://github.com/aviadr1/figmaclaw/commit/60bfbb4), commit [`f5bdc51`](https://github.com/aviadr1/figmaclaw/commit/f5bdc51), `tests/test_workflow_template_invariants.py`. |
+
 ## 5. Design decisions
 
 D1..D10 are carried forward verbatim from `frontmatter-v2-plan.md`. D11..D14 are new and resolve the audit in issue #128.
@@ -430,6 +512,16 @@ Each row records a failure mode that has actually occurred (or that we shipped a
 | **F8** | Hardcoded DS library identity in a general-purpose tool. `DS_LIB_HASH` / `OLD_LIB_PREFIX` constants in `token_scan.py:33-34` coupled figmaclaw to one customer's library hashes. Unknown libraries were silently classified `valid`. | Visible in the source from the original `ccdd2d7`. | D12 |
 | **F9** | `suggest-tokens` has no terminal application. Tool annotates sidecars with `fix_variable_id` candidates; nothing applies them. Annotations accumulate as disk state and become stale before any consumer acts on them. | Audit confirmed: every sidecar in the linear-git consumer has `suggested_at: null`, no `fix_variable_id` populated. | Future `fix-tokens` RFC; tracked separately. |
 | **F10** | Schema migration silently drops user-set data. `e100631`'s sidecar v1 → v2 migration rewrites the file. Once `suggest-tokens` runs, human-set `fix_variable_id` values would be lost on the next migration. | Latent; doesn't bite today because suggest-tokens isn't in CI. | LW-2, TS-S-5 |
+| **F11** | Registry absence misread as empty registry. A file with no `_census.md` could be read as "no published components" even when the file had never been explicitly probed or emitted. | Tap In / LSN component audit during PR #129. | REG-1 |
+| **F12** | Silent partial pull. A page entry reached stable manifest state with `md_path=null`, `component_md_paths=[]`, and `page_hash=sha256("[]")[:16]`; future pulls skipped it forever. | PR #129 H2; 215 entries in `linear-git`. | PP-1, NC-1, HSH-1 |
+| **F13** | Walker coverage mismatch. Parser/renderer/hash logic disagreed about top-level or section-wrapped `COMPONENT` / `COMPONENT_SET` nodes, so some code paths saw real content and others treated the page as empty. | PR #129 H2/H9. | NC-1, HSH-1 |
+| **F14** | Mixed section data loss. A `SECTION` containing both frames and component sets rendered one class and silently dropped the other. | PR #129 H11. | NC-2 |
+| **F15** | Rendered component variant staleness. Adding or renaming a visible variant inside an existing `COMPONENT_SET` did not change page or frame hashes, so generated variant tables stayed stale. | PR #129 H8/H9. | HSH-1 |
+| **F16** | Synthetic path collision. Multiple pages with top-level components generated the same synthetic component-section path; later pages overwrote earlier pages' component markdown. | PR #129 H6. | SI-1 |
+| **F17** | Legacy generated orphan. A generated file from an old path scheme was no longer recognized as generated and survived pruning forever. | PR #129 H10. | MIG-1 |
+| **F18** | Green but non-authoritative catalog. CI could succeed with `source=unavailable` or observation-only token data while downstream tasks interpreted the catalog as current DS truth. | PR #129 variables proof lane. | AUTH-1, TC-1, TC-7 |
+| **F19** | Transient failure poisoned later files. A per-file MCP export error was cached like missing credentials and suppressed authoritative fallback for unrelated later files. | PR #129 live `linear-git` run. | ERR-1 |
+| **F20** | Merged generated cache snapshot. Rejected workflow pushes attempted merge-pull recovery for generated JSON, allowing conflict states that were not the output of a deterministic generator over current source. | PR #129 variables workflow lane. | WF-1 |
 
 Each row was either repeated more than once or had a near-miss before being canonized. New rows are appended; nothing is renumbered.
 
@@ -469,6 +561,14 @@ Use this checklist when reviewing any PR that touches figmaclaw's data model, ca
 - [ ] Does this PR touch a log or schema writer? If yes, does it auto-heal or hard-fail on schema drift (LW-1, LW-2)?
 - [ ] Does this PR add a new selection / entry boundary that reads a page `.md`? If yes, is it registered in `_HEALING_ENTRY_POINTS` and does it call `normalize_page_file` (HE-1)?
 - [ ] Does this PR add a writer? If yes, does it strip timestamps before comparing existing content (W-1) and round-trip-assert after writing (W-2)?
+- [ ] Does this PR add or consume a file-scope registry? If yes, can callers distinguish not-probed, probed-empty, and probed-with-entries (REG-1)?
+- [ ] Does this PR change manifest page entries or pull skipping? If yes, can every non-skipped page reach a terminal data state (PP-1)?
+- [ ] Does this PR add or change a Figma node walker? If yes, does parser/renderer/hash/manifest/prune coverage stay in parity (NC-1), including mixed sections (NC-2)?
+- [ ] Does this PR change generated markdown content? If yes, do page and unit hashes include every visible source identity that can affect that output (HSH-1)?
+- [ ] Does this PR create synthetic nodes or paths? If yes, are they source-scoped and collision-proof at the filesystem path layer (SI-1)?
+- [ ] Does this PR change generated path schemes or schema versions? If yes, are legacy generated names still narrowly recognized, migrated, or pruned (MIG-1)?
+- [ ] Does this PR cache an API/MCP failure or suppress retries? If yes, is the cache scoped only to evidence that is persistent at that scope (ERR-1)?
+- [ ] Does this PR recover from rejected pushes of generated artifacts? If yes, does it reset/replay deterministic generation instead of text-merging generated cache snapshots (WF-1)?
 
 ### Token catalog and sidecar specifically
 
@@ -478,6 +578,7 @@ Use this checklist when reviewing any PR that touches figmaclaw's data model, ca
 - [ ] Does this PR touch `classify_variable_id`? If yes, is library identity passed in as data, never read from a hardcoded constant (D12)?
 - [ ] Does this PR change the sidecar schema? If yes, does the migration preserve `fix_variable_id` (LW-2, TS-S-5)?
 - [ ] Does this PR add a consumer of the catalog? If yes, does it CR-2 staleness-check before producing results?
+- [ ] Does this PR claim token coverage or apply token-writing decisions? If yes, does it require authoritative `figma_api` / `figma_mcp` data or explicitly refuse/degrade output (AUTH-1)?
 
 If any answer is "no" or "not sure," the answer is not ready to merge.
 
