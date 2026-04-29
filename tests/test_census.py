@@ -174,11 +174,11 @@ class TestCensusSkipBehavior:
         tmp_path: Path,
         capsys: pytest.CaptureFixture[str],
     ):
-        """INVARIANT REG-1: explicit census probes report when a file has no published sets.
+        """INVARIANT REG-1: explicit census probes persist empty registry state.
 
         Silent no-op is fine for whole-repo census because most product files
-        are not libraries. For ``--file-key`` diagnostics, silence hides the
-        difference between "not published" and "missed by figmaclaw".
+        are not libraries. For ``--file-key`` diagnostics, the repo artifact
+        must distinguish "probed and empty" from "not probed".
         """
         state = FigmaSyncState(tmp_path)
         state.load()
@@ -196,7 +196,11 @@ class TestCensusSkipBehavior:
 
         assert "Tap In Design System: 0 published component set(s)" in capsys.readouterr().out
         out = tmp_path / "figma" / file_slug_for_key("Tap In Design System", "key1") / "_census.md"
-        assert not out.exists()
+        assert out.exists()
+        text = out.read_text()
+        assert "component_set_count: 0" in text
+        assert "content_hash: 4f53cda18c2baa0c" in text
+        assert "# Tap In Design System — Published Component Sets" in text
 
     @pytest.mark.asyncio
     async def test_census_uses_latest_file_name_slug_from_manifest(self, tmp_path: Path):

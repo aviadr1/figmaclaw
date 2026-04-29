@@ -13,7 +13,7 @@ description: Use when working with figmaclaw-generated data (figma/*.md pages, _
 
 ## Table of contents
 
-1. [Three-layer data contract](#1-three-layer-data-contract)
+1. [Four-layer data contract](#1-four-layer-data-contract)
 2. [Storage-tier table](#2-storage-tier-table)
 3. [Refresh-trigger ladder](#3-refresh-trigger-ladder)
 4. [Invariant classes](#4-invariant-classes)
@@ -46,7 +46,7 @@ description: Use when working with figmaclaw-generated data (figma/*.md pages, _
 
 ---
 
-## 1. Three-layer data contract
+## 1. Four-layer data contract
 
 figmaclaw's data is organized in four layers. Every artifact figmaclaw writes belongs to exactly one of them, and each layer has a different authority and a different writer.
 
@@ -60,7 +60,7 @@ figmaclaw's data is organized in four layers. Every artifact figmaclaw writes be
 **The law:**
 
 - Frontmatter is the index of what exists on a page. **Use it to make enrichment decisions cheaply (no API calls).**
-- Body is prose. **No Python code, no CLI command, no agent tool may parse the body.** No `parse_page_summary()`. No `parse_section_intros()`. No regex over body tables.
+- Body is prose. **No Python code, no CLI command, no agent tool may parse prose or use prose as source of truth.** Code may inspect canonical generated headings/tables only through the canonical walkers named in CW-1. No `parse_page_summary()`. No `parse_section_intros()`. No ad hoc regex over body tables.
 - Manifest is engineering cache. Treat it as recomputable; never store load-bearing information in it that isn't reproducible from the API.
 - File-scope registries are file-scope answers cached in committed files for cross-tool consumption (suggest-tokens, agent skills, CI). They are recomputable from REST and must remain so.
 
@@ -73,7 +73,7 @@ Every artifact figmaclaw produces, what it caches, when it refreshes, who writes
 | Tier | Storage | What it caches | Refresh trigger | Writer | Recoverable from REST? |
 |---|---|---|---|---|---|
 | File meta | `manifest.files[k].version`, `last_modified`, `last_checked_at` | "Has the file changed?" | every `pull` (cheap meta call) | `pull_logic.py` | yes |
-| File registry: components | `figma/{slug}/_census.md` | Published component sets (name, key, page, updated). Stable content hash over `(name, key)` pairs. | `figmaclaw census` standalone, **and** opportunistic during `pull` when file version changed | `commands/census.py` | yes |
+| File registry: components | `figma/{slug}/_census.md` | Published/importable component sets (name, key, page, updated). Stable content hash over `(name, key)` pairs. Local unpublished component definitions are page structure and render to `components/*.md`; they are not census entries. | `figmaclaw census` standalone. `pull` fetches component sets for `component_set_keys`, but does not write `_census.md`. | `commands/census.py` | yes |
 | **File registry: variables** | `.figma-sync/ds_catalog.json` (schema v2) | Variable definitions per library: name, collection, resolved_type, values_by_mode, scopes, code_syntax, alias_of. | `figmaclaw variables` standalone, **and** opportunistic during `pull` when file version changed | `commands/variables.py`, `token_catalog.py` | yes (REST `/variables/local` when `file_variables:read` is available, or Figma MCP plugin-runtime export; `seeded:*` entries fill the gap when no authoritative reader is available) |
 | Page structure | `figma/{slug}/pages/*.md` frontmatter (`frames`, `flows`); `manifest.files[k].pages[p].page_hash` / `frame_hashes` | Page node tree, prototype edges, hashes. | `pull` when file version changed AND page hash changed | `pull_logic.py`, `figma_render.py` | yes |
 | Page tokens (raw/stale usage) | `figma/{slug}/pages/*.tokens.json` | Per-frame `(property, classification, value)` aggregates with `count`. Schema v2. | `pull` when page hash changed | `pull_logic.py`, `token_scan.py` | yes (re-walk page) |
@@ -97,8 +97,8 @@ When a sync runs, figmaclaw cascades through these checks. Higher tiers gate low
 │ Tier 1.5 File-scope registry refresh                             │
 │          `get_local_variables(file_key)` / MCP export → catalog   │
 │          (TC-1, TC-5)                                             │
-│          `get_component_sets(file_key)`  → census body (D11)     │
-│          One REST call each per changed file.                    │
+│          `get_component_sets(file_key)`  → component_set_keys    │
+│          for component markdown. `pull` does not write census.   │
 └──────────────────────┬───────────────────────────────────────────┘
                        │
 ┌──────────────────────▼───────────────────────────────────────────┐
@@ -301,7 +301,7 @@ File-scope registries are committed cache artifacts. Code and agents must be abl
 
 | ID | Name | Description | Rationale | Proof |
 |---|---|---|---|---|
-| **REG-1** | Explicit registry state | For every tracked file registry, figmaclaw must distinguish three states: not probed, probed-empty, and probed-with-entries. A missing registry artifact is unknown; it is never proof that the upstream registry is empty. | Consumer repos use registry files to answer source-of-truth questions. If absence means both "not emitted" and "empty," agents and automation can incorrectly conclude that Figma has no published components or variables. | Tap In / LSN had zero published component sets, but missing `_census.md` was ambiguous until empty census output became explicit. Evidence: [PR #129 comment](https://github.com/aviadr1/figmaclaw/pull/129#issuecomment-4343662164), commit [`ed2312e`](https://github.com/aviadr1/figmaclaw/commit/ed2312e), `tests/test_census.py::test_census_reports_empty_registry_for_explicit_file_key`. |
+| **REG-1** | Explicit registry state | For every tracked file registry, figmaclaw must distinguish three states: not probed, probed-empty, and probed-with-entries. A missing registry artifact is unknown; it is never proof that the upstream registry is empty. An explicit `figmaclaw census --file-key <key>` probe persists probed-empty component state as `_census.md` with `component_set_count: 0`. | Consumer repos use registry files to answer source-of-truth questions. If absence means both "not emitted" and "empty," agents and automation can incorrectly conclude that Figma has no published components or variables. Persisting explicit empty probes keeps high-signal product files quiet while letting important DS files carry a durable "probed empty" fact. | Tap In / LSN had zero published component sets, but missing `_census.md` was ambiguous. Evidence: [PR #129 comment](https://github.com/aviadr1/figmaclaw/pull/129#issuecomment-4343662164), `tests/test_census.py::test_census_reports_empty_registry_for_explicit_file_key`. |
 
 ### PP — Pull terminal state
 
@@ -490,11 +490,11 @@ D11 extends this axis: file-scope registries (catalog, census) belong in the cac
 
 ### D14: SEEDED entries are first-class via a `source` field
 
-**Decision:** Each catalog variable carries a `source` field with values `figma_api`, `figma_mcp`, `seeded:css`, `seeded:manual`, or `observed`. Catalog readers and `suggest-tokens` treat all sources as valid match candidates; downstream tooling (`fix-tokens`, future) treats them differently.
+**Decision:** Each catalog variable carries a `source` field with values `figma_api`, `figma_mcp`, `seeded:css`, `seeded:manual`, or `observed`. Advisory readers such as `suggest-tokens` may use seeded bridge entries as labeled, non-authoritative match candidates. Any workflow that claims authoritative coverage or applies token writes must require `figma_api` / `figma_mcp` definitions (AUTH-1); `observed`, `seeded:*`, and `unavailable` are not authoritative.
 
 **Why:** Until every customer team has Enterprise scope `file_variables:read`, CSS-derived seeds remain the only path for many tokens. The `seed_catalog.py` script in linear-git is the precedent (commit `157cd98d6`). Treating `SEEDED:*` IDs as a permanent first-class case (not a temporary workaround) means the schema is honest about its sources, and `fix-tokens` can refuse to apply a `seeded:*` ID until it's resolved to a real Figma variable ID by a future runtime resolution step.
 
-**Tradeoff:** Catalog readers must be tolerant of multiple sources for the same value. `suggest-tokens` flags ambiguity when both a `figma_api` and a `seeded:css` candidate match the same hex.
+**Tradeoff:** Catalog readers must be tolerant of multiple sources for the same value. `suggest-tokens` flags ambiguity when both a `figma_api` and a `seeded:css` candidate match the same hex, and its output remains advisory unless backed by authoritative definitions.
 
 ## 6. Failure-mode catalog
 
