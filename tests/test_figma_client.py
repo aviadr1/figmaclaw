@@ -10,6 +10,11 @@ INVARIANTS:
 
 from __future__ import annotations
 
+import asyncio
+import time
+from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime
+from itertools import pairwise
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -171,6 +176,72 @@ async def test_retries_on_429():
 
     assert call_count == 3
     assert meta.version == "123456"
+
+
+def test_default_rate_limit_matches_figma_tier_one_guidance():
+    """INVARIANT: default client pacing is 15 RPM / 4s, not a burstier setting."""
+    client = FigmaClient(api_key="figd_test")
+
+    assert client._min_interval == 4.0
+
+
+@pytest.mark.asyncio
+async def test_concurrent_requests_are_paced_serially():
+    """INVARIANT: concurrent callers share one pacing gate.
+
+    Pull refreshes fetch page chunks concurrently. Without a lock around the
+    pacer, every waiting task can wake at the same time and burst into Figma,
+    which defeats the proactive rate limit and produces 429s.
+    """
+    request_times: list[float] = []
+
+    with respx.mock:
+
+        def record_request(request: httpx.Request) -> httpx.Response:
+            request_times.append(time.monotonic())
+            return httpx.Response(200, json=_meta_response())
+
+        respx.get(f"https://api.figma.com/v1/files/{FILE_KEY}").mock(side_effect=record_request)
+
+        async with FigmaClient(api_key="figd_test", rate_limit_rpm=1200) as client:
+            await asyncio.gather(
+                client.get_file_meta(FILE_KEY),
+                client.get_file_meta(FILE_KEY),
+                client.get_file_meta(FILE_KEY),
+            )
+
+    assert len(request_times) == 3
+    gaps = [b - a for a, b in pairwise(request_times)]
+    assert min(gaps) >= 0.04
+
+
+@pytest.mark.asyncio
+async def test_retries_on_429_with_http_date_retry_after():
+    """INVARIANT: Retry-After supports both seconds and HTTP-date forms."""
+    call_count = 0
+    retry_at = format_datetime(datetime.now(UTC) + timedelta(seconds=30), usegmt=True)
+
+    with respx.mock:
+
+        def rate_limited_then_ok(request: httpx.Request) -> httpx.Response:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return httpx.Response(429, headers={"retry-after": retry_at})
+            return httpx.Response(200, json=_meta_response())
+
+        respx.get(f"https://api.figma.com/v1/files/{FILE_KEY}").mock(
+            side_effect=rate_limited_then_ok
+        )
+
+        with patch("asyncio.sleep", new_callable=AsyncMock) as sleep_mock:
+            async with FigmaClient(api_key="figd_test") as client:
+                meta = await client.get_file_meta(FILE_KEY)
+
+    assert call_count == 2
+    assert meta.version == "123456"
+    assert sleep_mock.await_args_list
+    assert max(call.args[0] for call in sleep_mock.await_args_list) >= 5
 
 
 @pytest.mark.asyncio

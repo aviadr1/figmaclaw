@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
@@ -28,6 +29,10 @@ from figmaclaw.figma_api_models import (
     _validate,
 )
 
+DEFAULT_RATE_LIMIT_RPM = 15
+DEFAULT_RETRY_AFTER_S = 10
+MIN_429_RETRY_AFTER_S = 5
+
 
 class FigmaClient:
     """Async client for the Figma REST API.
@@ -43,7 +48,7 @@ class FigmaClient:
         self,
         api_key: str,
         *,
-        rate_limit_rpm: int = 30,
+        rate_limit_rpm: int = DEFAULT_RATE_LIMIT_RPM,
         variables_api_key: str | None = None,
     ) -> None:
         self._api_key = api_key
@@ -52,6 +57,7 @@ class FigmaClient:
         self._variables_client: httpx.AsyncClient | None = None
         self._min_interval = 60.0 / rate_limit_rpm if rate_limit_rpm > 0 else 0.0
         self._last_request_time: float = 0.0
+        self._pace_lock = asyncio.Lock()
 
     async def _ensure_client(self, *, variables: bool = False) -> httpx.AsyncClient:
         if variables and self._variables_api_key != self._api_key:
@@ -87,10 +93,26 @@ class FigmaClient:
         """Sleep if needed to stay under the rate limit."""
         if self._min_interval <= 0:
             return
-        elapsed = time.monotonic() - self._last_request_time
-        if elapsed < self._min_interval:
-            await asyncio.sleep(self._min_interval - elapsed)
-        self._last_request_time = time.monotonic()
+        async with self._pace_lock:
+            elapsed = time.monotonic() - self._last_request_time
+            if elapsed < self._min_interval:
+                await asyncio.sleep(self._min_interval - elapsed)
+            self._last_request_time = time.monotonic()
+
+    @staticmethod
+    def _retry_after_seconds(response: httpx.Response) -> float:
+        raw = response.headers.get("retry-after")
+        if raw:
+            try:
+                return max(float(raw), MIN_429_RETRY_AFTER_S)
+            except ValueError:
+                try:
+                    retry_at = parsedate_to_datetime(raw)
+                    delay = retry_at.timestamp() - time.time()
+                    return max(delay, MIN_429_RETRY_AFTER_S)
+                except (TypeError, ValueError, IndexError, OverflowError):
+                    pass
+        return DEFAULT_RETRY_AFTER_S
 
     async def _get(
         self,
@@ -122,8 +144,7 @@ class FigmaClient:
                     continue
                 raise
             if response.status_code == 429:
-                retry_after = int(response.headers.get("retry-after", "10"))
-                await asyncio.sleep(max(retry_after, 5))
+                await asyncio.sleep(self._retry_after_seconds(response))
                 continue
             if response.status_code >= 500 and attempt < 9:
                 await asyncio.sleep(2 * (attempt + 1))
@@ -316,8 +337,7 @@ class FigmaClient:
                     continue
                 raise
             if response.status_code == 429:
-                retry_after = int(response.headers.get("retry-after", "10"))
-                await asyncio.sleep(max(retry_after, 5))
+                await asyncio.sleep(self._retry_after_seconds(response))
                 continue
             if response.status_code >= 500 and attempt < 9:
                 await asyncio.sleep(2 * (attempt + 1))
