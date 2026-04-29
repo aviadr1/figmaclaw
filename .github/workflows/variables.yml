@@ -77,4 +77,4 @@ jobs:
           fi
 
       - name: Push
-        run: git push || (git pull --no-rebase --ff-only origin "${{ inputs.target_ref }}" && git push)
+        run: git push || (git pull --no-rebase origin "${{ inputs.target_ref }}" && git push)

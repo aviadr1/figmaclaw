@@ -6,6 +6,7 @@ import json
 import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 
 def parse_team_id_from_url(url_or_id: str) -> str:
@@ -66,10 +67,10 @@ def write_json_if_changed(
     """
     if path.exists():
         try:
-            existing = json.loads(path.read_text(encoding="utf-8"))
-            for k in ignore_keys:
-                existing.pop(k, None)
-            new_stripped = {k: v for k, v in data.items() if k not in ignore_keys}
+            existing = _strip_ignored_json_keys(
+                json.loads(path.read_text(encoding="utf-8")), ignore_keys
+            )
+            new_stripped = _strip_ignored_json_keys(data, ignore_keys)
             if existing == new_stripped:
                 return False
         except Exception:
@@ -77,3 +78,18 @@ def write_json_if_changed(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     return True
+
+
+def _strip_ignored_json_keys(value: Any, ignore_keys: frozenset[str]) -> Any:
+    """Return *value* with ignored object keys removed recursively."""
+    if not ignore_keys:
+        return value
+    if isinstance(value, dict):
+        return {
+            key: _strip_ignored_json_keys(child, ignore_keys)
+            for key, child in value.items()
+            if key not in ignore_keys
+        }
+    if isinstance(value, list):
+        return [_strip_ignored_json_keys(child, ignore_keys) for child in value]
+    return value

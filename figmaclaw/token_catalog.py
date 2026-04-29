@@ -461,8 +461,19 @@ def mark_local_variables_unavailable(
     but CR-2 still needs a current ``source_version`` marker so a reader can
     distinguish "checked and unavailable" from "stale or never refreshed".
     """
+    library_key = _local_library_key(file_key)
+    existing = catalog.libraries.get(library_key)
+    if (
+        existing is not None
+        and existing.name == file_name
+        and existing.source_file_key == file_key
+        and existing.source_version == file_version
+        and existing.source == "unavailable"
+    ):
+        return
+
     fetched_at = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    catalog.libraries[_local_library_key(file_key)] = CatalogLibrary(
+    catalog.libraries[library_key] = CatalogLibrary(
         name=file_name,
         source_file_key=file_key,
         fetched_at=fetched_at,

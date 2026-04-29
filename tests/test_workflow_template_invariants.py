@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from figmaclaw.workflow_templates import bundled_template_text
 
@@ -56,3 +57,23 @@ def test_concurrency_groups_are_isolated_by_workflow_role() -> None:
     assert "figma-git-enrich-large" in sync_groups
     assert webhook_groups == {"figma-git-webhook"}
     assert sync_groups.isdisjoint(webhook_groups)
+
+
+def test_variables_reusable_workflow_merges_on_push_conflict() -> None:
+    """INVARIANT: variables commits survive concurrent census/enrichment pushes.
+
+    The variables job can commit many file-scope catalog refreshes while census
+    or enrichment jobs also push. Recovery after a rejected push must be a merge
+    pull, not ``--ff-only``: once this job has local commits, a remote commit from
+    another job makes fast-forward pull impossible and would discard completed
+    variables work by failing the job.
+    """
+
+    text = (Path(__file__).parents[1] / ".github" / "workflows" / "variables.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'git pull --no-rebase origin "${{ inputs.target_ref }}" && git push' in text
+    assert (
+        'git pull --no-rebase --ff-only origin "${{ inputs.target_ref }}" && git push' not in text
+    )
