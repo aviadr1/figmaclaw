@@ -16,7 +16,7 @@ if ! command -v uv >/dev/null 2>&1; then
     exit 1
 fi
 
-uv tool install "git+$GITHUB_REPO"
+uv tool install --force --reinstall --upgrade "git+$GITHUB_REPO@main"
 
 echo ""
 echo "figmaclaw installed successfully."

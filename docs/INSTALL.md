@@ -13,7 +13,7 @@ uv tool install git+https://github.com/aviadr1/figmaclaw
 
 Verify: `figmaclaw --version`
 
-Upgrade: `uv tool install --force git+https://github.com/aviadr1/figmaclaw`
+Upgrade: `uv tool install --force --reinstall --upgrade git+https://github.com/aviadr1/figmaclaw@main`
 
 ## Environment variables
 

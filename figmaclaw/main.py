@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
+from dataclasses import dataclass
+from importlib import metadata
+from pathlib import Path
+from urllib.parse import unquote, urlparse
+
 import click
 
 from figmaclaw.commands.apply_webhook import apply_webhook_cmd
@@ -31,15 +38,90 @@ from figmaclaw.commands.write_body import write_body_cmd
 from figmaclaw.commands.write_descriptions import write_descriptions_cmd
 
 
+@dataclass(frozen=True)
+class BuildInfo:
+    version: str
+    commit: str
+    commit_message: str
+    pr: str | None
+
+
+def _git_output(repo: Path, *args: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=repo,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return ""
+    return result.stdout.strip()
+
+
+def _pr_from_message(message: str) -> str | None:
+    import re
+
+    first_line = message.split("\n")[0].strip()
+    pr_m = re.search(r"Merge pull request #(\d+)|\(#(\d+)\)", first_line)
+    if not pr_m:
+        return None
+    return pr_m.group(1) or pr_m.group(2)
+
+
+def _installed_source_info(fallback: BuildInfo) -> BuildInfo:
+    """Prefer install-source commit info when package metadata exposes it.
+
+    CI commits ``_build_info.py`` after main changes land, but direct local and
+    VCS installs can happen before that bump commit exists. In those installs,
+    PEP 610 metadata is fresher than the committed fallback.
+    """
+
+    try:
+        dist = metadata.distribution("figmaclaw")
+        direct_url_path = next(
+            Path(str(dist.locate_file(file)))
+            for file in dist.files or []
+            if str(file).endswith("direct_url.json")
+        )
+        direct_url = json.loads(direct_url_path.read_text(encoding="utf-8"))
+    except (StopIteration, FileNotFoundError, json.JSONDecodeError, metadata.PackageNotFoundError):
+        return fallback
+
+    if direct_url.get("dir_info", {}).get("editable"):
+        return fallback
+
+    vcs_info = direct_url.get("vcs_info") or {}
+    vcs_commit = vcs_info.get("commit_id")
+    if isinstance(vcs_commit, str) and vcs_commit:
+        return BuildInfo(fallback.version, vcs_commit, "", None)
+
+    url = direct_url.get("url")
+    if not isinstance(url, str) or not url.startswith("file:"):
+        return fallback
+
+    repo = Path(unquote(urlparse(url).path))
+    commit = _git_output(repo, "rev-parse", "HEAD")
+    if not commit:
+        return fallback
+    message = _git_output(repo, "log", "-1", "--pretty=%B")
+    return BuildInfo(fallback.version, commit, message, _pr_from_message(message))
+
+
 def _version_callback(ctx: click.Context, _param: click.Parameter, value: bool) -> None:
     if not value or ctx.resilient_parsing:
         return
     import figmaclaw._build_info as _bi  # lazy: keeps module-level names mockable in tests
 
-    short_sha = _bi.__commit__[:8] if _bi.__commit__ else "unknown"
-    pr_info = f" · PR #{_bi.__pr__}" if _bi.__pr__ else ""
-    click.echo(f"figmaclaw {_bi.__version__} ({short_sha}{pr_info})")
-    first_line = _bi.__commit_message__.split("\n")[0].strip() if _bi.__commit_message__ else ""
+    build = _installed_source_info(
+        BuildInfo(_bi.__version__, _bi.__commit__, _bi.__commit_message__, _bi.__pr__)
+    )
+
+    short_sha = build.commit[:8] if build.commit else "unknown"
+    pr_info = f" · PR #{build.pr}" if build.pr else ""
+    click.echo(f"figmaclaw {build.version} ({short_sha}{pr_info})")
+    first_line = build.commit_message.split("\n")[0].strip() if build.commit_message else ""
     if first_line:
         click.echo(f"  {first_line}")
     ctx.exit()

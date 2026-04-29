@@ -55,6 +55,12 @@ uv tool install git+https://github.com/aviadr1/figmaclaw
 figmaclaw self update
 ```
 
+Equivalent manual command:
+
+```bash
+uv tool install --force --reinstall --upgrade git+https://github.com/aviadr1/figmaclaw@main
+```
+
 ## Step 2: Initialize A Consumer Repo
 
 Choose or create the repository that should hold your Figma markdown mirror:
