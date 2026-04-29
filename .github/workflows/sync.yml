@@ -98,6 +98,7 @@ jobs:
           INPUT_FORCE: ${{ inputs.force }}
           FIGMA_TEAM_ID: ${{ inputs.figma_team_id }}
           SINCE: ${{ inputs.since }}
+          TARGET_REF: ${{ inputs.target_ref }}
           FIGMACLAW_SYNC_OBS_DIR: ${{ runner.temp }}/figmaclaw-sync-observability
         run: |
           bash .figmaclaw-workflow/scripts/checkpoint_pull_loop.sh
