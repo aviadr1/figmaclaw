@@ -211,7 +211,7 @@ def test_variables_command_idempotent_under_unavailable(
     client_a = _Unavailable403Client()
     first = _run_variables(tmp_path, monkeypatch, client_a)
     assert first.exit_code == 0
-    assert "kept seeded catalog fallback current" in first.output
+    assert "kept unavailable catalog marker current" in first.output
 
     catalog_path = tmp_path / ".figma-sync" / "ds_catalog.json"
     text_after_first = catalog_path.read_text(encoding="utf-8")

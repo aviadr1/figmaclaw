@@ -88,6 +88,7 @@ async def _run(
 
     keys = [file_key] if file_key else list(state.manifest.tracked_files)
     written = False
+    current_versions: dict[str, str] = {}
 
     async with FigmaClient(
         api_key,
@@ -111,6 +112,7 @@ async def _run(
             except Exception as exc:
                 click.echo(f"{key}: failed to fetch file meta — {exc}")
                 continue
+            current_versions[key] = meta.version
 
             current_libraries = libraries_for_file(catalog, key)
             if (
@@ -142,16 +144,30 @@ async def _run(
                 continue
 
             if response is None:
+                authoritative_libraries = [
+                    lib
+                    for lib in current_libraries
+                    if lib.source in AUTHORITATIVE_DEFINITION_SOURCES
+                ]
                 mark_local_variables_unavailable(
                     catalog,
                     file_key=key,
                     file_name=meta.name,
                     file_version=meta.version,
                 )
-                click.echo(
-                    f"{meta.name}: variables definitions unavailable; "
-                    "kept seeded catalog fallback current"
-                )
+                if authoritative_libraries:
+                    versions = ", ".join(
+                        sorted({lib.source_version or "missing" for lib in authoritative_libraries})
+                    )
+                    click.echo(
+                        f"{meta.name}: variables definitions unavailable; "
+                        f"preserved authoritative catalog from version(s): {versions}"
+                    )
+                else:
+                    click.echo(
+                        f"{meta.name}: variables definitions unavailable; "
+                        "kept unavailable catalog marker current"
+                    )
             else:
                 count = merge_local_variables(
                     catalog,
@@ -184,7 +200,7 @@ async def _run(
                 for key in keys
                 if key in state.manifest.tracked_files and key not in state.manifest.skipped_files
             ]
-            errors = _authoritative_catalog_errors(catalog, required_keys)
+            errors = _authoritative_catalog_errors(catalog, required_keys, current_versions)
             if errors:
                 raise click.ClickException(
                     "authoritative variables missing:\n"
@@ -204,7 +220,11 @@ def _catalog_text(repo_dir: Path) -> str | None:
     return path.read_text(encoding="utf-8")
 
 
-def _authoritative_catalog_errors(catalog: TokenCatalog, file_keys: list[str]) -> list[str]:
+def _authoritative_catalog_errors(
+    catalog: TokenCatalog,
+    file_keys: list[str],
+    current_versions: dict[str, str],
+) -> list[str]:
     errors: list[str] = []
     for key in file_keys:
         libraries = libraries_for_file(catalog, key)
@@ -217,6 +237,18 @@ def _authoritative_catalog_errors(catalog: TokenCatalog, file_keys: list[str]) -
             errors.append(
                 f"{key}: variables registry is not authoritative "
                 f"(library source(s): {', '.join(sources)})"
+            )
+            continue
+
+        current_version = current_versions.get(key)
+        if current_version and not any(
+            lib.source in AUTHORITATIVE_DEFINITION_SOURCES and lib.source_version == current_version
+            for lib in libraries
+        ):
+            versions = ", ".join(sorted({lib.source_version or "missing" for lib in libraries}))
+            errors.append(
+                f"{key}: authoritative variables registry is stale "
+                f"(current version: {current_version}; catalog source_version(s): {versions})"
             )
             continue
 

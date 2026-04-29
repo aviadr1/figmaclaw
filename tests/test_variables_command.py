@@ -69,6 +69,47 @@ def _variables(version_hash: str = "libabc") -> dict:
     }
 
 
+def _local_variables() -> dict:
+    """Variables whose IDs have no published-library hash segment.
+
+    These are stored under the synthetic ``local:<file_key>`` catalog library,
+    which is the shape used by Tap In / LSN Branding.
+    """
+    return {
+        "status": 200,
+        "error": False,
+        "meta": {
+            "variables": {
+                "VariableID:1:1": {
+                    "id": "VariableID:1:1",
+                    "name": "fg/primary",
+                    "key": "fg-primary",
+                    "variableCollectionId": "VariableCollectionId:1:0",
+                    "resolvedType": "COLOR",
+                    "valuesByMode": {
+                        "light": {"r": 1, "g": 1, "b": 1, "a": 1},
+                        "dark": {"r": 0, "g": 0, "b": 0, "a": 1},
+                    },
+                    "scopes": ["TEXT_FILL"],
+                    "codeSyntax": {"WEB": "fg-primary"},
+                }
+            },
+            "variableCollections": {
+                "VariableCollectionId:1:0": {
+                    "id": "VariableCollectionId:1:0",
+                    "name": "Semantic",
+                    "modes": [
+                        {"modeId": "light", "name": "Light"},
+                        {"modeId": "dark", "name": "Dark"},
+                    ],
+                    "defaultModeId": "light",
+                    "variableIds": ["VariableID:1:1"],
+                }
+            },
+        },
+    }
+
+
 class _FakeClient:
     def __init__(self, variables_response: LocalVariablesResponse | None, version: str = "v1"):
         self.variables_response = variables_response
@@ -344,6 +385,75 @@ def test_variables_command_source_mcp_skips_rest_variables(tmp_path: Path, monke
     assert fake.variables_calls == 0
     mcp_export.assert_awaited_once_with(FILE_KEY)
     assert "via figma_mcp" in result.output
+
+
+def test_variables_command_unavailable_does_not_downgrade_local_mcp_definitions(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """INVARIANT AUTH-1/TC-7: unavailable probes do not clobber local MCP libraries.
+
+    Tap In and LSN variables are local to their files, so their catalog library
+    key is ``local:<file_key>``. A later unavailable REST/MCP probe must not
+    overwrite that same key with ``source=unavailable`` and lose modes,
+    collections, or default-mode metadata.
+    """
+    _track(tmp_path)
+    monkeypatch.setenv("FIGMA_API_KEY", "figd_test")
+    mcp_response = LocalVariablesResponse.model_validate(_local_variables())
+    mcp_export = AsyncMock(return_value=mcp_response)
+
+    with (
+        patch("figmaclaw.commands.variables.FigmaClient", return_value=_FakeClient(None, "v1")),
+        patch("figmaclaw.commands.variables.get_local_variables_via_mcp", mcp_export),
+    ):
+        first = CliRunner().invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "variables",
+                "--file-key",
+                FILE_KEY,
+                "--source",
+                "mcp",
+            ],
+            catch_exceptions=False,
+        )
+
+    assert first.exit_code == 0
+    catalog_path = tmp_path / ".figma-sync" / "ds_catalog.json"
+    before = json.loads(catalog_path.read_text())
+    assert before["libraries"][f"local:{FILE_KEY}"]["source"] == "figma_mcp"
+    assert before["libraries"][f"local:{FILE_KEY}"]["default_mode_id"] == "light"
+    assert before["variables"]["VariableID:1:1"]["source"] == "figma_mcp"
+
+    with patch("figmaclaw.commands.variables.FigmaClient", return_value=_FakeClient(None, "v2")):
+        second = CliRunner().invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "variables",
+                "--file-key",
+                FILE_KEY,
+                "--source",
+                "rest",
+                "--require-authoritative",
+            ],
+            catch_exceptions=False,
+        )
+
+    assert second.exit_code != 0
+    assert "preserved authoritative catalog from version(s): v1" in second.output
+    assert "authoritative variables registry is stale" in second.output
+    after = json.loads(catalog_path.read_text())
+    assert after["libraries"][f"local:{FILE_KEY}"]["source"] == "figma_mcp"
+    assert after["libraries"][f"local:{FILE_KEY}"]["default_mode_id"] == "light"
+    assert after["libraries"][f"local:{FILE_KEY}"]["modes"] == {
+        "light": "Light",
+        "dark": "Dark",
+    }
+    assert after["variables"]["VariableID:1:1"]["name"] == "fg/primary"
 
 
 def test_variables_command_require_authoritative_fails_on_unavailable(

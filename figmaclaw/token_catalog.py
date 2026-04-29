@@ -458,11 +458,20 @@ def mark_local_variables_unavailable(
 
     Figma returns 403 when the token lacks Enterprise ``file_variables:read``.
     Per D14, consumers may still rely on seeded catalog entries in that case,
-    but CR-2 still needs a current ``source_version`` marker so a reader can
-    distinguish "checked and unavailable" from "stale or never refreshed".
+    but CR-2 still needs source-version metadata so a reader can distinguish
+    "checked and unavailable" from "stale or never refreshed". If the same
+    synthetic local library already has authoritative definitions, preserve
+    that hard-won registry and let its older ``source_version`` prove staleness
+    instead of replacing modes/defaults with an unavailable marker.
     """
     library_key = _local_library_key(file_key)
     existing = catalog.libraries.get(library_key)
+    if existing is not None and existing.source in AUTHORITATIVE_DEFINITION_SOURCES:
+        # Do not downgrade a previously authoritative local-variable registry
+        # to an unavailable marker. Keeping the older source_version lets
+        # consumers/strict proof paths report staleness without losing modes,
+        # collections, or the default-mode mapping needed by existing entries.
+        return
     if (
         existing is not None
         and existing.name == file_name
