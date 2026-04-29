@@ -91,6 +91,7 @@ was eliminated.
 | H4 | Token rotation upgrade | pinned by `test_variables_upgrade_path_still_works` |
 | H5 | Tier 1.5 file-version gating | pinned by canon TC-5; no additional test from agent A |
 | H6 | MCP token availability in CI | resolved 2026-04-29 01:27 UTC by user; verified end-to-end in run `25086421455` (304 variables refreshed via figma_mcp) |
+| H7 | Schema bump v7→v8 to force re-render of partial-pull pages | done in `a345741` — convergence test pinned for the v7→v8 transition |
 
 ## Quantitative evidence
 
