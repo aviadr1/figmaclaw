@@ -35,20 +35,33 @@ linear-git fixture shape).
 
 ### H2 — DS file has tracked pages with `md_path: null` AND no published components — "partial pull" artifact
 
-* **Hypothesis.** The Gigaverse design system file (`AZswXfXwfx2fff3RFBMo8h`) has 32 tracked pages in `manifest.files[k].pages`, but 14 of them have `md_path: null`. Of those:
-  * 3 are correctly skipped by `skip_pages` glob (`---`).
-  * 2 are component-only pages with populated `component_md_paths` (`✅ Avatar`, `✅ Avatar group`).
-  * **9 are partial-pull artifacts**: `md_path: null` AND `component_md_paths: []` AND name does not match any `skip_pages` pattern. Examples: `☼ Logo`, `✅ Tooltip & Help icon`, `☼ App Icon`, `Textarea`, `Code`, `File organization`.
-* **Why this matters for the user.** "✅ Tooltip & Help icon" publishes the `Tooltip` and `Help icon` component sets per `_census.md`. The page is real, has content, but no local mirror exists. Bart cannot work with the new design system "fully articulated" while these pages are missing.
-* **Suspected root cause.** Either:
-  1. an early sync run fetched these pages, ran into an error (timeout? screenshot? section), recorded the manifest entry, and never wrote the `.md` file; OR
-  2. these pages had no "screen content" sections at the time of pull and `pull_logic._select_screen_section` returned None, leaving `md_path` null without writing component md.
-* **Status.** Investigation in progress — see `manifest-page-classification` smoke harness below.
-* **Plan.**
-  1. Read `pull_logic` to find every code path that produces a `PageEntry` with `md_path=None`. Determine which paths also produce empty `component_md_paths`.
-  2. Add a smoke test against the real linear-git manifest snapshot that classifies each tracked page and fails on any "partial" entry.
-  3. Add a runtime invariant in `pull_logic` after page processing: a page entry must be one of (a) skipped-by-glob, (b) has md_path, (c) has component_md_paths. Anything else is a write of an inconsistent entry — heal-at-write per HE-1.
-  4. Re-pull the affected pages on the linear-git test branch and verify the count of partial entries goes to zero.
+**Status: ROOT CAUSE FOUND, FIXED, REGRESSION-LOCKED.**
+
+* **Confirmed shape.** 9 of the 14 `md_path:null` DS pages share `page_hash: "4f53cda18c2baa0c"` and `frame_hashes_count: 0`. That hash is `sha256("[]")[:16]` — the canonical "empty list" digest.
+* **Confirmed root cause.** Verified against the Figma REST API: ✅ Tooltip & Help icon (`1478:11585`) has top-level COMPONENT_SET children (`Tooltip` and presumably `Help icon`) directly under the CANVAS, with no SECTION wrapper. `from_page_node` only handled top-level SECTION and FRAME children. COMPONENT / COMPONENT_SET fell through the if/elif chain into the "skipped" comment branch → `sections=[]` → `screen_sections=[]` and `component_sections=[]` → manifest entry has `md_path=None, component_md_paths=[]`. `compute_page_hash` only walked STRUCTURAL types (FRAME/SECTION) → empty-list digest → Tier 2 short-circuits forever, page never re-pulled.
+* **Fix.** Commit `379aa41`:
+  * `figma_models.from_page_node`: synthesise an `(Ungrouped components)` section for top-level visible COMPONENT/COMPONENT_SET nodes, marked `is_component_library=True`. Symmetric with the existing `(Ungrouped)` synthesis for top-level FRAMEs.
+  * `figma_hash.compute_page_hash`: include COMPONENT/COMPONENT_SET nodes at depth 1 and as grandchildren of SECTIONs.
+  * `figma_schema`: new constants `UNGROUPED_COMPONENTS_SECTION` / `UNGROUPED_COMPONENTS_NODE_ID`.
+* **Regression lock.** `tests/test_top_level_component_pages.py` — 3 tests with the real Tooltip-page shape, all failing before the commit and passing after. Full pytest run: 978 pass, 0 fail.
+* **Expected impact in linear-git.** Once the fix lands and the next sync runs, the 9 partial-pull pages will produce a real component .md and a non-trivial page_hash (so Tier 2 will recognise content changes). Concretely the design system will gain local mirrors for `✅ Tooltip & Help icon`, `☼ Logo`, `☼ App Icon`, `☼ Date & Time Format`, `☼ Microcopy Guidelines`, `Textarea`, `Code`, `File organization`, `---------- IN PROGRESS` (this last one is intentionally a separator and should arguably be added to `skip_pages`; leaving as a follow-up).
+
+### H2-followup — broaden `skip_pages` glob to catch hyphen-prefix separators
+
+* **Hypothesis.** The skip_pages glob (`["old-*", "old *", "---"]`) misses
+  hyphen-prefixed separator names like `---------- IN PROGRESS`. After
+  H2's main fix lands, that page may produce a manifest entry; if it isn't
+  meant to be tracked, broaden the glob to `["old-*", "old *", "---*"]`.
+* **Status.** Open follow-up — caller-side configuration, not figmaclaw-side.
+
+### H2-original-investigation-trail (kept for the audit log)
+
+The original suspected causes were (1) early-failed pulls leaving null
+md_path entries behind, or (2) pages with no screen content. Both turned
+out to be wrong. The actual root cause was top-level COMPONENT/COMPONENT_SET
+nodes falling through `from_page_node` and `compute_page_hash`. The audit
+trail is preserved so the next contributor sees how the wrong hypothesis
+was eliminated.
 
 ### H3 — `figmaclaw variables --auto-commit` produces N commits per run (one per tracked file) instead of one batched commit, even when nothing changed
 
