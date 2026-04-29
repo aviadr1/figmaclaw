@@ -94,6 +94,94 @@ def test_doctor_detects_workflow_files(tmp_path: Path) -> None:
     assert "figmaclaw-webhook.yaml" in result.output
 
 
+def test_doctor_reports_partial_pull_pages(tmp_path: Path) -> None:
+    """INVARIANT: doctor surfaces pages stuck in the partial-pull shape
+    (md_path=None AND component_md_paths=[]). This was the silent
+    failure mode that affected 215 pages of linear-git for months
+    before PR 129. Detecting it in doctor lets consumer repos see the
+    bug count before/after a figmaclaw upgrade."""
+    import json
+
+    _init_git(tmp_path)
+    sync_dir = tmp_path / ".figma-sync"
+    sync_dir.mkdir()
+    manifest = {
+        "version": 1,
+        "tracked_files": ["abc"],
+        "files": {
+            "abc": {
+                "file_name": "Test File",
+                "version": "v1",
+                "last_modified": "2026-04-29T00:00:00Z",
+                "pull_schema_version": 9,
+                "pages": {
+                    "1:0": {
+                        "page_name": "Stuck page",
+                        "page_slug": "stuck-1-0",
+                        "md_path": None,
+                        "page_hash": "deadbeefdeadbeef",
+                        "last_refreshed_at": "2026-04-29T00:00:00Z",
+                        "component_md_paths": [],
+                        "frame_hashes": {},
+                    },
+                },
+            }
+        },
+        "skipped_files": {},
+    }
+    (sync_dir / "manifest.json").write_text(json.dumps(manifest))
+
+    runner = CliRunner()
+    with patch.dict("os.environ", {"FIGMA_API_KEY": ""}, clear=False):
+        result = runner.invoke(cli, ["--repo-dir", str(tmp_path), "doctor"])
+    assert "partial-pull" in result.output, result.output
+    assert "Stuck page" in result.output, result.output
+
+
+def test_doctor_does_not_report_partial_pull_for_component_only_pages(tmp_path: Path) -> None:
+    """A page with md_path=None but component_md_paths populated is a
+    valid component-only page (the H2 fix makes this the default state
+    for top-level COMPONENT_SET pages). Must NOT be flagged as a
+    partial-pull — false positives would erode trust in the check."""
+    import json
+
+    _init_git(tmp_path)
+    sync_dir = tmp_path / ".figma-sync"
+    sync_dir.mkdir()
+    manifest = {
+        "version": 1,
+        "tracked_files": ["abc"],
+        "files": {
+            "abc": {
+                "file_name": "Test File",
+                "version": "v1",
+                "last_modified": "2026-04-29T00:00:00Z",
+                "pull_schema_version": 9,
+                "pages": {
+                    "1:0": {
+                        "page_name": "Component-only page",
+                        "page_slug": "component-only-1-0",
+                        "md_path": None,
+                        "page_hash": "deadbeefdeadbeef",
+                        "last_refreshed_at": "2026-04-29T00:00:00Z",
+                        "component_md_paths": ["figma/x/components/c-1-1.md"],
+                        "frame_hashes": {},
+                    },
+                },
+            }
+        },
+        "skipped_files": {},
+    }
+    (sync_dir / "manifest.json").write_text(json.dumps(manifest))
+
+    runner = CliRunner()
+    with patch.dict("os.environ", {"FIGMA_API_KEY": ""}, clear=False):
+        result = runner.invoke(cli, ["--repo-dir", str(tmp_path), "doctor"])
+    # The success path runs the partial-pull check and reports zero.
+    # A false-positive would re-introduce the warning.
+    assert "1 page(s) with md_path=null" not in result.output, result.output
+
+
 def test_doctor_detects_figma_pages(tmp_path: Path) -> None:
     """INVARIANT: doctor counts .md files in figma/ directory."""
     _init_git(tmp_path)

@@ -119,6 +119,35 @@ def doctor_cmd(ctx: click.Context) -> None:
                 f"{n_files} file(s), {n_pages} page(s) tracked",
             )
             passed += 1
+
+            # 6b. Partial-pull check (PR 129 H2): a page with md_path=None
+            # AND component_md_paths=[] AND not a deliberate skip is the
+            # exact "stuck" shape we shipped v8/v9 to fix. If any survive,
+            # surface them so the user knows a pull is needed (typically
+            # caused by being on an old figmaclaw before the schema bump).
+            partial_pulls: list[str] = []
+            for file_entry in state.manifest.files.values():
+                for page_entry in file_entry.pages.values():
+                    if not page_entry.md_path and not page_entry.component_md_paths:
+                        partial_pulls.append(f"{file_entry.file_name} / {page_entry.page_name}")
+                        if len(partial_pulls) >= 5:
+                            break
+                if len(partial_pulls) >= 5:
+                    break
+            if partial_pulls:
+                detail = "; ".join(partial_pulls[:3])
+                if len(partial_pulls) > 3:
+                    detail += f" (+{len(partial_pulls) - 3} more)"
+                _check(
+                    "no partial-pull pages",
+                    False,
+                    f"{len(partial_pulls)} page(s) with md_path=null and "
+                    f"component_md_paths=[]: {detail}",
+                )
+                warnings += 1
+            else:
+                _check("no partial-pull pages", True)
+                passed += 1
         except Exception as e:
             _check("manifest loadable", False, str(e))
             failed += 1
