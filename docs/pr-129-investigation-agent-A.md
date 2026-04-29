@@ -91,6 +91,15 @@ was eliminated.
 | H4 | Token rotation upgrade | pinned |
 | H5 | Tier 1.5 file-version gating | pinned |
 
+## Live CI evidence (in flight)
+
+| Run | Trigger | Outcome | Notes |
+|---|---|---|---|
+| `25069979452` (2026-04-28) | workflow_dispatch | green | every variables file logged "definitions unavailable; kept seeded catalog fallback current" — ~50 phantom commits before the H1 fix |
+| `25086156937` (2026-04-29 01:19) | pr-129-smoke-only | red | `MCP variables export failed — Claude credentials file not found ... Log in to Claude Code first or set FIGMA_MCP_TOKEN.` Smoke job is hardcoded to `--source mcp` and CI lacked the token. |
+| `25086366688` (2026-04-29 01:27) | workflow_dispatch sync | running at time of writing | first run with the partial-pull fix (commit `379aa41`) — expect ~215 new component .md files for previously-empty pages across linear-git, of which ~9 are in ❖ Design System |
+| (next) | workflow_dispatch sync | pending | will run after `FIGMA_MCP_TOKEN` is provisioned (just done by user, set 2026-04-29 01:27 UTC). Variables job should now produce authoritative library names via MCP. |
+
 ## Cross-lane TLDR (for agent B and the user)
 
 * The catalog churn bug is fixed. Five new regression tests pin every dimension I could think of; the deterministic clock fixture means same-second timestamp collisions can't hide a regression.
