@@ -19,6 +19,7 @@ from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION, FigmaPageFr
 from figmaclaw.figma_models import FigmaPage, FigmaSection, from_page_node
 from figmaclaw.figma_parse import parse_frontmatter
 from figmaclaw.figma_render import scaffold_page
+from figmaclaw.figma_schema import UNGROUPED_COMPONENTS_SECTION, is_component, is_visible
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
 from figmaclaw.pull_logic import pull_file
 from tests.smoke.live_gate import require_live_credential
@@ -31,8 +32,43 @@ TEST_FILE_KEY_WEB_APP_DUP = "jb1bZRQUUOQKEpb5p6vt5e"
 TEST_FILE_KEY_LSN_BRANDING = "IXVzan1Xz6J1rA1moyDsk5"
 # Reach - auto content sharing page
 TEST_PAGE_NODE_ID = "7741:45837"
-# Confirmed from live API: 8 SECTION children on this page
-EXPECTED_SECTION_COUNT = 8
+
+
+def _expected_rendered_section_count(page_node: dict) -> int:
+    """Mirror from_page_node's section-count semantics for live smoke data."""
+
+    visible_children = [child for child in page_node.get("children", []) if is_visible(child)]
+    section_count = 0
+    has_top_level_frames = False
+    has_top_level_components = False
+
+    for child in visible_children:
+        child_type = child.get("type")
+        if child_type == "SECTION":
+            section_count += 1
+            visible_section_children = [
+                section_child
+                for section_child in child.get("children", [])
+                if is_visible(section_child)
+            ]
+            has_frame_children = any(
+                section_child.get("type") == "FRAME" for section_child in visible_section_children
+            )
+            has_component_children = any(
+                is_component(section_child) for section_child in visible_section_children
+            )
+            if has_frame_children and has_component_children:
+                section_count += 1
+        elif child_type == "FRAME":
+            has_top_level_frames = True
+        elif is_component(child):
+            has_top_level_components = True
+
+    if has_top_level_frames:
+        section_count += 1
+    if has_top_level_components:
+        section_count += 1
+    return section_count
 
 
 @pytest.fixture
@@ -79,7 +115,9 @@ async def test_from_page_node_matches_real_api_structure(api_key: str) -> None:
     """Smoke: from_page_node builds a FigmaPage with the correct number of sections.
 
     INVARIANT: The model structure must match what the real Figma API returns.
-    Confirmed from live API: this page has exactly 8 SECTION nodes.
+    Mixed SECTIONs with both FRAMEs and COMPONENT_SETs intentionally render as
+    two sibling sections: the original screen section plus synthetic
+    ``(Ungrouped components)`` component-library section.
     """
     async with FigmaClient(api_key=api_key) as client:
         meta = await client.get_file_meta(TEST_FILE_KEY)
@@ -93,9 +131,13 @@ async def test_from_page_node_matches_real_api_structure(api_key: str) -> None:
     assert page.file_name == file_name
     assert page.page_node_id == TEST_PAGE_NODE_ID
     assert page.page_name == "Reach - auto content sharing"
-    assert len(page.sections) == EXPECTED_SECTION_COUNT, (
-        f"Expected {EXPECTED_SECTION_COUNT} sections, got {len(page.sections)}. "
+    expected_section_count = _expected_rendered_section_count(page_node)
+    assert len(page.sections) == expected_section_count, (
+        f"Expected {expected_section_count} sections, got {len(page.sections)}. "
         f"Section names: {[s.name for s in page.sections]}"
+    )
+    assert any(s.name == UNGROUPED_COMPONENTS_SECTION for s in page.sections), (
+        "live smoke page should exercise mixed screen/component rendering"
     )
     # Every section must have at least one frame
     for section in page.sections:

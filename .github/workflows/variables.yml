@@ -93,7 +93,12 @@ jobs:
         run: |
           set -euo pipefail
 
-          if git push; then
+          set +e
+          git push
+          PUSH_STATUS=$?
+          set -e
+
+          if [ "$PUSH_STATUS" -eq 0 ]; then
             exit 0
           fi
 

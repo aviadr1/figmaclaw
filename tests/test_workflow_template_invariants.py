@@ -72,6 +72,8 @@ def test_variables_reusable_workflow_replays_generated_catalog_on_push_conflict(
         encoding="utf-8"
     )
 
+    assert "PUSH_STATUS=$?" in text
+    assert 'if [ "$PUSH_STATUS" -eq 0 ]; then' in text
     assert 'git reset --hard "origin/${{ inputs.target_ref }}"' in text
     assert text.count("figmaclaw variables") >= 2
     assert 'git pull --no-rebase origin "${{ inputs.target_ref }}" && git push' not in text
