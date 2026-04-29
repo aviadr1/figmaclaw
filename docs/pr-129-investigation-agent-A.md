@@ -112,7 +112,16 @@ was eliminated.
 
 ### After MCP token provisioning (2026-04-29 01:27 UTC)
 * PR-129 smoke run `25086421455` succeeded: `TAP IN DESIGN SYSTEM: refreshed 304 variable(s) via figma_mcp`.
-* The next sync (`25086366688`, in progress at time of writing) is the first scheduled run with both the H1 fix and the MCP token. Variables job started after the secret was set, so it should refresh authoritative names for all ~28 tracked files.
+* Sync run `25086366688` started before the secret had fully propagated; first MCP call returned "credentials not found", subsequent calls were short-circuited by agent-B's per-run cache (`556538a`). Catalog churn was suppressed; no spurious commits.
+* Sync run `25086592706` (started 01:38, after secret propagation): variables job refreshed authoritative names via MCP for the critical files:
+  * **❖ Design System**: 345 variables, source=figma_mcp, source_version=2347065942124128936
+  * **TAP IN DESIGN SYSTEM**: 304 variables (via the smoke job)
+  * Branding: 162 variables
+  * claude test: 327 variables
+  * Archived Web: 6 variables
+  * After ~5 minutes of MCP traffic, MCP started returning "credentials not found" again (likely Figma MCP rate-limit or session refresh issue) — agent-B's caching kicked in and the remaining files fell back to "kept seeded catalog fallback current" without churn.
+* **Catalog state on `test/figmaclaw-pr-129-ci` after this run**: schema_version=2, **66 libraries**, **1511 variables**. Sample names from ❖ Design System: `color/neutral-light/0`, `color/surface/page` (light+dark modes), `color/border/default`, `color/bg/neutral/default`, `color/fg/neutral/strong`. Mode-aware values, proper hierarchical naming — Bart's actual published tokens.
+* Sync run `25086906893` (in progress at time of writing): triggered after the schema bump landed in commit `a345741`. This is the first run where every file appears as `pull_schema_version<8` → schema-stale → forced re-render → top-level COMPONENT_SET pages get healed.
 
 ## Live CI evidence (in flight)
 
