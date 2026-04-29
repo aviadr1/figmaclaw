@@ -9,6 +9,7 @@ INVARIANTS:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -100,8 +101,6 @@ def test_doctor_reports_partial_pull_pages(tmp_path: Path) -> None:
     failure mode that affected 215 pages of linear-git for months
     before PR 129. Detecting it in doctor lets consumer repos see the
     bug count before/after a figmaclaw upgrade."""
-    import json
-
     _init_git(tmp_path)
     sync_dir = tmp_path / ".figma-sync"
     sync_dir.mkdir()
@@ -143,8 +142,6 @@ def test_doctor_does_not_report_partial_pull_for_component_only_pages(tmp_path: 
     valid component-only page (the H2 fix makes this the default state
     for top-level COMPONENT_SET pages). Must NOT be flagged as a
     partial-pull — false positives would erode trust in the check."""
-    import json
-
     _init_git(tmp_path)
     sync_dir = tmp_path / ".figma-sync"
     sync_dir.mkdir()
@@ -180,6 +177,105 @@ def test_doctor_does_not_report_partial_pull_for_component_only_pages(tmp_path: 
     # The success path runs the partial-pull check and reports zero.
     # A false-positive would re-introduce the warning.
     assert "1 page(s) with md_path=null" not in result.output, result.output
+
+
+def test_doctor_counts_all_partial_pull_pages_not_only_first_five(tmp_path: Path) -> None:
+    """INVARIANT: doctor reports the true partial-pull count.
+
+    PR 129 found hundreds of linear-git entries in the empty-list-hash shape.
+    Capping collection at five hides the blast radius and makes before/after
+    proof impossible.
+    """
+
+    _init_git(tmp_path)
+    sync_dir = tmp_path / ".figma-sync"
+    sync_dir.mkdir()
+    pages = {
+        f"{idx}:0": {
+            "page_name": f"Stuck page {idx}",
+            "page_slug": f"stuck-{idx}-0",
+            "md_path": None,
+            "page_hash": "4f53cda18c2baa0c",
+            "last_refreshed_at": "2026-04-29T00:00:00Z",
+            "component_md_paths": [],
+            "frame_hashes": {},
+        }
+        for idx in range(6)
+    }
+    manifest = {
+        "version": 1,
+        "tracked_files": ["abc"],
+        "files": {
+            "abc": {
+                "file_name": "Test File",
+                "version": "v1",
+                "last_modified": "2026-04-29T00:00:00Z",
+                "pull_schema_version": 9,
+                "pages": pages,
+            }
+        },
+        "skipped_files": {},
+    }
+    (sync_dir / "manifest.json").write_text(json.dumps(manifest))
+
+    runner = CliRunner()
+    with patch.dict("os.environ", {"FIGMA_API_KEY": ""}, clear=False):
+        result = runner.invoke(cli, ["--repo-dir", str(tmp_path), "doctor"])
+
+    assert "6 page(s) with md_path=null" in result.output, result.output
+    assert "6 with empty-list hash" in result.output, result.output
+    assert "+3 more" in result.output, result.output
+
+
+def test_doctor_ignores_partial_shape_when_page_matches_skip_pages(tmp_path: Path) -> None:
+    """INVARIANT: deliberate skip pages are not actionable partial pulls."""
+
+    _init_git(tmp_path)
+    sync_dir = tmp_path / ".figma-sync"
+    sync_dir.mkdir()
+    manifest = {
+        "version": 1,
+        "skip_pages": ["---", "archive*"],
+        "tracked_files": ["abc"],
+        "files": {
+            "abc": {
+                "file_name": "Test File",
+                "version": "v1",
+                "last_modified": "2026-04-29T00:00:00Z",
+                "pull_schema_version": 9,
+                "pages": {
+                    "1:0": {
+                        "page_name": "---",
+                        "page_slug": "separator-1-0",
+                        "md_path": None,
+                        "page_hash": "4f53cda18c2baa0c",
+                        "last_refreshed_at": "2026-04-29T00:00:00Z",
+                        "component_md_paths": [],
+                        "frame_hashes": {},
+                    },
+                    "2:0": {
+                        "page_name": "Archive notes",
+                        "page_slug": "archive-notes-2-0",
+                        "md_path": None,
+                        "page_hash": "4f53cda18c2baa0c",
+                        "last_refreshed_at": "2026-04-29T00:00:00Z",
+                        "component_md_paths": [],
+                        "frame_hashes": {},
+                    },
+                },
+            }
+        },
+        "skipped_files": {},
+    }
+    (sync_dir / "manifest.json").write_text(json.dumps(manifest))
+
+    runner = CliRunner()
+    with patch.dict("os.environ", {"FIGMA_API_KEY": ""}, clear=False):
+        result = runner.invoke(cli, ["--repo-dir", str(tmp_path), "doctor"])
+
+    assert "no partial-pull pages" in result.output, result.output
+    assert "2 skipped empty page(s) matched skip_pages" in result.output, result.output
+    assert "page(s) with md_path=null" not in result.output, result.output
 
 
 def test_doctor_detects_figma_pages(tmp_path: Path) -> None:

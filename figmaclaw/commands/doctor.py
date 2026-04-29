@@ -20,6 +20,8 @@ from pathlib import Path
 
 import click
 
+EMPTY_LIST_PAGE_HASH = "4f53cda18c2baa0c"
+
 
 def _check(label: str, ok: bool, detail: str = "") -> bool:
     """Print a check result and return whether it passed."""
@@ -125,19 +127,30 @@ def doctor_cmd(ctx: click.Context) -> None:
             # exact "stuck" shape we shipped v8/v9 to fix. If any survive,
             # surface them so the user knows a pull is needed (typically
             # caused by being on an old figmaclaw before the schema bump).
-            partial_pulls: list[str] = []
+            partial_pulls: list[tuple[str, bool]] = []
+            skipped_empty_pages = 0
             for file_entry in state.manifest.files.values():
                 for page_entry in file_entry.pages.values():
                     if not page_entry.md_path and not page_entry.component_md_paths:
-                        partial_pulls.append(f"{file_entry.file_name} / {page_entry.page_name}")
-                        if len(partial_pulls) >= 5:
-                            break
-                if len(partial_pulls) >= 5:
-                    break
+                        if state.should_skip_page(page_entry.page_name):
+                            skipped_empty_pages += 1
+                            continue
+                        partial_pulls.append(
+                            (
+                                f"{file_entry.file_name} / {page_entry.page_name}",
+                                page_entry.page_hash == EMPTY_LIST_PAGE_HASH,
+                            )
+                        )
             if partial_pulls:
-                detail = "; ".join(partial_pulls[:3])
+                sample = [label for label, _empty_hash in partial_pulls[:3]]
+                empty_hash_count = sum(1 for _label, empty_hash in partial_pulls if empty_hash)
+                detail = "; ".join(sample)
                 if len(partial_pulls) > 3:
                     detail += f" (+{len(partial_pulls) - 3} more)"
+                if empty_hash_count:
+                    detail += f"; {empty_hash_count} with empty-list hash"
+                if skipped_empty_pages:
+                    detail += f"; {skipped_empty_pages} skipped empty page(s) matched skip_pages"
                 _check(
                     "no partial-pull pages",
                     False,
@@ -146,7 +159,12 @@ def doctor_cmd(ctx: click.Context) -> None:
                 )
                 warnings += 1
             else:
-                _check("no partial-pull pages", True)
+                detail = (
+                    f"{skipped_empty_pages} skipped empty page(s) matched skip_pages"
+                    if skipped_empty_pages
+                    else ""
+                )
+                _check("no partial-pull pages", True, detail)
                 passed += 1
         except Exception as e:
             _check("manifest loadable", False, str(e))
