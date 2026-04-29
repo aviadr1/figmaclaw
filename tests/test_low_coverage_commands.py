@@ -77,11 +77,193 @@ Body\n""",
     assert "no figmaclaw frontmatter" in res2.output
 
 
-def test_suggest_tokens_dry_run_and_frame_filtered_write(tmp_path: Path) -> None:
+def _suggest_fixture_with_libraries(
+    tmp_path: Path,
+) -> tuple[Path, SimpleNamespace, object]:
+    """Variant of the suggest fixture with multi-library catalog stub —
+    used to exercise --library filtering behavior (#133)."""
     sidecar = tmp_path / "page.tokens.json"
     sidecar.write_text(
         json.dumps(
             {
+                "file_key": "abc123",
+                "frames": {
+                    "11:1": {
+                        "name": "Login Screen",
+                        "issues": [
+                            {
+                                "property": "fill",
+                                "current_value": {"r": 1},
+                                "hex": "#FFFFFF",
+                                "count": 1,
+                            },
+                        ],
+                    }
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    # Two libraries: TAP IN (target) and OLD DS (should be filterable away).
+    # Each has one variable with the same hex, to prove the filter
+    # actually narrows candidates.
+    catalog = SimpleNamespace(
+        libraries={
+            "local:tap-in-hash": SimpleNamespace(name="TAP IN DESIGN SYSTEM"),
+            "local:old-ds-hash": SimpleNamespace(name="OLD_Gigaverse Design System"),
+        },
+        variables={
+            "vid_tap_white": SimpleNamespace(
+                values_by_mode={"_default": SimpleNamespace(hex="#FFFFFF", numeric_value=None)},
+                library_hash="local:tap-in-hash",
+            ),
+            "vid_old_white": SimpleNamespace(
+                values_by_mode={"_default": SimpleNamespace(hex="#FFFFFF", numeric_value=None)},
+                library_hash="local:old-ds-hash",
+            ),
+        },
+    )
+
+    # Fake suggester that records which library_hashes it received.
+    received: dict[str, set[str] | None] = {"library_hashes": None}
+
+    def fake_suggest(work_sidecar: dict, _catalog: SimpleNamespace, library_hashes=None) -> None:
+        received["library_hashes"] = library_hashes
+        # Mimic real matcher: filter candidates by the allowlist if one was given.
+        for frame in work_sidecar.get("frames", {}).values():
+            for issue in frame.get("issues", []):
+                hex_ = issue.get("hex")
+                cands = []
+                if hex_ == "#FFFFFF":
+                    for vid, entry in _catalog.variables.items():
+                        if library_hashes is None or entry.library_hash in library_hashes:
+                            cands.append(vid)
+                if len(cands) == 1:
+                    issue["suggest_status"] = "auto"
+                    issue["candidates"] = cands
+                    issue["fix_variable_id"] = cands[0]
+                elif len(cands) > 1:
+                    issue["suggest_status"] = "ambiguous"
+                    issue["candidates"] = cands
+                else:
+                    issue["suggest_status"] = "no_match"
+                    issue["candidates"] = []
+
+    # Attach the recorder onto the callable so tests can inspect it.
+    fake_suggest.received = received  # type: ignore[attr-defined]
+    return sidecar, catalog, fake_suggest
+
+
+def test_suggest_tokens_library_filter_narrows_candidates(tmp_path: Path) -> None:
+    """INVARIANT (#133, audit-log F1): --library limits matches to listed
+    libraries, so migration audits don't get OLD-DS suggestions."""
+    sidecar, catalog, fake_suggest = _suggest_fixture_with_libraries(tmp_path)
+
+    runner = CliRunner()
+    p1, p2, p3, p4 = _patch_catalog_loaders(catalog, fake_suggest)
+    with p1, p2, p3, p4:
+        # Without --library: both white-variants match → ambiguous.
+        unfiltered = runner.invoke(
+            cli,
+            ["--repo-dir", str(tmp_path), "suggest-tokens", "--sidecar", str(sidecar)],
+            catch_exceptions=False,
+        )
+        assert unfiltered.exit_code == 0
+        out = sidecar.parent / "page.suggestions.json"
+        data = json.loads(out.read_text(encoding="utf-8"))
+        assert data["frames"]["11:1"]["issues"][0]["suggest_status"] == "ambiguous"
+        assert set(data["frames"]["11:1"]["issues"][0]["candidates"]) == {
+            "vid_tap_white",
+            "vid_old_white",
+        }
+        out.unlink()  # reset for the next invocation
+
+    with p1, p2, p3, p4:
+        # With --library tap: only TAP IN variant matches → auto.
+        filtered = runner.invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "suggest-tokens",
+                "--sidecar",
+                str(sidecar),
+                "--library",
+                "tap",
+            ],
+            catch_exceptions=False,
+        )
+    assert filtered.exit_code == 0
+    assert "Library filter: 1 libraries" in filtered.output
+    assert "TAP IN DESIGN SYSTEM" in filtered.output
+    assert "OLD_Gigaverse" not in filtered.output
+
+    data = json.loads((sidecar.parent / "page.suggestions.json").read_text(encoding="utf-8"))
+    issue = data["frames"]["11:1"]["issues"][0]
+    assert issue["suggest_status"] == "auto"
+    assert issue["candidates"] == ["vid_tap_white"]
+    assert issue["fix_variable_id"] == "vid_tap_white"
+
+
+def test_suggest_tokens_library_filter_no_match_errors(tmp_path: Path) -> None:
+    """If --library matches no library, fail loudly rather than silently
+    proceed with an empty filter (which would mark every issue no_match)."""
+    sidecar, catalog, fake_suggest = _suggest_fixture_with_libraries(tmp_path)
+
+    runner = CliRunner()
+    p1, p2, p3, p4 = _patch_catalog_loaders(catalog, fake_suggest)
+    with p1, p2, p3, p4:
+        result = runner.invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "suggest-tokens",
+                "--sidecar",
+                str(sidecar),
+                "--library",
+                "nonexistent-library-name",
+            ],
+            catch_exceptions=False,
+        )
+    assert result.exit_code != 0
+    assert "matched no libraries" in result.output
+
+
+def test_suggest_tokens_library_filter_matches_by_hash(tmp_path: Path) -> None:
+    """--library can match either by name OR by library_hash key."""
+    sidecar, catalog, fake_suggest = _suggest_fixture_with_libraries(tmp_path)
+
+    runner = CliRunner()
+    p1, p2, p3, p4 = _patch_catalog_loaders(catalog, fake_suggest)
+    with p1, p2, p3, p4:
+        result = runner.invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "suggest-tokens",
+                "--sidecar",
+                str(sidecar),
+                "--library",
+                "tap-in-hash",  # substring of the library_hash key, not the name
+            ],
+            catch_exceptions=False,
+        )
+    assert result.exit_code == 0
+    assert "TAP IN DESIGN SYSTEM" in result.output
+
+
+def _suggest_fixture(tmp_path: Path) -> tuple[Path, SimpleNamespace, object]:
+    """Common fixture for suggest-tokens tests: writes a sidecar, returns
+    (sidecar_path, catalog_stub, fake_suggest_callable)."""
+    sidecar = tmp_path / "page.tokens.json"
+    sidecar.write_text(
+        json.dumps(
+            {
+                "file_key": "abc123",
                 "frames": {
                     "11:1": {
                         "name": "Login Screen",
@@ -101,7 +283,7 @@ def test_suggest_tokens_dry_run_and_frame_filtered_write(tmp_path: Path) -> None
                             {"property": "radius", "current_value": 12, "count": 1},
                         ],
                     },
-                }
+                },
             },
             ensure_ascii=False,
         ),
@@ -120,7 +302,8 @@ def test_suggest_tokens_dry_run_and_frame_filtered_write(tmp_path: Path) -> None
         }
     )
 
-    def fake_suggest(work_sidecar: dict, _catalog: object) -> None:
+    def fake_suggest(work_sidecar: dict, _catalog: SimpleNamespace, library_hashes=None) -> None:
+        del library_hashes  # not used by this fixture
         for frame in work_sidecar.get("frames", {}).values():
             for issue in frame.get("issues", []):
                 prop = issue.get("property")
@@ -132,25 +315,168 @@ def test_suggest_tokens_dry_run_and_frame_filtered_write(tmp_path: Path) -> None
                     issue["suggest_status"] = "no_match"
         work_sidecar["suggested_at"] = "2026-04-15T12:00:00Z"
 
-    runner = CliRunner()
-    with (
+    return sidecar, catalog, fake_suggest
+
+
+def _patch_catalog_loaders(catalog: object, fake_suggest: object):
+    """Helper: patch out catalog load + suggest computation + staleness check."""
+    return (
         patch("figmaclaw.commands.suggest_tokens.load_catalog", return_value=catalog),
         patch("figmaclaw.commands.suggest_tokens.suggest_for_sidecar", side_effect=fake_suggest),
-    ):
-        dry = runner.invoke(
+        patch("figmaclaw.commands.suggest_tokens.catalog_staleness_errors", return_value=[]),
+        patch("figmaclaw.commands.suggest_tokens.load_state", return_value=MagicMock()),
+    )
+
+
+def test_suggest_tokens_does_not_mutate_sidecar(tmp_path: Path) -> None:
+    """INVARIANT (#133): suggest-tokens must never modify the input sidecar.
+
+    The sidecar is a CI-managed artifact regenerated by `pull`; mutations get
+    silently reverted by the next CI run. Suggestions belong in a sibling file.
+    """
+    sidecar, catalog, fake_suggest = _suggest_fixture(tmp_path)
+    sidecar_bytes_before = sidecar.read_bytes()
+
+    runner = CliRunner()
+    p1, p2, p3, p4 = _patch_catalog_loaders(catalog, fake_suggest)
+    with p1, p2, p3, p4:
+        result = runner.invoke(
             cli,
-            ["--repo-dir", str(tmp_path), "suggest-tokens", "--sidecar", str(sidecar), "--dry-run"],
+            ["--repo-dir", str(tmp_path), "suggest-tokens", "--sidecar", str(sidecar)],
             catch_exceptions=False,
         )
-        assert dry.exit_code == 0
-        assert "Catalog: 2 variables (1 color, 1 numeric)" in dry.output
-        assert "auto:" in dry.output and "2" in dry.output
-        assert "ambiguous:" in dry.output and "3" in dry.output
-        assert "no_match:" in dry.output and "1" in dry.output
-        after_dry = json.loads(sidecar.read_text(encoding="utf-8"))
-        assert "suggest_status" not in json.dumps(after_dry)
 
-        write = runner.invoke(
+    assert result.exit_code == 0
+    assert sidecar.read_bytes() == sidecar_bytes_before, (
+        "suggest-tokens mutated the sidecar — see #133"
+    )
+
+
+def test_suggest_tokens_default_output_is_sibling_suggestions_json(tmp_path: Path) -> None:
+    """Default output: ``foo.tokens.json`` → sibling ``foo.suggestions.json``."""
+    sidecar, catalog, fake_suggest = _suggest_fixture(tmp_path)
+
+    runner = CliRunner()
+    p1, p2, p3, p4 = _patch_catalog_loaders(catalog, fake_suggest)
+    with p1, p2, p3, p4:
+        result = runner.invoke(
+            cli,
+            ["--repo-dir", str(tmp_path), "suggest-tokens", "--sidecar", str(sidecar)],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0
+    expected = sidecar.parent / "page.suggestions.json"
+    assert expected.exists(), f"expected {expected} to exist; output:\n{result.output}"
+    assert "Wrote suggestions" in result.output and "page.suggestions.json" in result.output
+
+    written = json.loads(expected.read_text(encoding="utf-8"))
+    login_issues = written["frames"]["11:1"]["issues"]
+    assert login_issues[0]["suggest_status"] == "auto"
+    assert login_issues[1]["suggest_status"] == "ambiguous"
+    assert written["frames"]["11:2"]["issues"][0]["suggest_status"] == "no_match"
+    assert written["suggested_at"] == "2026-04-15T12:00:00Z"
+
+
+def test_suggest_tokens_custom_output_path(tmp_path: Path) -> None:
+    sidecar, catalog, fake_suggest = _suggest_fixture(tmp_path)
+    custom = tmp_path / "out" / "elsewhere.json"
+
+    runner = CliRunner()
+    p1, p2, p3, p4 = _patch_catalog_loaders(catalog, fake_suggest)
+    with p1, p2, p3, p4:
+        result = runner.invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "suggest-tokens",
+                "--sidecar",
+                str(sidecar),
+                "--output",
+                str(custom),
+            ],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0
+    assert custom.exists()
+    # Sibling default path must NOT exist when --output overrides it.
+    assert not (sidecar.parent / "page.suggestions.json").exists()
+    written = json.loads(custom.read_text(encoding="utf-8"))
+    assert written["frames"]["11:1"]["issues"][0]["suggest_status"] == "auto"
+
+
+def test_suggest_tokens_output_dash_writes_stdout(tmp_path: Path) -> None:
+    sidecar, catalog, fake_suggest = _suggest_fixture(tmp_path)
+
+    runner = CliRunner()
+    p1, p2, p3, p4 = _patch_catalog_loaders(catalog, fake_suggest)
+    with p1, p2, p3, p4:
+        result = runner.invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "suggest-tokens",
+                "--sidecar",
+                str(sidecar),
+                "--output",
+                "-",
+            ],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0
+    # No file written.
+    assert not (sidecar.parent / "page.suggestions.json").exists()
+    # Stdout must contain a parseable JSON document with the suggestions.
+    # Click captures stdout; the printed table comes first, then the JSON.
+    out = result.output
+    json_start = out.index("{\n")
+    parsed = json.loads(out[json_start:])
+    assert parsed["frames"]["11:1"]["issues"][0]["suggest_status"] == "auto"
+
+
+def test_suggest_tokens_dry_run_writes_nothing(tmp_path: Path) -> None:
+    sidecar, catalog, fake_suggest = _suggest_fixture(tmp_path)
+    sidecar_bytes_before = sidecar.read_bytes()
+
+    runner = CliRunner()
+    p1, p2, p3, p4 = _patch_catalog_loaders(catalog, fake_suggest)
+    with p1, p2, p3, p4:
+        result = runner.invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "suggest-tokens",
+                "--sidecar",
+                str(sidecar),
+                "--dry-run",
+            ],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0
+    assert sidecar.read_bytes() == sidecar_bytes_before
+    assert not (sidecar.parent / "page.suggestions.json").exists()
+    # Summary table still printed.
+    assert "Catalog: 2 variables" in result.output
+    assert "auto:" in result.output
+    # No "Wrote" message.
+    assert "Wrote suggestions" not in result.output
+
+
+def test_suggest_tokens_frame_filter_outputs_only_processed_frames(tmp_path: Path) -> None:
+    """Frame-filtered runs produce filtered output — they don't merge back into
+    a hidden full sidecar (which the original mutating implementation did)."""
+    sidecar, catalog, fake_suggest = _suggest_fixture(tmp_path)
+
+    runner = CliRunner()
+    p1, p2, p3, p4 = _patch_catalog_loaders(catalog, fake_suggest)
+    with p1, p2, p3, p4:
+        result = runner.invoke(
             cli,
             [
                 "--repo-dir",
@@ -163,16 +489,12 @@ def test_suggest_tokens_dry_run_and_frame_filtered_write(tmp_path: Path) -> None
             ],
             catch_exceptions=False,
         )
-        assert write.exit_code == 0
-        assert "Wrote updated sidecar" in write.output
 
-    written = json.loads(sidecar.read_text(encoding="utf-8"))
-    login_issues = written["frames"]["11:1"]["issues"]
-    assert login_issues[0]["suggest_status"] == "auto"
-    assert login_issues[1]["suggest_status"] == "ambiguous"
-    # Filtered write should not alter non-matching frame
-    assert "suggest_status" not in written["frames"]["11:2"]["issues"][0]
-    assert written["suggested_at"] == "2026-04-15T12:00:00Z"
+    assert result.exit_code == 0
+    written = json.loads((sidecar.parent / "page.suggestions.json").read_text(encoding="utf-8"))
+    assert "11:1" in written["frames"]
+    assert "11:2" not in written["frames"]
+    assert written["frames"]["11:1"]["issues"][0]["suggest_status"] == "auto"
 
 
 def test_suggest_tokens_refuses_stale_catalog(tmp_path: Path) -> None:

@@ -70,10 +70,15 @@ For per-section enrichment on giant pages (>80 frames), use `--section <node_id>
 
 | Command | What it does | Writes |
 |---|---|---|
-| `figmaclaw suggest-tokens --sidecar <path>` | Annotate raw/stale token issues in a sidecar with DS-variable candidates. | The sidecar (adds `suggest_status`, `candidates`, `fix_variable_id`). |
-| `figmaclaw suggest-tokens --sidecar <path> --dry-run` | Print stats without writing. | nothing. |
+| `figmaclaw suggest-tokens --sidecar <path>` | Annotate raw/stale token issues with DS-variable candidates. | A sibling `<base>.suggestions.json` next to the sidecar (sidecar itself is read-only — never mutated). |
+| `figmaclaw suggest-tokens --sidecar <path> --library tap --library lsn` | Limit candidates to specific DS libraries (substring match on library name OR `library_hash`). | Same sibling file. **Use this for migration audits** — without `--library`, suggestions can point at the OLD design system instead of the migration target. |
+| `figmaclaw suggest-tokens --sidecar <path> --output <path>` | Write to a custom path. | `<path>`. |
+| `figmaclaw suggest-tokens --sidecar <path> --output -` | Write JSON to stdout (informational messages go to stderr — pipeable to `jq` etc). | stdout. |
+| `figmaclaw suggest-tokens --sidecar <path> --dry-run` | Print stats without writing anywhere. | nothing. |
 
 `suggest-tokens` reads `.figma-sync/ds_catalog.json`. If the catalog is stale, run `figmaclaw variables` first; per canon CR-2 the consumer should refuse to produce results from a stale catalog.
+
+The output file (`*.suggestions.json`) is regeneratable and should be added to `.gitignore` — it's recomputed from the sidecar + catalog on every run, so checking it in causes merge conflicts and quietly stale data.
 
 ### Webhooks (server side)
 
