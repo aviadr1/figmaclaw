@@ -668,11 +668,17 @@ def test_top_level_component_with_no_variants_still_renders_as_frame_row() -> No
 # ---------------------------------------------------------------------------
 
 
-def test_section_with_both_frames_and_components_classifies_as_screen() -> None:
-    """When a SECTION has BOTH FRAMEs and COMPONENT_SETs, the existing
-    rule (figma_models.py: ``is_component_lib = bool(component_nodes)
-    and not frame_nodes``) classifies it as a screen section. Pin the
-    rule so future contributors don't accidentally invert it."""
+def test_section_with_both_frames_and_components_emits_two_sibling_sections() -> None:
+    """When a SECTION has BOTH FRAMEs and COMPONENT_SETs, the original
+    SECTION becomes a screen section (with frames) AND a sibling
+    synthetic component section is emitted (with the COMPONENT_SETs).
+
+    Pre-v9 the COMPONENT_SETs were silently dropped — the screen .md
+    was rendered without them and no component .md was written. Real
+    users adding both kinds of children to a single SECTION had their
+    library components vanish from disk on every pull. The fix splits
+    the mixed SECTION into two siblings so neither side is lost.
+    """
     sect = _section(
         "1:1",
         "Mixed",
@@ -683,17 +689,72 @@ def test_section_with_both_frames_and_components_classifies_as_screen() -> None:
         file_key=FILE_KEY,
         file_name=FILE_NAME,
     )
-    matched = [s for s in page.sections if s.node_id == "1:1"]
-    assert len(matched) == 1
-    assert not matched[0].is_component_library, (
-        "Section with mixed FRAME + COMPONENT children was classified as "
-        "a component library. The rule is: a section is a component lib "
-        "iff it has components AND zero frames."
+
+    screen = next((s for s in page.sections if s.node_id == "1:1"), None)
+    assert screen is not None
+    assert not screen.is_component_library
+    assert {f.node_id for f in screen.frames} == {"1:2"}, (
+        "screen sibling should contain only the FRAMEs"
     )
-    rendered_ids = {f.node_id for f in matched[0].frames}
-    # Frames win: only the FRAME is rendered as a row, not the COMPONENT_SET.
-    assert "1:2" in rendered_ids
-    assert "1:3" not in rendered_ids
+
+    component_siblings = [s for s in page.sections if s.is_component_library]
+    assert len(component_siblings) == 1, (
+        "expected one synthetic component sibling section for the mixed SECTION"
+    )
+    sibling = component_siblings[0]
+    assert sibling.node_id != "1:1", (
+        "synthetic sibling must have a distinct node_id from the screen "
+        "section so component_path doesn't collide with the screen .md"
+    )
+    assert sibling.node_id.startswith("ungrouped-components-"), sibling.node_id
+    assert {f.node_id for f in sibling.frames} == {"1:3"}
+
+
+def test_two_pages_with_mixed_sections_produce_distinct_sibling_paths() -> None:
+    """The synthetic sibling node_id must be SECTION-scoped (not just
+    page-scoped) so two pages each containing a mixed SECTION produce
+    distinct component .md paths. Generalises the H6 fix for inside-
+    SECTION orphans."""
+    page_a = from_page_node(
+        _page(
+            "10:0",
+            "Page A",
+            [
+                _section(
+                    "10:1",
+                    "Mixed A",
+                    children=[
+                        _frame("10:2", "frameA"),
+                        _component_set("10:3", "compA"),
+                    ],
+                )
+            ],
+        ),
+        file_key=FILE_KEY,
+        file_name=FILE_NAME,
+    )
+    page_b = from_page_node(
+        _page(
+            "20:0",
+            "Page B",
+            [
+                _section(
+                    "20:1",
+                    "Mixed B",
+                    children=[
+                        _frame("20:2", "frameB"),
+                        _component_set("20:3", "compB"),
+                    ],
+                )
+            ],
+        ),
+        file_key=FILE_KEY,
+        file_name=FILE_NAME,
+    )
+
+    a = next(s for s in page_a.sections if s.is_component_library)
+    b = next(s for s in page_b.sections if s.is_component_library)
+    assert a.node_id != b.node_id, (a.node_id, b.node_id)
 
 
 def test_top_level_orphan_component_without_set_is_surfaced() -> None:

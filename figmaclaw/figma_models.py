@@ -168,17 +168,46 @@ def from_page_node(page_node: dict, *, file_key: str, file_name: str) -> FigmaPa
             # no frames. This classification is content-based, not
             # metadata-based.
             is_component_lib = bool(component_nodes) and not frame_nodes
-            # Render frames when present; fall back to components for libs.
-            render_nodes = frame_nodes if frame_nodes else component_nodes
             all_frames_for_flows.extend(frame_nodes)
-            sections.append(
-                FigmaSection(
-                    node_id=child["id"],
-                    name=normalize_name(raw_name(child)),
-                    frames=[_node_to_frame(f, file_key) for f in render_nodes],
-                    is_component_library=is_component_lib,
+
+            if frame_nodes and component_nodes:
+                # Mixed shape: a SECTION carries both FRAMEs (screens or
+                # usage examples) and COMPONENT_SETs (the actual library
+                # components on the side). Pre-v9 the components were
+                # silently dropped — "frames win, components disappear" —
+                # producing a screen .md with no record of the
+                # COMPONENT_SETs and no component .md alongside it. Now
+                # we emit two sibling sections: the screen one keeps the
+                # original SECTION node_id, and the components get a
+                # page+section-scoped synthetic node_id so they don't
+                # collide across pages or with the screen section.
+                sections.append(
+                    FigmaSection(
+                        node_id=child["id"],
+                        name=normalize_name(raw_name(child)),
+                        frames=[_node_to_frame(f, file_key) for f in frame_nodes],
+                        is_component_library=False,
+                    )
                 )
-            )
+                synthetic_id = f"{UNGROUPED_COMPONENTS_NODE_ID}-{child['id'].replace(':', '-')}"
+                sections.append(
+                    FigmaSection(
+                        node_id=synthetic_id,
+                        name=UNGROUPED_COMPONENTS_SECTION,
+                        frames=[_node_to_frame(c, file_key) for c in component_nodes],
+                        is_component_library=True,
+                    )
+                )
+            else:
+                render_nodes = frame_nodes if frame_nodes else component_nodes
+                sections.append(
+                    FigmaSection(
+                        node_id=child["id"],
+                        name=normalize_name(raw_name(child)),
+                        frames=[_node_to_frame(f, file_key) for f in render_nodes],
+                        is_component_library=is_component_lib,
+                    )
+                )
 
         elif child.get("type") == "FRAME":
             # Visibility for FRAMEs already guarded by the outer
