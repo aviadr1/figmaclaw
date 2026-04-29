@@ -466,25 +466,50 @@ async def test_schema_upgrade_backfills_instance_component_ids_without_body_rewr
     tmp_path,
     api_key: str,  # type: ignore[no-untyped-def]
 ) -> None:
-    """Smoke: schema-stale pull restores missing inventory keys while preserving markdown body."""
+    """Smoke: schema-stale pull restores missing inventory keys while preserving markdown body.
+
+    INVARIANT: on a page whose Figma content hasn't drifted, a schema-stale pull
+    triggers the schema-only path — frontmatter is re-rendered to backfill new
+    keys, but the markdown body is byte-identical to before. Verified on the
+    *specific* page we mutate, not on aggregate counts (other pages may
+    legitimately change in Figma between the two pulls — Bartosz is actively
+    editing this file — so absolute write-count assertions flake).
+    """
     state = FigmaSyncState(tmp_path)
     state.load()
     state.add_tracked_file(TEST_FILE_KEY, "Web App")
     state.manifest.files[TEST_FILE_KEY].version = "v0"
 
     async with FigmaClient(api_key=api_key) as client:
-        first = await pull_file(client, TEST_FILE_KEY, state, tmp_path, force=False, max_pages=1)
+        # Pull a small batch — enough to find a page that has instances.
+        # The invariant we're testing (instance_component_ids restored on
+        # schema upgrade) only applies to pages with INSTANCE children.
+        # The cover page is shallowest, surviving timeouts most reliably,
+        # but has no instances; ask for several so a richer page is in the set.
+        first = await pull_file(client, TEST_FILE_KEY, state, tmp_path, force=False, max_pages=5)
         if first.pages_errored and first.pages_written + first.pages_schema_upgraded == 0:
             pytest.skip(
                 "Figma API returned a page error during live schema-upgrade smoke setup; "
                 "body-preservation invariant is inconclusive"
             )
-        assert first.pages_written + first.pages_schema_upgraded > 0
-        pages = state.manifest.files[TEST_FILE_KEY].pages
-        assert pages
-        entry = next(iter(pages.values()))
-        assert entry.md_path is not None
-        page_md = tmp_path / entry.md_path
+        if not first.md_paths:
+            pytest.skip("first pull wrote no pages — schema-upgrade target unavailable")
+
+        # Find a written page whose frontmatter actually has instance_component_ids
+        # set — without that, the body-preservation invariant has nothing to verify.
+        target_rel: str | None = None
+        for rel in first.md_paths:
+            text = (tmp_path / rel).read_text()
+            if re.search(r"^\s*instance_component_ids:\s*\{[^}]*\S", text, flags=re.MULTILINE):
+                target_rel = rel
+                break
+        if target_rel is None:
+            pytest.skip(
+                "no pulled page in this batch carries instance_component_ids "
+                "(all surviving pages have no INSTANCE children); cannot exercise "
+                "schema-upgrade backfill invariant"
+            )
+        page_md = tmp_path / target_rel
         text_before = page_md.read_text()
         body_before = text_before.split("---\n", 2)[-1]
 
@@ -496,15 +521,28 @@ async def test_schema_upgrade_backfills_instance_component_ids_without_body_rewr
         state.manifest.files[TEST_FILE_KEY].pull_schema_version = 5
         state.save()
 
-        upgraded = await pull_file(client, TEST_FILE_KEY, state, tmp_path, force=False, max_pages=1)
-        if upgraded.pages_errored:
+        # Pull all pages on the second call. Schema-upgrade writes don't
+        # consume the max_pages budget (see pull_logic.py:1051 comment),
+        # but a content-changed page processed earlier in the loop CAN
+        # break out at max_pages=1 before reaching our target. Setting
+        # max_pages=None ensures the loop visits every page including
+        # the schema-stale one we mutated.
+        upgraded = await pull_file(
+            client, TEST_FILE_KEY, state, tmp_path, force=False, max_pages=None
+        )
+        if upgraded.pages_errored and upgraded.pages_schema_upgraded == 0:
             pytest.skip(
-                "Figma API returned a page error during live schema-upgrade smoke; "
-                "body-preservation invariant is inconclusive"
+                "Figma API returned page errors during live schema-upgrade smoke and no "
+                "schema upgrade ran; body-preservation invariant is inconclusive"
             )
-        assert upgraded.pages_written == 0
-        assert upgraded.pages_schema_upgraded >= 1
+        # The aggregate invariant we care about: at least one page was
+        # schema-upgraded. We do NOT assert pages_written == 0 — other pages
+        # in the file may have legitimately changed in Figma between calls.
+        assert upgraded.pages_schema_upgraded >= 1, (
+            f"expected schema-upgrade pass to fire; got {upgraded}"
+        )
 
+    # The page-specific invariant: body byte-identical, restored frontmatter key.
     text_after = page_md.read_text()
     body_after = text_after.split("---\n", 2)[-1]
     assert body_after == body_before
