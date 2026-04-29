@@ -13,6 +13,7 @@ description: Use when working with figmaclaw-generated data (figma/*.md pages, _
 
 ## Table of contents
 
+- [Philosophy](#philosophy)
 1. [Four-layer data contract](#1-four-layer-data-contract)
 2. [Storage-tier table](#2-storage-tier-table)
 3. [Refresh-trigger ladder](#3-refresh-trigger-ladder)
@@ -45,6 +46,20 @@ description: Use when working with figmaclaw-generated data (figma/*.md pages, _
 8. [Anti-pattern checklist for PR review](#8-anti-pattern-checklist-for-pr-review)
 
 ---
+
+## Philosophy
+
+figmaclaw invariants exist to protect expensive, hard-won knowledge while still allowing cheap, incremental refresh. A correct change preserves human/LLM-authored data, never silently discards generated evidence that consumers rely on, knows the cost tier of every action, and can answer what is stale, why it is stale, and what minimum refresh will make it current.
+
+Use this philosophy to decide whether a proposed rule belongs in canon:
+
+- **Protect hard-won data.** Bodies, enrichment state, human choices, generated registries used by consumers, and migration evidence must not be lost silently. If data is costly to recreate, preserve it; if it is recomputable, make the recomputation path explicit.
+- **Work incrementally.** Prefer the cheapest sufficient refresh tier. Do not make "get one current answer" require a full pull, screenshots, LLM enrichment, or repo-wide churn when a file-scope or page-scope refresh is enough.
+- **Know freshness.** Every cache consumer must be able to answer whether its input is current. If it is stale, it should name what is stale, why it is stale, and the smallest action that will make it current.
+- **Keep authority clear.** Separate source truth, generated cache, observed usage, advisory suggestions, and prose. Do not let observation, fallback state, or seeded bridge data masquerade as authoritative Figma truth.
+- **Recover by preserving provenance.** When workflows race, APIs fail, or schemas change, recovery should restore a state that could have been produced from source data. Do not text-merge generated cache snapshots or leave legacy generated artifacts orphaned.
+
+Each invariant below should serve one of these goals. If a proposed invariant only records a temporary implementation preference, put it in tests, docs, or the review checklist instead of canon.
 
 ## 1. Four-layer data contract
 
