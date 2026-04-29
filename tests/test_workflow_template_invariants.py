@@ -193,3 +193,16 @@ def test_variables_workflows_can_require_authoritative_definitions() -> None:
     assert "require_authoritative: ${{ github.event.inputs.require_authoritative || false }}" in (
         installed
     )
+
+
+def test_bump_version_workflow_uses_tested_script_from_latest_main() -> None:
+    """INVARIANT: version bumps use the tested script against the latest branch head."""
+
+    text = (Path(__file__).parents[1] / ".github" / "workflows" / "bump-version.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'git fetch origin "${GITHUB_REF_NAME}"' in text
+    assert 'git checkout -B "${GITHUB_REF_NAME}" "origin/${GITHUB_REF_NAME}"' in text
+    assert "python3 scripts/bump_version.py" in text
+    assert "python3 - <<'EOF'" not in text

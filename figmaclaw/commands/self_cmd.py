@@ -7,11 +7,13 @@ figmaclaw self skill [NAME]
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import click
 
 _SKILLS_DIR = Path(__file__).parent.parent / "skills"
+_DEFAULT_UPDATE_SOURCE = "git+https://github.com/aviadr1/figmaclaw@main"
 
 
 @click.group("self")
@@ -60,3 +62,27 @@ def skill_cmd(name: str | None, list_skills: bool) -> None:
         if i > 0:
             click.echo("\n---\n")
         click.echo(f.read_text(), nl=False)
+
+
+@self_group.command("update")
+@click.option(
+    "--source",
+    default=_DEFAULT_UPDATE_SOURCE,
+    show_default=True,
+    help="uv tool source to install from.",
+)
+def update_cmd(source: str) -> None:
+    """Upgrade the installed figmaclaw CLI via uv tool install."""
+
+    command = ["uv", "tool", "install", "--force", "--reinstall", "--upgrade", source]
+    click.echo(f"Running: {' '.join(command)}")
+    try:
+        subprocess.run(command, check=True)
+    except FileNotFoundError as exc:
+        raise click.ClickException(
+            "'uv' is required to update figmaclaw. Install it from https://docs.astral.sh/uv/."
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        raise click.ClickException(
+            f"figmaclaw update failed with exit code {exc.returncode}"
+        ) from exc

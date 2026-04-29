@@ -290,6 +290,27 @@ def test_self_skill_list_print_specific_and_not_found(
     assert "not found" in missing.output
 
 
+def test_self_update_runs_uv_tool_install_force(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(command: list[str], check: bool) -> None:
+        calls.append(command)
+        assert check is True
+
+    monkeypatch.setattr("figmaclaw.commands.self_cmd.subprocess.run", fake_run)
+
+    result = CliRunner().invoke(
+        self_group,
+        ["update", "--source", "/tmp/figmaclaw"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    assert calls == [
+        ["uv", "tool", "install", "--force", "--reinstall", "--upgrade", "/tmp/figmaclaw"]
+    ]
+
+
 @pytest.mark.asyncio
 async def test_track_run_updates_state_and_optional_pull(tmp_path: Path) -> None:
     client = MagicMock()
