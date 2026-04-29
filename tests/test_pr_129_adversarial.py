@@ -453,6 +453,53 @@ def test_synthetic_component_section_path_unique_across_two_real_pages() -> None
     )
 
 
+def test_legacy_synthetic_basename_constant_is_exact() -> None:
+    """The legacy basename allowlist is just one filename. If anyone
+    edits :data:`LEGACY_UNGROUPED_COMPONENTS_BASENAME` away from this
+    exact value, the migration in pull_logic stops finding orphan files
+    on consumer repos. Pin the value."""
+    from figmaclaw.prune_utils import LEGACY_UNGROUPED_COMPONENTS_BASENAME
+
+    assert LEGACY_UNGROUPED_COMPONENTS_BASENAME == "ungrouped-components-ungrouped-components.md"
+
+
+def test_legacy_collision_synthetic_component_path_is_recognized_as_generated() -> None:
+    """The pre-H6 synthetic filename has no digit-digit suffix, so the
+    canonical ``_NODE_SUFFIX_RE`` regex doesn't match it. Without an
+    explicit allow, ``find_generated_orphans`` would skip the file and
+    leave a stale, corrupted (last-writer-wins across multiple pages)
+    .md on disk forever after the v9 hash bump moves every page off it.
+
+    Pin the legacy path is recognized as generated so orphan cleanup can
+    delete it on the v8→v9 transition."""
+    from figmaclaw.prune_utils import is_generated_md_relpath
+
+    legacy = "figma/design-system/components/ungrouped-components-ungrouped-components.md"
+    assert is_generated_md_relpath(legacy), (
+        "Legacy pre-H6 synthetic component file is NOT recognized as a "
+        "generated path. find_generated_orphans will skip it and the "
+        "corrupted file will survive on disk after every consumer's "
+        "v8→v9 transition."
+    )
+
+    # Negative: a similarly-named file in pages/ (not components/) is NOT
+    # the legacy synthetic and must NOT be auto-classified.
+    decoy = "figma/design-system/pages/ungrouped-components-ungrouped-components.md"
+    assert not is_generated_md_relpath(decoy), (
+        "is_generated_md_relpath was loosened too far — it now matches "
+        "files in pages/ that share the legacy synthetic basename. The "
+        "legacy match must be scoped to components/ only."
+    )
+
+    # Negative: a hand-written .md that just happens to live in components/
+    # but doesn't match the canonical regex must NOT be classified.
+    handmade = "figma/design-system/components/notes-by-bart.md"
+    assert not is_generated_md_relpath(handmade), (
+        "Loosened path-matching now sweeps in hand-written user files. "
+        "The legacy allowlist must be exact (one filename), not a glob."
+    )
+
+
 def test_synthetic_section_round_trips_through_render_parse() -> None:
     """The synthetic ``(Ungrouped components)`` section name + its
     page-scoped node_id must round-trip through render_section_heading /

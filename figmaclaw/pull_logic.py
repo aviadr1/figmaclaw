@@ -73,9 +73,11 @@ from figmaclaw.figma_render import (
     scaffold_page,
     section_frame_ids,
 )
+from figmaclaw.figma_schema import UNGROUPED_COMPONENTS_NODE_ID
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
 from figmaclaw.figma_utils import write_json_if_changed
 from figmaclaw.prune_utils import (
+    LEGACY_UNGROUPED_COMPONENTS_BASENAME,
     entry_paths,
     find_generated_orphans,
     remove_generated_relpath,
@@ -1244,11 +1246,20 @@ async def pull_file(
 
             written_component_rels: list[str] = []
             previous_component_by_suffix: dict[str, str] = {}
+            # The pre-H6 legacy synthetic path used a constant filename
+            # shared across every page that had top-level COMPONENT_SETs
+            # (last writer wins; data is corrupt). On the v9 transition
+            # we want to migrate this away exactly once — whichever page
+            # is processed first inherits the legacy file's content; the
+            # rest write fresh. Better than leaving the orphan on disk.
+            previous_legacy_synthetic: str | None = None
             if previous_entry:
                 for comp_path in previous_entry.component_md_paths:
                     suffix = _node_suffix_from_relpath(comp_path)
                     if suffix:
                         previous_component_by_suffix[suffix] = comp_path
+                    elif Path(comp_path).name == LEGACY_UNGROUPED_COMPONENTS_BASENAME:
+                        previous_legacy_synthetic = comp_path
             for section in component_sections:
                 if not section.frames:
                     continue
@@ -1256,6 +1267,17 @@ async def pull_file(
                 sect_slug = f"{slugify(section.name)}-{sect_suffix}"
                 comp_rel = component_path(file_slug, sect_slug)
                 old_comp_rel = previous_component_by_suffix.get(sect_suffix)
+                # Fall back to the legacy synthetic if there was no
+                # canonical-suffix match — first synthetic section wins
+                # the migration; subsequent calls find old_comp_rel
+                # already migrated away and write fresh.
+                if (
+                    old_comp_rel is None
+                    and previous_legacy_synthetic
+                    and section.node_id.startswith(UNGROUPED_COMPONENTS_NODE_ID)
+                ):
+                    old_comp_rel = previous_legacy_synthetic
+                    previous_legacy_synthetic = None  # consume once per page
                 if old_comp_rel and old_comp_rel != comp_rel and prune:
                     _migrate_generated_path(
                         repo_root,
