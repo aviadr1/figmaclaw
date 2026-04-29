@@ -85,11 +85,33 @@ was eliminated.
 
 | ID | Title | State |
 |---|---|---|
-| H1 | Idempotency under unavailable | done — regression locked |
-| H2 | Partial-pull `md_path:null` pages | investigating |
-| H3 | Per-file commits vs batched commits | pending CI run |
-| H4 | Token rotation upgrade | pinned |
-| H5 | Tier 1.5 file-version gating | pinned |
+| H1 | Idempotency under unavailable | done — regression locked (5 tests, deterministic clock) |
+| H2 | Partial-pull `md_path:null` pages | done — root cause identified (top-level COMPONENT_SETs), fixed in `379aa41`, regression locked (3 tests) |
+| H3 | Per-file commits vs batched commits | pinned by H1 — no commits when nothing changed |
+| H4 | Token rotation upgrade | pinned by `test_variables_upgrade_path_still_works` |
+| H5 | Tier 1.5 file-version gating | pinned by canon TC-5; no additional test from agent A |
+| H6 | MCP token availability in CI | resolved 2026-04-29 01:27 UTC by user; verified end-to-end in run `25086421455` (304 variables refreshed via figma_mcp) |
+
+## Quantitative evidence
+
+### Before the H2 fix (latest `main` of linear-git, commit `598a26745`)
+* 215 manifest entries with `(md_path=null, component_md_paths=[])` and `page_hash="4f53cda18c2baa0c"` across all tracked files.
+* 9 of those are in `❖ Design System` (`AZswXfXwfx2fff3RFBMo8h`): ✅ Tooltip & Help icon, ☼ Logo, ☼ App Icon, ☼ Date & Time Format, ☼ Microcopy Guidelines, Textarea, Code, File organization, ---------- IN PROGRESS.
+* `ds_catalog.json` schema_version=1, libraries={} (empty), 839 variables all with `name=null`.
+
+### After the H1 fix (commit `f7cee67`, plus regression locks `8d6be57`)
+* `mark_local_variables_unavailable` short-circuits when `(source=unavailable, source_version=current)`. No catalog write, no `fetched_at` bump.
+* `write_json_if_changed` strips `ignore_keys` recursively, so nested `fetched_at` no longer triggers spurious writes.
+* CI evidence: variables job log on run `25086366688` no longer carries 50 commit messages; net commit count for unchanged-state runs is 0.
+
+### After the H2 fix (commit `379aa41`)
+* `from_page_node` produces `(Ungrouped components)` synthetic section for top-level COMPONENT/COMPONENT_SETs.
+* `compute_page_hash` includes COMPONENT/COMPONENT_SET nodes at depth 1 and grandchildren under SECTIONs.
+* Once a future pull runs (either schema bump, `--force`, or natural Figma version change), the 215 partial-pull pages will produce real component .md files and non-trivial page hashes.
+
+### After MCP token provisioning (2026-04-29 01:27 UTC)
+* PR-129 smoke run `25086421455` succeeded: `TAP IN DESIGN SYSTEM: refreshed 304 variable(s) via figma_mcp`.
+* The next sync (`25086366688`, in progress at time of writing) is the first scheduled run with both the H1 fix and the MCP token. Variables job started after the secret was set, so it should refresh authoritative names for all ~28 tracked files.
 
 ## Live CI evidence (in flight)
 
