@@ -206,9 +206,21 @@ def from_page_node(page_node: dict, *, file_key: str, file_name: str) -> FigmaPa
         )
 
     if ungrouped_components:
+        # Page-scoped synthetic node_id. Without this, every page that has
+        # top-level COMPONENT_SETs would produce a section with the same
+        # constant node_id (UNGROUPED_COMPONENTS_NODE_ID), and pull_logic's
+        # component_path slug computation would collide:
+        #   sect_slug = f"{slugify(section.name)}-{section.node_id.replace(':', '-')}"
+        # would resolve to a single
+        # ``components/ungrouped-components-ungrouped-components.md``
+        # for every such page in the file. Last writer wins; previous
+        # pages' components are silently overwritten on disk.
+        # Encoding the page_node_id keeps each synthetic section uniquely
+        # identifiable while still sharing the human-readable name.
+        synthetic_id = f"{UNGROUPED_COMPONENTS_NODE_ID}-{page_node_id.replace(':', '-')}"
         sections.append(
             FigmaSection(
-                node_id=UNGROUPED_COMPONENTS_NODE_ID,
+                node_id=synthetic_id,
                 name=UNGROUPED_COMPONENTS_SECTION,
                 frames=ungrouped_components,
                 is_component_library=True,

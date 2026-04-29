@@ -122,6 +122,48 @@ def test_compute_page_hash_changes_when_top_level_components_change() -> None:
     assert hash_empty != hash_with_two, hash_empty
 
 
+def test_two_pages_with_top_level_components_produce_distinct_section_ids() -> None:
+    """Real-world bug found in CI on 2026-04-29: two pages in the same file
+    (☼ Logo and ☼ App Icon) both produced an ``(Ungrouped components)`` section
+    with the SAME constant node_id. pull_logic derives the component .md
+    path from ``slugify(section.name) + "-" + section.node_id`` which then
+    resolves to ``components/ungrouped-components-ungrouped-components.md``
+    for both pages — the second writer silently overwrote the first
+    (App Icon won; Logo's components disappeared from disk).
+
+    The fix encodes the page_node_id into the synthetic node_id. This test
+    pins that two distinct pages can never share a synthetic component
+    section identifier."""
+    page_a = from_page_node(
+        {
+            "id": "83:38162",
+            "name": "☼ Logo",
+            "type": "CANVAS",
+            "children": [_component_set_node(node_id="83:38163", name="logo")],
+        },
+        file_key="AZswXfXwfx2fff3RFBMo8h",
+        file_name="❖ Design System",
+    )
+    page_b = from_page_node(
+        {
+            "id": "500:23",
+            "name": "☼ App Icon",
+            "type": "CANVAS",
+            "children": [_component_set_node(node_id="500:24", name="app-icon")],
+        },
+        file_key="AZswXfXwfx2fff3RFBMo8h",
+        file_name="❖ Design System",
+    )
+
+    a_sect = next(s for s in page_a.sections if s.is_component_library)
+    b_sect = next(s for s in page_b.sections if s.is_component_library)
+    assert a_sect.node_id != b_sect.node_id, (
+        "Two distinct pages produced synthetic component sections with the "
+        "same node_id. pull_logic's component .md path slug uses this id, "
+        "so identical ids cause a write collision and silent data loss."
+    )
+
+
 def test_invisible_top_level_component_set_is_skipped() -> None:
     """An invisible top-level COMPONENT_SET must not appear in any section.
 
