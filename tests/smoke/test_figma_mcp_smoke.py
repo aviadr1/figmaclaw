@@ -7,8 +7,6 @@ Run with:
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
 from figmaclaw.figma_mcp import FigmaMcpClient, FigmaMcpError
@@ -22,15 +20,31 @@ DS_FILE_KEY = "dcDETwKMNGpK39FfApg7Ki"
 
 @pytest.fixture
 def mcp_client() -> FigmaMcpClient:
-    require_live_credential(
-        os.environ.get("FIGMA_MCP_TOKEN", ""),
-        name="FIGMA_MCP_TOKEN",
-        hint="Set FIGMA_MCP_TOKEN in .env or environment for MCP smoke tests.",
-    )
+    """Build an MCP client using the same lookup chain as production code.
+
+    ``FigmaMcpClient.auto()`` reads ``FIGMA_MCP_TOKEN`` first, then falls
+    back to ``~/.claude/.credentials.json`` (where Claude Code stores the
+    Figma plugin's OAuth token). Devs who've authenticated the Figma plugin
+    in Claude Code get the smoke tests running automatically — no need to
+    copy a token into ``.env``.
+
+    If neither source has a token, route through the live-credential gate
+    so CI's dedicated smoke job (``FIGMACLAW_REQUIRE_LIVE_SMOKE=1``) fails
+    loudly while local runs skip.
+    """
     try:
         return FigmaMcpClient.auto()
     except FigmaMcpError as exc:
-        pytest.fail(f"MCP credentials are invalid/unusable: {exc}")
+        require_live_credential(
+            "",
+            name="FIGMA_MCP_TOKEN",
+            hint=(
+                "No MCP token found via env var or ~/.claude/.credentials.json. "
+                "Authenticate the Figma plugin in Claude Code, or set "
+                f"FIGMA_MCP_TOKEN. Original error: {exc}"
+            ),
+        )
+        raise  # unreachable: require_live_credential always raises
 
 
 @pytest.mark.smoke_mcp
