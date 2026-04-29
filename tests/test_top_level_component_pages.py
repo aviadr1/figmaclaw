@@ -122,6 +122,74 @@ def test_compute_page_hash_changes_when_top_level_components_change() -> None:
     assert hash_empty != hash_with_two, hash_empty
 
 
+def test_invisible_top_level_component_set_is_skipped() -> None:
+    """An invisible top-level COMPONENT_SET must not appear in any section.
+
+    Designers sometimes hide work-in-progress components. The
+    ``is_visible`` filter must apply before the new top-level component
+    handler too — otherwise we'd render hidden components and produce a
+    .md the designer didn't want.
+    """
+    page_node = {
+        "id": "1478:11585",
+        "name": "✅ Tooltip & Help icon",
+        "type": "CANVAS",
+        "children": [
+            {**_component_set_node(node_id="1478:11586", name="Hidden tooltip"), "visible": False},
+            _component_set_node(node_id="1478:12000", name="Visible help icon"),
+        ],
+    }
+    page = from_page_node(
+        page_node,
+        file_key="AZswXfXwfx2fff3RFBMo8h",
+        file_name="❖ Design System",
+    )
+    rendered_ids = {f.node_id for s in page.sections if s.is_component_library for f in s.frames}
+    assert "1478:11586" not in rendered_ids, (
+        "Invisible top-level COMPONENT_SET leaked into the rendered "
+        "sections. Visibility must be the very first filter applied."
+    )
+    assert "1478:12000" in rendered_ids
+
+
+def test_mixed_top_level_frames_and_component_sets_produce_both_sections() -> None:
+    """Real-world pages can have both top-level FRAMEs (screen content)
+    and top-level COMPONENT_SETs (library components). Each must produce
+    its own synthetic section — the existing ``(Ungrouped)`` for frames
+    and the new ``(Ungrouped components)`` for components — not collapse
+    into one classification.
+    """
+    page_node = {
+        "id": "1478:11585",
+        "name": "Mixed page",
+        "type": "CANVAS",
+        "children": [
+            {
+                "id": "1478:11700",
+                "name": "Top-level frame",
+                "type": "FRAME",
+                "children": [],
+            },
+            _component_set_node(node_id="1478:11800", name="Inline component set"),
+        ],
+    }
+    page = from_page_node(
+        page_node,
+        file_key="AZswXfXwfx2fff3RFBMo8h",
+        file_name="❖ Design System",
+    )
+
+    screen_sections = [s for s in page.sections if not s.is_component_library]
+    component_sections = [s for s in page.sections if s.is_component_library]
+    assert any("1478:11700" in {f.node_id for f in s.frames} for s in screen_sections), (
+        "Top-level FRAME was not classified as a screen section."
+    )
+    assert any("1478:11800" in {f.node_id for f in s.frames} for s in component_sections), (
+        "Top-level COMPONENT_SET was not classified as a component-library "
+        "section even though a top-level FRAME also exists on the page."
+    )
+
+
 def test_top_level_component_only_page_round_trips_through_pull_shape() -> None:
     """A page with only COMPONENT_SETs at the top level must end up with
     at least one component section, so the manifest entry has either an
