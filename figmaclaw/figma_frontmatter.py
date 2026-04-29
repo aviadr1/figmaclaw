@@ -98,7 +98,7 @@ _TOMBSTONE_HASH_RE = re.compile(r"^[0-9a-f]+$")
 # Files in the manifest with pull_schema_version < this get frontmatter-refreshed
 # on the next pull run even if Figma content is unchanged. Body is never touched
 # (except for the narrow orphan-row prune in figmaclaw#121 — structural, not prose).
-CURRENT_PULL_SCHEMA_VERSION: int = 7
+CURRENT_PULL_SCHEMA_VERSION: int = 8
 
 # Enrichment schema version. Bump when the LLM prompt or output format changes.
 # Pages with enriched_schema_version < MIN_REQUIRED MUST be re-enriched (broken output).

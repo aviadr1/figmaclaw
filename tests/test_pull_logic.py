@@ -52,7 +52,7 @@ from tests.conftest import (
 # Schema version registry — must contain every version that has been superseded.
 # When you bump CURRENT_PULL_SCHEMA_VERSION from N to N+1, add N here and add
 # a corresponding convergence test (like test_schema_upgrade_does_not_cause_infinite_loop_with_max_pages).
-TESTED_UPGRADE_FROM_VERSIONS: frozenset[int] = frozenset({1, 2, 3, 4, 5, 6})
+TESTED_UPGRADE_FROM_VERSIONS: frozenset[int] = frozenset({1, 2, 3, 4, 5, 6, 7})
 
 
 def test_schema_upgrade_coverage_is_current():
@@ -2141,6 +2141,113 @@ async def test_schema_upgrade_v6_to_v7_prunes_orphan_enriched_frame_hashes(tmp_p
     assert state.manifest.files["abc123"].pull_schema_version == CURRENT_PULL_SCHEMA_VERSION
     assert set(fm_after.enriched_frame_hashes.keys()) <= set(fm_after.frames)
     assert not (set(fm_after.enriched_frame_hashes.keys()) & orphan_nids)
+
+
+@pytest.mark.asyncio
+async def test_schema_upgrade_v7_to_v8_heals_top_level_component_only_pages(tmp_path: Path):
+    """INVARIANT for v8 schema bump: a v7-era page whose only children are
+    top-level COMPONENT_SETs gets re-rendered on the next pull.
+
+    Under v7, ``compute_page_hash`` produced ``sha256("[]")[:16]`` for these
+    pages and ``from_page_node`` produced ``sections=[]`` — the manifest
+    entry ended up as ``(md_path=null, component_md_paths=[])`` and the
+    page hash never invalidated, so Tier 2 looped on the same hash forever.
+
+    The v8 schema bump forces every file to re-render once, and the new
+    code in ``from_page_node`` synthesises an ``(Ungrouped components)``
+    section so the previously-empty page produces a real component .md.
+
+    Real-world reference: 9 pages in the linear-git ``❖ Design System``
+    file (✅ Tooltip & Help icon, ☼ Logo, ☼ App Icon, ☼ Date & Time Format,
+    ☼ Microcopy Guidelines, Textarea, Code, File organization, IN PROGRESS)
+    are stuck in this shape on every consumer repo until v8 lands.
+    """
+    from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "❖ Design System")
+
+    # Page with top-level COMPONENT_SETs only — no SECTION wrapper.
+    # Uses the same canvas page id (7741:45837) as fake_file_meta so the
+    # default fixture meta points at it, but with the real-world Tooltip
+    # page shape (top-level COMPONENT_SET children).
+    page_node_v7 = {
+        "id": "7741:45837",
+        "name": "✅ Tooltip & Help icon",
+        "type": "CANVAS",
+        "children": [
+            {
+                "id": "1478:11586",
+                "name": "Tooltip",
+                "type": "COMPONENT_SET",
+                "children": [
+                    {
+                        "id": "1478:11586:default",
+                        "name": "Default",
+                        "type": "COMPONENT",
+                        "children": [],
+                    }
+                ],
+            },
+            {
+                "id": "1478:12000",
+                "name": "Help icon",
+                "type": "COMPONENT_SET",
+                "children": [
+                    {
+                        "id": "1478:12000:default",
+                        "name": "Default",
+                        "type": "COMPONENT",
+                        "children": [],
+                    }
+                ],
+            },
+        ],
+    }
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2", "2026-03-31T12:00:00Z"))
+    mock_client.get_pages = AsyncMock(return_value={"1478:11585": page_node_v7})
+    mock_client.get_page = AsyncMock(return_value=page_node_v7)
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+    mock_client.get_nodes = AsyncMock(return_value={})
+
+    # First pull: should now produce a component .md (post-fix behavior).
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+    page_entry = state.manifest.files["abc123"].pages.get("7741:45837")
+    assert page_entry is not None
+    assert state.manifest.files["abc123"].pull_schema_version == CURRENT_PULL_SCHEMA_VERSION
+    # Either a component .md exists, or md_path is set — not the partial-pull shape.
+    assert page_entry.md_path is not None or page_entry.component_md_paths, (
+        "v8 pull on a top-level-COMPONENT_SETs page produced the partial-pull "
+        "shape (md_path=None AND component_md_paths=[]). The H2 fix was supposed "
+        "to make this impossible."
+    )
+
+    # Simulate a v7-era stored entry: pretend the file was last pulled under v7.
+    state.manifest.files["abc123"].pull_schema_version = 7
+    # Wipe md_path / component_md_paths to simulate the v7-era partial-pull state.
+    page_entry.md_path = None
+    page_entry.component_md_paths = []
+    page_entry.page_hash = "4f53cda18c2baa0c"  # sha256("[]")[:16] — the v7 empty-list hash
+    state.save()
+
+    # Second pull: schema-stale (v7 < v8) → re-render → synthetic component section appears.
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+    assert state.manifest.files["abc123"].pull_schema_version == CURRENT_PULL_SCHEMA_VERSION
+    healed = state.manifest.files["abc123"].pages["7741:45837"]
+    assert healed.md_path is not None or healed.component_md_paths, (
+        "v7→v8 schema upgrade did not heal a partial-pull page entry. "
+        "Either compute_page_hash still returns the empty-list digest for "
+        "top-level COMPONENT_SET pages, or the schema-stale code path "
+        "isn't re-rendering the file."
+    )
+    assert healed.page_hash != "4f53cda18c2baa0c", (
+        "compute_page_hash still returns the empty-list digest after the "
+        "schema upgrade — the v8 fix to include COMPONENT/COMPONENT_SET "
+        "nodes in the hash didn't take effect."
+    )
 
 
 @pytest.mark.asyncio
