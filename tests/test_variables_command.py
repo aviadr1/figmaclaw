@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 from click.testing import CliRunner
 
 from figmaclaw.figma_api_models import LocalVariablesResponse
+from figmaclaw.figma_mcp import FigmaMcpError
 from figmaclaw.figma_sync_state import FigmaSyncState
 from figmaclaw.main import cli
 
@@ -19,6 +20,13 @@ FILE_KEY = "file123"
 def _track(repo_dir: Path) -> None:
     state = FigmaSyncState(repo_dir)
     state.add_tracked_file(FILE_KEY, "Design System")
+    state.save()
+
+
+def _track_two_files(repo_dir: Path) -> None:
+    state = FigmaSyncState(repo_dir)
+    state.add_tracked_file(FILE_KEY, "Design System")
+    state.add_tracked_file("file456", "Product File")
     state.save()
 
 
@@ -64,11 +72,7 @@ def _variables(version_hash: str = "libabc") -> dict:
 class _FakeClient:
     def __init__(self, variables_response: LocalVariablesResponse | None, version: str = "v1"):
         self.variables_response = variables_response
-        self.meta = SimpleNamespace(
-            name="Design System",
-            version=version,
-            lastModified="2026-04-28T00:00:00Z",
-        )
+        self.version = version
         self.variables_calls = 0
 
     async def __aenter__(self) -> _FakeClient:
@@ -78,7 +82,12 @@ class _FakeClient:
         return None
 
     async def get_file_meta(self, _file_key: str) -> SimpleNamespace:
-        return self.meta
+        name = "Product File" if _file_key == "file456" else "Design System"
+        return SimpleNamespace(
+            name=name,
+            version=self.version,
+            lastModified="2026-04-28T00:00:00Z",
+        )
 
     async def get_local_variables(self, _file_key: str) -> LocalVariablesResponse | None:
         self.variables_calls += 1
@@ -236,6 +245,35 @@ def test_variables_command_auto_falls_back_to_mcp_definitions(tmp_path: Path, mo
     assert data["libraries"]["mcplib"]["source_version"] == "v3"
     assert data["variables"]["VariableID:mcplib/1:1"]["name"] == "fg/primary"
     assert data["variables"]["VariableID:mcplib/1:1"]["source"] == "figma_mcp"
+
+
+def test_variables_command_does_not_retry_missing_mcp_credentials_per_file(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """INVARIANT: one missing-MCP-token verdict is enough for one variables run."""
+    _track_two_files(tmp_path)
+    monkeypatch.setenv("FIGMA_API_KEY", "figd_test")
+    fake = _FakeClient(None, version="v5")
+    mcp_export = AsyncMock(side_effect=FigmaMcpError("FIGMA_MCP_TOKEN missing"))
+
+    with (
+        patch("figmaclaw.commands.variables.FigmaClient", return_value=fake),
+        patch("figmaclaw.commands.variables.get_local_variables_via_mcp", mcp_export),
+    ):
+        result = CliRunner().invoke(
+            cli,
+            ["--repo-dir", str(tmp_path), "variables"],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0
+    assert fake.variables_calls == 2
+    mcp_export.assert_awaited_once_with(FILE_KEY)
+    assert result.output.count("Figma MCP variables fallback unavailable") == 1
+
+    data = json.loads((tmp_path / ".figma-sync" / "ds_catalog.json").read_text())
+    assert data["libraries"][f"local:{FILE_KEY}"]["source"] == "unavailable"
+    assert data["libraries"]["local:file456"]["source"] == "unavailable"
 
 
 def test_variables_command_source_mcp_skips_rest_variables(tmp_path: Path, monkeypatch) -> None:

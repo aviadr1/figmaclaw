@@ -83,6 +83,7 @@ async def _run(
         variables_api_key=figma_variables_api_key(api_key),
     ) as client:
         catalog = load_catalog(repo_dir)
+        mcp_unavailable_reason: str | None = None
 
         for key in keys:
             if key not in state.manifest.tracked_files:
@@ -115,7 +116,12 @@ async def _run(
 
             before = _catalog_text(repo_dir)
             try:
-                response, response_source = await _get_local_variables(client, key, source)
+                response, response_source, mcp_unavailable_reason = await _get_local_variables(
+                    client,
+                    key,
+                    source,
+                    mcp_unavailable_reason=mcp_unavailable_reason,
+                )
             except Exception as exc:
                 if source == "mcp":
                     raise click.ClickException(
@@ -173,19 +179,23 @@ async def _get_local_variables(
     client: FigmaClient,
     file_key: str,
     source: str,
-) -> tuple[LocalVariablesResponse | None, str]:
+    *,
+    mcp_unavailable_reason: str | None = None,
+) -> tuple[LocalVariablesResponse | None, str, str | None]:
     if source in {"auto", "rest"}:
         response = await client.get_local_variables(file_key)
         if response is not None or source == "rest":
-            return response, "figma_api"
+            return response, "figma_api", mcp_unavailable_reason
+        if mcp_unavailable_reason is not None:
+            return None, "figma_mcp", mcp_unavailable_reason
         click.echo(
             f"{file_key}: REST variables endpoint unavailable (403); trying Figma MCP fallback"
         )
 
     try:
-        return await get_local_variables_via_mcp(file_key), "figma_mcp"
+        return await get_local_variables_via_mcp(file_key), "figma_mcp", mcp_unavailable_reason
     except FigmaMcpError as exc:
         if source == "mcp":
             raise
         click.echo(f"{file_key}: Figma MCP variables fallback unavailable — {exc}")
-        return None, "figma_mcp"
+        return None, "figma_mcp", str(exc)
