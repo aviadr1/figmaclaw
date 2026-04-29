@@ -18,6 +18,15 @@ def _bump_patch(version: str) -> str:
     return f"{major}.{minor}.{int(patch) + 1}"
 
 
+def _normalize_version(version: str) -> str:
+    parts = version.split(".")
+    if len(parts) == 2:
+        return f"{parts[0]}.{parts[1]}.0"
+    if len(parts) == 3:
+        return version
+    raise RuntimeError(f"Expected MAJOR.MINOR or MAJOR.MINOR.PATCH version, got {version!r}")
+
+
 def _extract_pr(message: str) -> str | None:
     first_line = message.split("\n")[0].strip()
     pr_m = re.search(r"Merge pull request #(\d+)|\(#(\d+)\)", first_line)
@@ -32,7 +41,12 @@ def _python_literal(value: str | None) -> str:
     return json.dumps(value)
 
 
-def bump_version(repo_root: Path, trigger_sha: str, trigger_msg: str) -> str:
+def bump_version(
+    repo_root: Path,
+    trigger_sha: str,
+    trigger_msg: str,
+    set_version: str | None = None,
+) -> str:
     pyproject_path = repo_root / "pyproject.toml"
     plugin_path = repo_root / ".claude-plugin" / "plugin.json"
     marketplace_path = repo_root / ".claude-plugin" / "marketplace.json"
@@ -42,7 +56,7 @@ def bump_version(repo_root: Path, trigger_sha: str, trigger_msg: str) -> str:
     m = re.search(r'^version = "([^"]+)"', pyproject, re.MULTILINE)
     if not m:
         raise RuntimeError("Could not find version in pyproject.toml")
-    new_version = _bump_patch(m.group(1))
+    new_version = _normalize_version(set_version) if set_version else _bump_patch(m.group(1))
 
     pyproject_path.write_text(
         re.sub(
@@ -81,9 +95,13 @@ def main() -> None:
     parser.add_argument("--repo-root", type=Path, default=Path.cwd())
     parser.add_argument("--trigger-sha", default=os.environ.get("TRIGGER_SHA", ""))
     parser.add_argument("--trigger-msg", default=os.environ.get("TRIGGER_MSG", ""))
+    parser.add_argument(
+        "--set-version",
+        help="Set an explicit MAJOR.MINOR or MAJOR.MINOR.PATCH version instead of bumping patch.",
+    )
     args = parser.parse_args()
 
-    new_version = bump_version(args.repo_root, args.trigger_sha, args.trigger_msg)
+    new_version = bump_version(args.repo_root, args.trigger_sha, args.trigger_msg, args.set_version)
     pr = _extract_pr(args.trigger_msg)
     print(f"Bumped to {new_version} · commit={args.trigger_sha[:8]} · PR={pr}")
 
