@@ -195,14 +195,7 @@ def test_variables_workflows_can_require_authoritative_definitions() -> None:
     )
 
 
-def test_bump_version_workflow_uses_tested_script_from_latest_main() -> None:
-    """INVARIANT: version bumps use the tested script against the latest branch head."""
+def test_version_bump_is_not_a_post_merge_main_mutation() -> None:
+    """INVARIANT: version bumps are PR contents, not bot pushes to protected main."""
 
-    text = (Path(__file__).parents[1] / ".github" / "workflows" / "bump-version.yml").read_text(
-        encoding="utf-8"
-    )
-
-    assert 'git fetch origin "${GITHUB_REF_NAME}"' in text
-    assert 'git checkout -B "${GITHUB_REF_NAME}" "origin/${GITHUB_REF_NAME}"' in text
-    assert "python3 scripts/bump_version.py" in text
-    assert "python3 - <<'EOF'" not in text
+    assert not (Path(__file__).parents[1] / ".github" / "workflows" / "bump-version.yml").exists()
