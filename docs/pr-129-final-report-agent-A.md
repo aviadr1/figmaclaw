@@ -39,10 +39,21 @@ Each hypothesis owned by agent A. Status as of report close.
 | H4 | Token rotation upgrade path | Verified, pinned with test | A | test in `8d6be57` |
 | H5 | Tier 1.5 file-version gating | Verified existing behavior; canon TC-5 already covers | — | — |
 | H6 | Slug collision when two pages have synthetic component sections | Fixed | A | `a384b47` |
-| H7 | Pull-schema bump to force backlog reprocessing | Done — `CURRENT_PULL_SCHEMA_VERSION` 7→8 | A | `a345741` |
+| H7 | Pull-schema bump to force backlog reprocessing (v7→v8) | Done | A | `a345741` |
+| H8 | Variant-content-changes inside COMPONENT_SETs not detected by page_hash | Fixed (was v8 GAP) | A | `3cabadc` |
+| H9 | `compute_frame_hashes` skipped top-level COMPONENT/COMPONENT_SETs | Fixed (was v8 GAP) | A | `3cabadc` |
+| H10 | Legacy pre-H6 synthetic file `ungrouped-components-ungrouped-components.md` would survive forever as orphan after v9 transition | Fixed | A | `2fcd38b` |
+| H11 | SECTION mixing FRAMEs and COMPONENT_SETs silently dropped the components from rendering | Fixed | A | `33e5c03` |
+| H12 | `figmaclaw doctor` had no partial-pull check — bug count invisible to consumer repos | Fixed | A | `2c3dc08` |
+| H13 | Pull-schema bump to force re-render under v9 hash semantics (v8→v9) | Done | A | `3cabadc` |
 
-H6 is the bug agent A discovered *after* shipping the H2 fix, by reading
-live CI evidence from the test branch. See "What live CI surfaced" below.
+H6 was discovered *after* shipping the H2 fix by reading live CI
+evidence from the test branch. H8/H9 began as "documented GAP" tests
+in the v8 hardening pass — pinning pre-existing partial-update bugs —
+and were later closed under the user's "no deferring" directive.
+H10/H11/H12 were found in the post-fix bug-hunt loop by reading
+prune_utils, figma_models, and doctor with edge-case eyes. See "Bug-
+hunt loop discoveries" below.
 
 ## Bugs fixed
 
@@ -130,6 +141,138 @@ the kind of gap that lives between two layers of correct unit tests.
 asserts on the **path layer**, not just the in-memory id, because that
 is where the production bug actually manifested.
 
+### H8 — variant additions/renames inside COMPONENT_SET (was v8 GAP)
+
+**Bug.** Adding, removing, or renaming a COMPONENT *inside* an
+existing COMPONENT_SET did not change the page hash. `compute_page_hash`
+emitted one tuple per COMPONENT_SET but never descended into its
+COMPONENT children (the variants). So a designer adding a "Loading"
+variant to the Toggle COMPONENT_SET produced no hash change, Tier 2
+short-circuited, and the rendered variant table on disk went stale
+silently. Pre-existing for SECTION-wrapped COMPONENT_SETs too — the
+exact same blind spot regardless of where the COMPONENT_SET sat on
+the page.
+
+**Initial v8 stance.** Documented as a GAP test pinning the broken
+behavior. The user then said "no deferring, all must be fixed now".
+
+**Fix.** Commit `3cabadc`. `compute_page_hash` descends one more level
+into COMPONENT_SETs (top-level and SECTION-wrapped) and emits
+`(variant_id, variant_name, "COMPONENT", parent_set_id)` tuples for
+visible COMPONENT children. Order-independent (sorted with the rest).
+
+**Regression locks.**
+* `test_adding_variant_inside_top_level_component_set_changes_page_hash`
+* `test_renaming_variant_inside_top_level_component_set_changes_page_hash`
+* `test_renaming_variant_inside_section_wrapped_component_set_changes_page_hash`
+* `test_invisible_variant_does_not_change_page_hash`
+* `test_variant_order_does_not_change_page_hash`
+* `test_schema_upgrade_v8_to_v9_picks_up_variant_changes` (convergence
+  test in `test_pull_logic.py` — pins that v8-era hashes don't match
+  v9 hashes when variants have been added since the last pull)
+
+### H9 — `compute_frame_hashes` skipped top-level components (was v8 GAP)
+
+**Bug.** `compute_frame_hashes` returned `{}` for component-only
+pages, ignoring top-level COMPONENT/COMPONENT_SETs and any
+COMPONENT_SETs nested under SECTIONs. So per-frame staleness detection
+was silently broken for all component-library pages — `stale_frame_ids`
+always returned an empty set, the inspect command never reported
+component variants as stale, and the surgical re-enrichment path
+couldn't fire on component pages.
+
+**Fix.** Commit `3cabadc`. `compute_frame_hashes` now covers the union
+of rendered units: top-level FRAMEs (unchanged), top-level
+COMPONENT/COMPONENT_SETs (new), SECTION-wrapped FRAMEs (unchanged),
+and SECTION-wrapped COMPONENT/COMPONENT_SETs (new).
+
+**Regression locks.**
+* `test_compute_frame_hashes_includes_top_level_component_sets`
+* `test_compute_frame_hashes_includes_section_wrapped_component_sets`
+* `test_compute_frame_hashes_skips_invisible_components`
+* `test_compute_frame_hash_changes_on_variant_rename_via_frame_hashes`
+
+### H10 — legacy collision file survived as undetectable orphan
+
+**Bug.** The pre-H6 synthetic component path was a constant
+`components/ungrouped-components-ungrouped-components.md` shared
+across every page that had top-level COMPONENT_SETs. After H6 + v9
+land, the manifest moves every page entry off it (to per-page
+synthetic paths). But `prune_utils.is_generated_md_relpath` used a
+strict `.*-\d+-\d+\.md$` regex; the legacy filename has no
+digit-digit suffix and so was silently classified as "not generated"
+— `find_generated_orphans` skipped it, and the corrupt file would
+survive on disk forever.
+
+A second-order bug: `_node_suffix_from_relpath` returned `None` for
+the legacy filename for the same reason, so pull_logic's component-
+path migration never paired the legacy file with a new per-page
+synthetic. The first new write created a fresh placeholder file
+instead of migrating the legacy's enriched content.
+
+**Fix.** Commit `2fcd38b`.
+
+* `prune_utils.LEGACY_UNGROUPED_COMPONENTS_BASENAME` constant exact-
+  matched in `is_generated_md_relpath`, scoped to `components/` only
+  so hand-written user files in `pages/` aren't accidentally swept in.
+* `pull_logic.process_page_components`: when previous_entry contains
+  the legacy filename and a new synthetic section is being written,
+  pair them for `_migrate_generated_path`. The first synthetic section
+  inherits the legacy file's content; subsequent pages write fresh
+  (which is correct given the file was last-writer-wins corrupt
+  anyway).
+
+**Regression locks.**
+* `test_legacy_synthetic_basename_constant_is_exact`
+* `test_legacy_collision_synthetic_component_path_is_recognized_as_generated`
+  with explicit negatives for `pages/` and arbitrary names — the
+  allowlist must be exact, not a glob.
+
+### H11 — SECTION mixing FRAMEs and COMPONENT_SETs dropped components
+
+**Bug.** A SECTION containing both FRAMEs (e.g., usage-example
+screens) and COMPONENT_SETs (the actual library components) silently
+dropped the COMPONENT_SETs from rendering. The pre-existing rule was
+`is_component_lib = bool(component_nodes) and not frame_nodes` AND
+`render_nodes = frame_nodes if frame_nodes else component_nodes` —
+"frames win, components disappear". A real shape (e.g., a Buttons
+SECTION with usage-example FRAMEs alongside the Button COMPONENT_SET)
+produced a screen `.md` with no record of the component-set and no
+component `.md` alongside.
+
+**Fix.** Commit `33e5c03`. `from_page_node` now emits two sibling
+sections for the mixed shape: the original SECTION node_id as a
+screen section holding the FRAMEs, and a synthetic component-library
+section using a SECTION-scoped synthetic node_id
+(`ungrouped-components-<section-id>`) holding the COMPONENT_SETs.
+
+The synthetic id is SECTION-scoped (not just page-scoped) so two
+pages each containing a mixed SECTION cannot collide — generalising
+the H6 fix to inside-SECTION orphans.
+
+**Regression locks.**
+* `test_section_with_both_frames_and_components_emits_two_sibling_sections`
+  (replaces the old data-loss-pinning test)
+* `test_two_pages_with_mixed_sections_produce_distinct_sibling_paths`
+
+### H12 — `figmaclaw doctor` had no partial-pull check
+
+**Bug.** Manifest entries with `md_path=null AND component_md_paths=[]`
+are the silent-stuck shape that affected 215 pages of linear-git for
+months. Doctor had no way to surface this — consumer repos couldn't
+see a bug count before/after a figmaclaw upgrade.
+
+**Fix.** Commit `2c3dc08`. Doctor now walks the manifest and warns
+when stuck-shape entries exist, listing the first three offenders.
+Component-only pages (md_path=null + non-empty component_md_paths) are
+explicitly NOT flagged: that is a valid post-H2 state.
+
+**Regression locks.**
+* `test_doctor_reports_partial_pull_pages` (positive)
+* `test_doctor_does_not_report_partial_pull_for_component_only_pages`
+  (no false positive — this is the bug class we'd most regret
+  introducing, since it would erode trust in doctor).
+
 ### H7 — pull-schema bump v7 → v8
 
 **Why.** The H2 fix changes the rendered output for component-only pages
@@ -201,14 +344,14 @@ disappeared from disk" some weeks later.
 
 | Metric | Pre-PR | Post-PR (agent A locks) |
 |---|---|---|
-| Tests | 957 | **986** |
-| New tests by agent A | — | 29 (5 + 7 + 22; minus 5 overlap with B's MCP suite) |
+| Tests | 957 | **1022** |
+| New tests by agent A | — | 65 (5 H1 + 7 H2/H6 + 30 adversarial + 6 GAP→positive flip + 5 mixed-section + 3 legacy + 2 doctor + 7 schema-upgrade-from-8 + helpers) |
 | Lint (`ruff format --check`) | clean | clean |
 | Lint (`ruff check`) | clean | clean |
 | Types (`basedpyright`) | clean | clean |
 
-Full local run, agent A's lane: `986 passed in 5.35s` (adversarial
-suite alone), full suite green at most recent push.
+Full unit suite (excluding live-API smoke): `1022 passed in 6.23s` at
+most recent push.
 
 ## Coordination with agent B
 
@@ -237,25 +380,66 @@ suite alone), full suite green at most recent push.
 |---|---|---|
 | The 215 partial-pull pages drain at ~5-10 files per CI run; full convergence takes 5-7 cron ticks | low | Backlog drain is intended, observable in commit log; no user action needed |
 | MCP token expires 2026-07-26 | medium | Calendar reminder needed; token discovery supports `FIGMA_MCP_TOKEN`, `claudeAiOauthToken`, `mcpOAuth[plugin:figma:...]` — multiple renewal paths |
-| GAP: variant added inside a COMPONENT_SET does not bump page_hash | medium | Pinned by GAP test. Pre-existing, NOT a PR 129 regression. Recommend follow-up issue: descend one more level into COMPONENT_SETs in `compute_page_hash`, with a v8→v9 schema bump |
-| GAP: `compute_frame_hashes` returns `{}` for top-level component-only pages | low | Pinned by GAP test. Component .md re-render on every page-hash change; per-frame staleness on variants is not tracked. Worth its own per-section content hash if needed |
+| Variant added inside a COMPONENT_SET (was v8 GAP) | **CLOSED** in v9 (H8) | — |
+| `compute_frame_hashes` returns `{}` for top-level component-only pages (was v8 GAP) | **CLOSED** in v9 (H9) | — |
+| Legacy collision file `ungrouped-components-ungrouped-components.md` survives as undetectable orphan | **CLOSED** (H10) | — |
+| SECTION mixing FRAMEs + COMPONENT_SETs drops components | **CLOSED** (H11) | — |
+| Doctor has no partial-pull check | **CLOSED** (H12) | — |
 | `skip_pages` glob is caller-side; new separator patterns from designers (e.g. `---` rows) join the partial-pull set | low | Caller can extend its own glob without a figmaclaw release |
-| `compute_page_hash` change is backwards-incompatible for pre-fix hashes | none — intended | Schema bump v7→v8 forces re-pull exactly once per file; page hashes converge on the new code immediately |
+| `compute_page_hash` change is backwards-incompatible for pre-v9 hashes | none — intended | Schema bumps v7→v8 and v8→v9 force re-pull exactly once per file; page hashes converge on the new code immediately |
 
 ## Recommended follow-ups (for after PR 129 merges)
 
-1. **Variant-content-change detection** (closes the GAP test). Descend
-   one more level into COMPONENT_SETs in `compute_page_hash`. Bump
-   schema v8→v9. Estimated 1 hour.
-2. **`figmaclaw doctor` partial-pull check.** Surface the bug count
-   for any consumer repo before/after upgrade. Would have caught the
-   215-page backlog months earlier. Estimated 2-3 hours.
-3. **Component .md per-section content hash.** Independent staleness
-   tracking for variant tables, mirror of `compute_frame_hash` for
-   screen pages. Lets enrichment be surgical instead of full-section
-   rewrite. Estimated half a day.
-4. **smoke-api-ci failure** (separate from PR 129 — was failing before
-   this PR). Worth investigating.
+Most of the original follow-ups were rolled INTO this PR after the
+user said "no deferring, all must be fixed now":
+
+1. ~~Variant-content-change detection~~ — **closed in v9 (H8)**.
+2. ~~`figmaclaw doctor` partial-pull check~~ — **closed (H12)**.
+3. ~~Component frame-hash coverage~~ — **closed in v9 (H9)**.
+4. ~~Mixed-SECTION component drop~~ — **closed (H11)**.
+5. ~~Legacy synthetic file orphan cleanup~~ — **closed (H10)**.
+
+What remains:
+
+1. **smoke-api-ci failure** (separate from PR 129 — was failing before
+   this PR; smoke job seems to need an API key in CI that isn't
+   configured for PR runs). Worth investigating before merge.
+2. **Per-variant content hash** (one level deeper than per-COMPONENT_SET).
+   Currently `compute_frame_hash` on a COMPONENT_SET hashes its visible
+   children's name+type, which catches variant rename/visibility but not
+   variant *inner* layout changes. Surgical for variant-table
+   re-enrichment. Estimated 2-3 hours but very low priority.
+
+## Bug-hunt loop discoveries (post v8 hardening)
+
+The user's "no deferring, all must be fixed now / continue fixing and
+finding more in a loop" directive prompted a second pass that surfaced
+five additional bugs beyond the original H1-H7 surface. These are
+worth noting because their detection mode is generalisable:
+
+| Bug | How it was caught |
+|---|---|
+| H8 (variant additions don't bump page_hash) | Reading `compute_page_hash` with edge-case eyes — "what does this not see?" The function only emitted one tuple per COMPONENT_SET, never descended. Tested by writing the test that would fail under the bug, then fixing. |
+| H9 (compute_frame_hashes empty for components) | Reading `compute_frame_hashes` alongside `stale_frame_ids` — tracing what staleness detection would actually fire on for a component-only page. Answer: never. |
+| H10 (legacy collision file as undetectable orphan) | Reading `prune_utils._NODE_SUFFIX_RE` and asking "what files does this regex actively reject?" The legacy synthetic filename, which has no digit-digit suffix, is rejected. Cross-checked against pull_logic's migration code which uses the same regex via `_node_suffix_from_relpath`. |
+| H11 (mixed SECTION drops components) | Reading the existing test `test_section_with_both_frames_and_components_classifies_as_screen` and asking why this is the desired behavior. It isn't — it's data loss. The test was pinning a bug, not a rule. |
+| H12 (doctor doesn't surface partial-pulls) | "What would have caught the original 215-page bug 6 months earlier?" Doctor would have, if it knew the shape. Adding the check is cheap. |
+
+Detection lessons:
+1. **Tests can pin bugs as "rules"** — read them sceptically. The
+   single-line comment "Frames win: only the FRAME is rendered as a
+   row, not the COMPONENT_SET" was load-bearing data loss.
+2. **Regex allowlists silently exclude.** Any path-classifier regex
+   that rejects valid input is a bug source. Walk every literal
+   filename the codebase ever wrote and check membership.
+3. **Two correct unit tests can sandwich a wrong integration.** H6
+   was the canonical case; H10 was its echo at the path layer. If the
+   test surface only checks "in-memory id is unique", the file path
+   surface can still collide.
+4. **"Rare in practice" is not the same as "won't happen".** H8 and
+   H11 both involve user shapes designers actually adopt; the bug had
+   probably been silently dropping data for years. The 215-page
+   manifest backlog was the visible symptom.
 
 ## Honest limitations
 
@@ -278,12 +462,16 @@ suite alone), full suite green at most recent push.
 | Path | Change |
 |---|---|
 | `figmaclaw/figma_schema.py` | new constants `UNGROUPED_COMPONENTS_SECTION`, `UNGROUPED_COMPONENTS_NODE_ID` |
-| `figmaclaw/figma_models.py` | top-level `is_component(child)` branch in `from_page_node`; page-scoped synthetic id |
-| `figmaclaw/figma_hash.py` | `compute_page_hash` includes COMPONENT/COMPONENT_SET tuples (depth-1 and grandchild-of-SECTION) |
-| `figmaclaw/figma_frontmatter.py` | `CURRENT_PULL_SCHEMA_VERSION: int = 8` |
+| `figmaclaw/figma_models.py` | top-level `is_component(child)` branch in `from_page_node`; page-scoped synthetic id; mixed-SECTION sibling synthetic emission (H11) |
+| `figmaclaw/figma_hash.py` | `compute_page_hash` includes COMPONENT/COMPONENT_SET + variants; `compute_frame_hashes` covers component nodes (H8/H9) |
+| `figmaclaw/figma_frontmatter.py` | `CURRENT_PULL_SCHEMA_VERSION: int = 9` + changelog |
+| `figmaclaw/prune_utils.py` | exact-match allowlist for legacy collision file (H10) |
+| `figmaclaw/pull_logic.py` | legacy → per-page synthetic migration on v8→v9 transition (H10) |
+| `figmaclaw/commands/doctor.py` | partial-pull detection in manifest walk (H12) |
 | `tests/test_unavailable_idempotency.py` | new — H1 regression suite |
 | `tests/test_top_level_component_pages.py` | new — H2/H6 regression suite |
-| `tests/test_pull_logic.py` | added 7 to `TESTED_UPGRADE_FROM_VERSIONS`; new v7→v8 convergence test |
-| `tests/test_pr_129_adversarial.py` | new — 22 adversarial / GAP tests |
-| `docs/pr-129-investigation-agent-A.md` | working notebook (H1-H7 hypotheses, status, evidence) |
+| `tests/test_pull_logic.py` | TESTED_UPGRADE_FROM_VERSIONS += {7, 8}; new v7→v8 and v8→v9 convergence tests |
+| `tests/test_pr_129_adversarial.py` | 30+ adversarial tests covering H8-H11 |
+| `tests/test_doctor.py` | partial-pull positive + negative tests |
+| `docs/pr-129-investigation-agent-A.md` | working notebook (H1-H13 hypotheses, status, evidence) |
 | `docs/pr-129-final-report-agent-A.md` | this file |
