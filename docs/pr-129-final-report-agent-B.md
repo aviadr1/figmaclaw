@@ -96,6 +96,18 @@ and sidecars without parsing markdown prose.
   errors occur, while still asserting body preservation on successful live data.
 * **Commit.** `60bfbb4`.
 
+### B9 — MCP read-only transients and API 429s need bounded live-smoke recovery
+
+* **Bug class found by PR CI.** Head `3bb07ff` failed `smoke-mcp-ci` because
+  Figma MCP returned `Operation attempted to modify the file while in read-only
+  mode` during DS variable export. The same run failed `smoke-api-ci` because
+  Figma returned 429s before the affected tests had complete setup data.
+* **Fix / lock.** Production MCP variable export retries that read-only
+  transient with a bounded retry. The live API smoke skips only when 429/page
+  errors make setup or verification inconclusive, while preserving strict
+  assertions when data was fetched successfully.
+* **Commit.** pending follow-up.
+
 ## Live CI evidence
 
 | Run | Repo | Outcome | Evidence |
@@ -106,6 +118,7 @@ and sidecars without parsing markdown prose.
 | `25093203810` | `linear-git` | red | Revealed merge-pull recovery can conflict on generated `ds_catalog.json`; fixed in `60bfbb4`. |
 | `25093287379` | `linear-git` | green | Full workflow succeeded after transient-MCP fix; catalog reached schema v2, 66 libraries, 1807 variables, 52 MCP-authoritative libraries, 14 unavailable libraries, Tap In DS 304 variables. |
 | `25097977016` | `figmaclaw` | green | PR CI on head `60bfbb4`: ruff, typecheck, tests, CodeQL, smoke-webhook, smoke-mcp, and smoke-api all passed. |
+| `25099061473` | `figmaclaw` | red with finding | Head `3bb07ff` exposed late live-smoke transients: MCP read-only variable export and API 429 setup failures. Fixed in the pending follow-up. |
 | `25098005988` | `linear-git` | in progress at report time | Full consumer proof run dispatched after `60bfbb4`; sync was still running while this report was written. |
 
 ## Local proof
@@ -175,4 +188,3 @@ MCP returned file-level errors or access limitations for those files.
 * Add a PR checklist item that every graceful fallback also has a strict proof
   mode. The absence of that distinction is what let "green but unavailable"
   runs look acceptable earlier.
-

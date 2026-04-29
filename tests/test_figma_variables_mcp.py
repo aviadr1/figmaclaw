@@ -169,3 +169,47 @@ async def test_get_local_variables_via_mcp_runner_assembles_compact_chunks() -> 
     collection = response.meta.variableCollections["VariableCollectionId:1:0"]
     assert collection.variableIds == ["VariableID:libabc/1:1", "VariableID:libabc/1:2"]
     assert response.meta.variables["VariableID:libabc/1:2"].valuesByMode["1:0"] == 8
+
+
+@pytest.mark.asyncio
+async def test_get_local_variables_via_mcp_runner_retries_read_only_transient() -> None:
+    attempts = 0
+
+    async def use_figma(_file_key: str, _code: str, description: str) -> dict:
+        nonlocal attempts
+        attempts += 1
+        if description == "Export local variable collection summary" and attempts == 1:
+            return {
+                "isError": True,
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Operation attempted to modify the file while in read-only mode.",
+                    }
+                ],
+            }
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": json.dumps(
+                        {
+                            "status": 200,
+                            "error": False,
+                            "meta": {"variable_count": 0, "collections": []},
+                        }
+                    ),
+                }
+            ]
+        }
+
+    response = await _get_local_variables_via_mcp_runner(
+        use_figma,
+        file_key="file123",
+        chunk_size=50,
+        retry_attempts=2,
+        retry_delay_seconds=0,
+    )
+
+    assert attempts == 2
+    assert response.meta.variables == {}

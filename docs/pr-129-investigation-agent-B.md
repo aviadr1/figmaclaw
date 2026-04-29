@@ -74,6 +74,17 @@ Adversarial testing of PR 129 through the real `linear-git` consumer shape:
   because `FIGMA_MCP_TOKEN` is not configured. The new guard makes the same
   requirement expressible for normal variables workflow calls.
 
+### B7 — live smoke tests must distinguish transient setup failure from invariant failure
+
+* **Status.** Hardened after PR CI on `3bb07ff`.
+* **Result.** Figma live smoke jobs exposed two external transient paths: REST
+  page fetches can still return 429 after client retries, and MCP variable
+  export can return the plugin-runtime read-only error for a single attempt.
+  The MCP variables export now retries the read-only transient. Live API smoke
+  assertions now skip only when page errors make the setup/verification
+  inconclusive; completed live data still has strict assertions.
+* **Commits.** pending follow-up.
+
 ## Current external blocker
 
 The `linear-git` PR-wired branch currently has a schema-v2 catalog, but all

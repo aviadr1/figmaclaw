@@ -9,6 +9,7 @@ same local variable definitions through ``figma.variables``.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -17,6 +18,11 @@ from figmaclaw.figma_api_models import FigmaAPIValidationError, LocalVariablesRe
 from figmaclaw.figma_mcp import FigmaMcpClient, FigmaMcpError
 
 _MCP_VARIABLE_CHUNK_SIZE = 50
+_MCP_EXPORT_RETRY_ATTEMPTS = 3
+_MCP_EXPORT_RETRY_DELAY_SECONDS = 2.0
+_TRANSIENT_MCP_EXPORT_ERRORS = (
+    "operation attempted to modify the file while in read-only mode",
+)
 
 _MCP_VARIABLES_COMMON_JS = r"""
 const variablesApi = figma.variables;
@@ -184,10 +190,14 @@ async def get_local_variables_via_mcp(
     *,
     client: FigmaMcpClient | None = None,
     chunk_size: int = _MCP_VARIABLE_CHUNK_SIZE,
+    retry_attempts: int = _MCP_EXPORT_RETRY_ATTEMPTS,
+    retry_delay_seconds: float = _MCP_EXPORT_RETRY_DELAY_SECONDS,
 ) -> LocalVariablesResponse:
     """Read local variable definitions from Figma through MCP ``use_figma``."""
     if chunk_size <= 0:
         raise ValueError("chunk_size must be > 0")
+    if retry_attempts <= 0:
+        raise ValueError("retry_attempts must be > 0")
 
     mcp = client or FigmaMcpClient.auto()
     async with mcp.session(timeout=120.0) as sess:
@@ -195,6 +205,8 @@ async def get_local_variables_via_mcp(
             sess.use_figma,
             file_key=file_key,
             chunk_size=chunk_size,
+            retry_attempts=retry_attempts,
+            retry_delay_seconds=retry_delay_seconds,
         )
 
 
@@ -203,24 +215,30 @@ async def _get_local_variables_via_mcp_runner(
     *,
     file_key: str,
     chunk_size: int,
+    retry_attempts: int = _MCP_EXPORT_RETRY_ATTEMPTS,
+    retry_delay_seconds: float = _MCP_EXPORT_RETRY_DELAY_SECONDS,
 ) -> LocalVariablesResponse:
-    summary_result = await use_figma(
-        file_key,
-        _EXPORT_LOCAL_VARIABLES_SUMMARY_JS,
-        "Export local variable collection summary",
+    summary = await _json_payload_from_mcp_call_with_retry(
+        use_figma,
+        file_key=file_key,
+        code=_EXPORT_LOCAL_VARIABLES_SUMMARY_JS,
+        description="Export local variable collection summary",
+        retry_attempts=retry_attempts,
+        retry_delay_seconds=retry_delay_seconds,
     )
-    summary = _json_payload_from_mcp_result(summary_result, file_key=file_key)
     meta = summary.get("meta", {})
     total = int(meta.get("variable_count", 0))
 
     variables: dict[str, Any] = {}
     for offset in range(0, total, chunk_size):
-        chunk_result = await use_figma(
-            file_key,
-            _export_local_variables_chunk_js(offset, chunk_size),
-            f"Export local variable definitions {offset}-{offset + chunk_size}",
+        chunk = await _json_payload_from_mcp_call_with_retry(
+            use_figma,
+            file_key=file_key,
+            code=_export_local_variables_chunk_js(offset, chunk_size),
+            description=f"Export local variable definitions {offset}-{offset + chunk_size}",
+            retry_attempts=retry_attempts,
+            retry_delay_seconds=retry_delay_seconds,
         )
-        chunk = _json_payload_from_mcp_result(chunk_result, file_key=file_key)
         for row in chunk.get("meta", {}).get("variables", []):
             variable = _expand_variable_row(row)
             variables[variable["id"]] = variable
@@ -288,6 +306,37 @@ def _json_payload_from_mcp_result(result: dict[str, Any], *, file_key: str) -> d
     raise FigmaMcpError(
         f"MCP variables export did not return a JSON payload: {_mcp_text(result)[:500]}"
     )
+
+
+async def _json_payload_from_mcp_call_with_retry(
+    use_figma: Callable[[str, str, str], Awaitable[dict[str, Any]]],
+    *,
+    file_key: str,
+    code: str,
+    description: str,
+    retry_attempts: int,
+    retry_delay_seconds: float,
+) -> dict[str, Any]:
+    last_error: FigmaMcpError | None = None
+    for attempt in range(1, retry_attempts + 1):
+        result = await use_figma(file_key, code, description)
+        try:
+            return _json_payload_from_mcp_result(result, file_key=file_key)
+        except FigmaMcpError as exc:
+            last_error = exc
+            if attempt >= retry_attempts or not _is_transient_mcp_export_error(exc):
+                raise
+            if retry_delay_seconds > 0:
+                await asyncio.sleep(retry_delay_seconds)
+
+    if last_error is not None:
+        raise last_error
+    raise FigmaMcpError("MCP variables export failed before any attempt ran")
+
+
+def _is_transient_mcp_export_error(exc: FigmaMcpError) -> bool:
+    message = str(exc).lower()
+    return any(fragment in message for fragment in _TRANSIENT_MCP_EXPORT_ERRORS)
 
 
 def _expand_variable_row(row: Any) -> dict[str, Any]:
