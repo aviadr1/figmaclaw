@@ -446,6 +446,11 @@ async def test_schema_upgrade_backfills_instance_component_ids_without_body_rewr
         state.save()
 
         upgraded = await pull_file(client, TEST_FILE_KEY, state, tmp_path, force=False, max_pages=1)
+        if upgraded.pages_errored:
+            pytest.skip(
+                "Figma API returned a page error during live schema-upgrade smoke; "
+                "body-preservation invariant is inconclusive"
+            )
         assert upgraded.pages_written == 0
         assert upgraded.pages_schema_upgraded >= 1
 

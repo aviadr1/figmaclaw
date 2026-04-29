@@ -86,4 +86,29 @@ jobs:
           fi
 
       - name: Push
-        run: git push || (git pull --no-rebase origin "${{ inputs.target_ref }}" && git push)
+        env:
+          FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+          FIGMA_VARIABLES_TOKEN: ${{ secrets.FIGMA_VARIABLES_TOKEN }}
+          FIGMA_MCP_TOKEN: ${{ secrets.FIGMA_MCP_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if git push; then
+            exit 0
+          fi
+
+          echo "Push rejected; replaying variables refresh on latest ${{ inputs.target_ref }}"
+          git fetch origin "${{ inputs.target_ref }}"
+          git reset --hard "origin/${{ inputs.target_ref }}"
+
+          REQUIRE_AUTHORITATIVE=""
+          if [ "${{ inputs.require_authoritative }}" = "true" ]; then
+            REQUIRE_AUTHORITATIVE="--require-authoritative"
+          fi
+          if [ -n "${{ inputs.file_key }}" ]; then
+            figmaclaw variables --file-key "${{ inputs.file_key }}" --source "${{ inputs.variables_source }}" $REQUIRE_AUTHORITATIVE --auto-commit
+          else
+            figmaclaw variables --source "${{ inputs.variables_source }}" $REQUIRE_AUTHORITATIVE --auto-commit
+          fi
+
+          git push

@@ -45,11 +45,14 @@ Adversarial testing of PR 129 through the real `linear-git` consumer shape:
 
 ### B4 — variables workflow must not lose work on concurrent pushes
 
-* **Status.** Done.
-* **Result.** The reusable variables workflow now recovers rejected pushes with
-  a merge pull instead of `--ff-only`, so local variables commits survive remote
-  census/enrichment commits.
-* **Commit.** `f7cee67`.
+* **Status.** Hardened after live CI conflict.
+* **Result.** The first fix changed rejected-push recovery from `--ff-only` to a
+  merge pull. A later `linear-git` run proved that is still insufficient for the
+  generated `.figma-sync/ds_catalog.json`: the merge can conflict. The reusable
+  variables workflow now treats rejected pushes as stale generated output,
+  resets only the ephemeral CI checkout to the newest remote branch, reruns the
+  deterministic variables refresh, and pushes the recomputed catalog.
+* **Commits.** `f7cee67` plus the follow-up workflow replay fix.
 
 ### B5 — missing MCP credentials should not repeat failed fallback work per file
 
