@@ -276,6 +276,44 @@ def test_variables_command_does_not_retry_missing_mcp_credentials_per_file(
     assert data["libraries"]["local:file456"]["source"] == "unavailable"
 
 
+def test_variables_command_retries_mcp_after_transient_file_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A per-file MCP export error must not poison later files in the run."""
+    _track_two_files(tmp_path)
+    monkeypatch.setenv("FIGMA_API_KEY", "figd_test")
+    fake = _FakeClient(None, version="v8")
+    mcp_response = LocalVariablesResponse.model_validate(_variables("mcplib2"))
+    mcp_export = AsyncMock(
+        side_effect=[
+            FigmaMcpError(
+                "MCP variables export failed: Operation attempted to modify the file while in read-only mode."
+            ),
+            mcp_response,
+        ]
+    )
+
+    with (
+        patch("figmaclaw.commands.variables.FigmaClient", return_value=fake),
+        patch("figmaclaw.commands.variables.get_local_variables_via_mcp", mcp_export),
+    ):
+        result = CliRunner().invoke(
+            cli,
+            ["--repo-dir", str(tmp_path), "variables"],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0
+    assert fake.variables_calls == 2
+    assert mcp_export.await_count == 2
+    assert "file123: Figma MCP variables fallback unavailable" in result.output
+    assert "Product File: refreshed 1 variable(s) via figma_mcp" in result.output
+
+    data = json.loads((tmp_path / ".figma-sync" / "ds_catalog.json").read_text())
+    assert data["libraries"][f"local:{FILE_KEY}"]["source"] == "unavailable"
+    assert data["libraries"]["mcplib2"]["source"] == "figma_mcp"
+
+
 def test_variables_command_source_mcp_skips_rest_variables(tmp_path: Path, monkeypatch) -> None:
     """Explicit MCP mode uses the plugin-runtime reader directly."""
     _track(tmp_path)

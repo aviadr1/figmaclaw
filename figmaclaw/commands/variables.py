@@ -245,4 +245,21 @@ async def _get_local_variables(
         if source == "mcp":
             raise
         click.echo(f"{file_key}: Figma MCP variables fallback unavailable — {exc}")
-        return None, "figma_mcp", str(exc)
+        reason = str(exc)
+        if _is_persistent_mcp_unavailable(reason):
+            return None, "figma_mcp", reason
+        return None, "figma_mcp", mcp_unavailable_reason
+
+
+def _is_persistent_mcp_unavailable(reason: str) -> bool:
+    """True for configuration failures that will repeat for every file."""
+    normalized = reason.lower()
+    return any(
+        marker in normalized
+        for marker in (
+            "figma_mcp_token",
+            "credentials file not found",
+            "no figma mcp token",
+            "no figma token",
+        )
+    )
