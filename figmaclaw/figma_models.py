@@ -124,9 +124,12 @@ def from_page_node(page_node: dict, *, file_key: str, file_name: str) -> FigmaPa
     Tree traversal rules:
 
     * ``SECTION`` nodes at the top level → :class:`FigmaSection` with
-      visible FRAME children.
+      visible FRAME and/or component children. Canon: NC-1, NC-2.
     * ``FRAME`` nodes at the top level (not inside a SECTION) → collected
       into a synthetic ``(Ungrouped)`` section.
+    * ``COMPONENT`` / ``COMPONENT_SET`` nodes at the top level → collected
+      into a source-scoped synthetic ``(Ungrouped components)`` section.
+      Canon: PP-1, NC-1, SI-1.
     * ``CONNECTOR``, ``TEXT``, ``VECTOR`` and other non-visual nodes →
       filtered out via :func:`figma_schema.is_structural` /
       :func:`figma_schema.is_component`.
@@ -141,7 +144,7 @@ def from_page_node(page_node: dict, *, file_key: str, file_name: str) -> FigmaPa
 
     sections: list[FigmaSection] = []
     ungrouped_frames: list[FigmaFrame] = []
-    # Top-level COMPONENT/COMPONENT_SET nodes that aren't wrapped in a SECTION
+    # Canon PP-1 / NC-1: top-level COMPONENT/COMPONENT_SET nodes that aren't wrapped in a SECTION
     # — collected into a synthetic component-library section below so the
     # page produces a non-empty manifest entry and a component .md, instead
     # of dropping silently with md_path=null and component_md_paths=[].
@@ -171,7 +174,7 @@ def from_page_node(page_node: dict, *, file_key: str, file_name: str) -> FigmaPa
             all_frames_for_flows.extend(frame_nodes)
 
             if frame_nodes and component_nodes:
-                # Mixed shape: a SECTION carries both FRAMEs (screens or
+                # Canon NC-2 / SI-1: a mixed SECTION carries both FRAMEs (screens or
                 # usage examples) and COMPONENT_SETs (the actual library
                 # components on the side). Pre-v9 the components were
                 # silently dropped — "frames win, components disappear" —
@@ -235,7 +238,7 @@ def from_page_node(page_node: dict, *, file_key: str, file_name: str) -> FigmaPa
         )
 
     if ungrouped_components:
-        # Page-scoped synthetic node_id. Without this, every page that has
+        # Canon SI-1: page-scoped synthetic node_id. Without this, every page that has
         # top-level COMPONENT_SETs would produce a section with the same
         # constant node_id (UNGROUPED_COMPONENTS_NODE_ID), and pull_logic's
         # component_path slug computation would collide:

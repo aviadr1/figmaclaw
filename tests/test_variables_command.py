@@ -250,7 +250,7 @@ def test_variables_command_auto_falls_back_to_mcp_definitions(tmp_path: Path, mo
 def test_variables_command_does_not_retry_missing_mcp_credentials_per_file(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """INVARIANT: one missing-MCP-token verdict is enough for one variables run."""
+    """INVARIANT ERR-1: persistent missing credentials can be cached per run."""
     _track_two_files(tmp_path)
     monkeypatch.setenv("FIGMA_API_KEY", "figd_test")
     fake = _FakeClient(None, version="v5")
@@ -279,7 +279,7 @@ def test_variables_command_does_not_retry_missing_mcp_credentials_per_file(
 def test_variables_command_retries_mcp_after_transient_file_error(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """A per-file MCP export error must not poison later files in the run."""
+    """INVARIANT ERR-1: a transient per-file MCP error must not poison later files."""
     _track_two_files(tmp_path)
     monkeypatch.setenv("FIGMA_API_KEY", "figd_test")
     fake = _FakeClient(None, version="v8")
@@ -349,7 +349,7 @@ def test_variables_command_source_mcp_skips_rest_variables(tmp_path: Path, monke
 def test_variables_command_require_authoritative_fails_on_unavailable(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """CI smoke can require real definitions instead of fallback markers."""
+    """INVARIANT AUTH-1: strict proof fails on unavailable fallback markers."""
     _track(tmp_path)
     monkeypatch.setenv("FIGMA_API_KEY", "figd_test")
     fake = _FakeClient(None, version="v6")
@@ -380,7 +380,7 @@ def test_variables_command_require_authoritative_fails_on_unavailable(
 def test_variables_command_require_authoritative_accepts_definitions(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """Authoritative requirement passes when REST or MCP produced definitions."""
+    """INVARIANT AUTH-1: strict proof passes when REST or MCP produced definitions."""
     _track(tmp_path)
     monkeypatch.setenv("FIGMA_API_KEY", "figd_test")
     fake = _FakeClient(LocalVariablesResponse.model_validate(_variables()), version="v7")

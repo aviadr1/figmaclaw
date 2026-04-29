@@ -2145,7 +2145,7 @@ async def test_schema_upgrade_v6_to_v7_prunes_orphan_enriched_frame_hashes(tmp_p
 
 @pytest.mark.asyncio
 async def test_schema_upgrade_v7_to_v8_heals_top_level_component_only_pages(tmp_path: Path):
-    """INVARIANT for v8 schema bump: a v7-era page whose only children are
+    """INVARIANT PP-1 / NC-1 / HSH-1: a v7-era page whose only children are
     top-level COMPONENT_SETs gets re-rendered on the next pull.
 
     Under v7, ``compute_page_hash`` produced ``sha256("[]")[:16]`` for these
@@ -2252,7 +2252,7 @@ async def test_schema_upgrade_v7_to_v8_heals_top_level_component_only_pages(tmp_
 
 @pytest.mark.asyncio
 async def test_schema_upgrade_v8_to_v9_picks_up_variant_changes(tmp_path: Path):
-    """INVARIANT for v9 schema bump: a v8-era manifest entry whose page
+    """INVARIANT HSH-1: a v8-era manifest entry whose page
     has had a variant added inside a COMPONENT_SET must re-render after
     the v9 upgrade, even though the v8 hash would have ignored the change.
 

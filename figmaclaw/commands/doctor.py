@@ -143,7 +143,7 @@ def doctor_cmd(ctx: click.Context) -> None:
                 _check("pull schema current", True, f"v{CURRENT_PULL_SCHEMA_VERSION}")
                 passed += 1
 
-            # 6b. Partial-pull check (PR 129 H2): a page with md_path=None
+            # 6b. Canon PP-1 / partial-pull check (PR 129 H2): a page with md_path=None
             # AND component_md_paths=[] AND not a deliberate skip is the
             # exact "stuck" shape we shipped v8/v9 to fix. If any survive,
             # surface them so the user knows a pull is needed (typically

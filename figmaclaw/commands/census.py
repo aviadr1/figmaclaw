@@ -197,6 +197,7 @@ async def _run(
                 # No published component sets — skip by default (e.g. product files).
                 # For an explicitly requested file, report the empty registry so
                 # operators can distinguish "not published" from "command missed it".
+                # Canon: REG-1 (explicit registry state).
                 if file_key:
                     click.echo(f"{file_name}: 0 published component set(s)")
                 continue

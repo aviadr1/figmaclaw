@@ -37,7 +37,8 @@ the normalized form from :func:`figma_schema.normalize_name`. This is
 deliberate: applying normalization here would change every stored
 ``enriched_hash`` value in downstream repos and trigger mass re-enrichment.
 Hash stability across code changes is the invariant; human readability is
-the renderer's job, not the hash layer's.
+the renderer's job, not the hash layer's. Canon: NC-1 and HSH-1 define the
+coverage contract between renderable units and hash inputs.
 """
 
 from __future__ import annotations
@@ -61,7 +62,7 @@ def compute_page_hash(page_node: dict) -> str:
 
     * Visible FRAME and SECTION nodes at depth 1.
     * Visible FRAME / SECTION grandchildren inside visible SECTIONs.
-    * Visible COMPONENT and COMPONENT_SET nodes at depth 1 (otherwise the
+    * Visible COMPONENT and COMPONENT_SET nodes at depth 1 (canon NC-1; otherwise the
       hash collapses to the empty-list digest for component-only pages
       where designers placed COMPONENT_SETs directly on the canvas — Tier 2
       of the refresh ladder then short-circuits forever and the page
@@ -70,7 +71,7 @@ def compute_page_hash(page_node: dict) -> str:
     * Visible COMPONENT and COMPONENT_SET grandchildren inside visible
       SECTIONs (so the hash reflects component renames inside library
       sections too).
-    * Visible COMPONENT children of any COMPONENT_SET (variants),
+    * Visible COMPONENT children of any COMPONENT_SET (variants, canon HSH-1),
       regardless of where the COMPONENT_SET sits on the page. Without
       this, adding / removing / renaming a variant doesn't bump the
       hash and the rendered variant table on disk goes stale silently.
@@ -173,7 +174,7 @@ def compute_frame_hash(frame_node: dict) -> str:
 def compute_frame_hashes(page_node: dict) -> dict[str, str]:
     """Compute content hashes for all **visible** rendered units in a page.
 
-    "Rendered unit" includes:
+    "Rendered unit" includes the canon NC-1 renderable unit set:
 
     * Top-level FRAMEs and FRAMEs nested inside a visible SECTION (screen
       content; hashed via :func:`compute_frame_hash`).

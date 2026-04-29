@@ -4,13 +4,15 @@ These probe the boundaries of:
 
 * ``from_page_node`` traversal — invisible parents, mixed children,
   duplicate names, real sections that happen to share a synthetic name.
+  Canon: NC-1, NC-2, SI-1.
 * ``compute_page_hash`` — order independence, invisible-child stability,
   variant-inside-COMPONENT_SET detection (Tier 2 short-circuit gap).
+  Canon: HSH-1.
 * ``compute_frame_hashes`` — coverage of all rendered units, including
-  top-level COMPONENT/COMPONENT_SETs (currently NOT covered, documented
-  as a gap below).
+  top-level COMPONENT/COMPONENT_SETs. Canon: NC-1, HSH-1.
 * ``slugify`` and ``component_path`` — ensure synthetic component
   sections cannot collide across pages, even with adversarial names.
+  Canon: SI-1.
 * ``parse_section_heading`` round-trip for the synthetic
   ``(Ungrouped components)`` section.
 
@@ -189,7 +191,7 @@ def test_compute_page_hash_changes_when_visibility_flips() -> None:
 
 
 def test_adding_variant_inside_top_level_component_set_changes_page_hash() -> None:
-    """Adding a COMPONENT *inside* an existing COMPONENT_SET MUST bump the
+    """INVARIANT HSH-1: adding a COMPONENT inside a COMPONENT_SET bumps the
     page hash so the rendered variant table picks up the new row on the
     next pull. Closed in pull-schema v9 by descending one level into
     COMPONENT_SETs in compute_page_hash."""
@@ -213,7 +215,7 @@ def test_adding_variant_inside_top_level_component_set_changes_page_hash() -> No
 
 
 def test_renaming_variant_inside_top_level_component_set_changes_page_hash() -> None:
-    """Renaming a variant must bump the hash so the new variant name
+    """INVARIANT HSH-1: renaming a variant must bump the hash so the new variant name
     flows through into the rendered .md."""
     before = _page(
         "1:0",
@@ -329,7 +331,7 @@ def test_variant_order_does_not_change_page_hash() -> None:
 
 
 def test_compute_frame_hashes_includes_top_level_component_sets() -> None:
-    """Closed in pull-schema v9: top-level COMPONENT_SETs now get
+    """INVARIANT NC-1 / HSH-1: top-level COMPONENT_SETs now get
     per-unit content hashes alongside FRAMEs. Required so per-variant
     staleness detection can fire on component-library pages."""
     page_node = _page(
@@ -417,7 +419,9 @@ def test_compute_frame_hash_changes_on_variant_rename_via_frame_hashes() -> None
 
 
 def test_synthetic_component_section_path_unique_across_two_real_pages() -> None:
-    """End-to-end: simulate the path that pull_logic computes for the
+    """INVARIANT SI-1: synthetic component section paths are source-scoped.
+
+    End-to-end: simulate the path that pull_logic computes for the
     synthetic component section on two distinct pages. The resulting
     component .md paths MUST be different — otherwise the second page's
     write silently overwrites the first.
@@ -464,7 +468,9 @@ def test_legacy_synthetic_basename_constant_is_exact() -> None:
 
 
 def test_legacy_collision_synthetic_component_path_is_recognized_as_generated() -> None:
-    """The pre-H6 synthetic filename has no digit-digit suffix, so the
+    """INVARIANT MIG-1: legacy generated synthetic names remain owned.
+
+    The pre-H6 synthetic filename has no digit-digit suffix, so the
     canonical ``_NODE_SUFFIX_RE`` regex doesn't match it. Without an
     explicit allow, ``find_generated_orphans`` would skip the file and
     leave a stale, corrupted (last-writer-wins across multiple pages)
@@ -669,7 +675,9 @@ def test_top_level_component_with_no_variants_still_renders_as_frame_row() -> No
 
 
 def test_section_with_both_frames_and_components_emits_two_sibling_sections() -> None:
-    """When a SECTION has BOTH FRAMEs and COMPONENT_SETs, the original
+    """INVARIANT NC-2: mixed SECTIONs preserve both frames and components.
+
+    When a SECTION has BOTH FRAMEs and COMPONENT_SETs, the original
     SECTION becomes a screen section (with frames) AND a sibling
     synthetic component section is emitted (with the COMPONENT_SETs).
 

@@ -26,6 +26,7 @@
 # # to the existing ``(Ungrouped)`` synthesis for top-level FRAMEs), and
 # # ``compute_page_hash`` includes top-level COMPONENT/COMPONENT_SETs so the
 # # hash is meaningful for component-only pages.
+# # Canon: PP-1, NC-1, HSH-1, SI-1.
 #
 # Real-world evidence: the linear-git ``❖ Design System`` file has 14 pages
 # with ``md_path: null`` in the manifest. 9 of them have ``page_hash:
@@ -71,6 +72,7 @@ def _tooltip_help_icon_page_node() -> dict:
 
 
 def test_from_page_node_picks_up_top_level_component_sets() -> None:
+    """INVARIANT NC-1 / PP-1: top-level components produce generated output."""
     page = from_page_node(
         _tooltip_help_icon_page_node(),
         file_key="AZswXfXwfx2fff3RFBMo8h",
@@ -95,7 +97,7 @@ def test_from_page_node_picks_up_top_level_component_sets() -> None:
 
 
 def test_compute_page_hash_changes_when_top_level_components_change() -> None:
-    """The page hash must depend on top-level COMPONENT/COMPONENT_SETs.
+    """INVARIANT NC-1 / HSH-1: page hash depends on top-level components.
 
     Otherwise editing or adding a top-level component leaves the hash
     constant (the empty-list digest), Tier 2 of the refresh ladder
@@ -123,7 +125,9 @@ def test_compute_page_hash_changes_when_top_level_components_change() -> None:
 
 
 def test_two_pages_with_top_level_components_produce_distinct_section_ids() -> None:
-    """Real-world bug found in CI on 2026-04-29: two pages in the same file
+    """INVARIANT SI-1: synthetic component section IDs are source-scoped.
+
+    Real-world bug found in CI on 2026-04-29: two pages in the same file
     (☼ Logo and ☼ App Icon) both produced an ``(Ungrouped components)`` section
     with the SAME constant node_id. pull_logic derives the component .md
     path from ``slugify(section.name) + "-" + section.node_id`` which then
@@ -195,7 +199,9 @@ def test_invisible_top_level_component_set_is_skipped() -> None:
 
 
 def test_mixed_top_level_frames_and_component_sets_produce_both_sections() -> None:
-    """Real-world pages can have both top-level FRAMEs (screen content)
+    """INVARIANT NC-1: mixed top-level renderable units all survive.
+
+    Real-world pages can have both top-level FRAMEs (screen content)
     and top-level COMPONENT_SETs (library components). Each must produce
     its own synthetic section — the existing ``(Ungrouped)`` for frames
     and the new ``(Ungrouped components)`` for components — not collapse
@@ -233,7 +239,9 @@ def test_mixed_top_level_frames_and_component_sets_produce_both_sections() -> No
 
 
 def test_top_level_component_only_page_round_trips_through_pull_shape() -> None:
-    """A page with only COMPONENT_SETs at the top level must end up with
+    """INVARIANT PP-1 / NC-1: component-only pages reach a terminal pull state.
+
+    A page with only COMPONENT_SETs at the top level must end up with
     at least one component section, so the manifest entry has either an
     md_path or non-empty component_md_paths — i.e. it cannot be the
     "partial-pull" shape (md_path=None AND component_md_paths=[]) that

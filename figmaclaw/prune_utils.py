@@ -10,7 +10,7 @@ from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
 
 _NODE_SUFFIX_RE = re.compile(r".*-\d+-\d+\.md$")
 
-# Legacy synthetic component-section filename written by the pre-H6 code
+# Canon MIG-1 / SI-1: legacy synthetic component-section filename written by the pre-H6 code
 # path for top-level COMPONENT/COMPONENT_SET pages. Multiple pages all
 # wrote to this single filename (last writer wins), so it is always
 # orphaned-on-arrival once H6 + the v9 hash bump take effect. Without

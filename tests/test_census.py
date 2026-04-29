@@ -174,7 +174,7 @@ class TestCensusSkipBehavior:
         tmp_path: Path,
         capsys: pytest.CaptureFixture[str],
     ):
-        """INVARIANT: explicit census probes report when a file has no published sets.
+        """INVARIANT REG-1: explicit census probes report when a file has no published sets.
 
         Silent no-op is fine for whole-repo census because most product files
         are not libraries. For ``--file-key`` diagnostics, silence hides the

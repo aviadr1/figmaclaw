@@ -97,7 +97,7 @@ def test_doctor_detects_workflow_files(tmp_path: Path) -> None:
 
 
 def test_doctor_reports_partial_pull_pages(tmp_path: Path) -> None:
-    """INVARIANT: doctor surfaces pages stuck in the partial-pull shape
+    """INVARIANT PP-1: doctor surfaces pages stuck in the partial-pull shape
     (md_path=None AND component_md_paths=[]). This was the silent
     failure mode that affected 215 pages of linear-git for months
     before PR 129. Detecting it in doctor lets consumer repos see the
@@ -139,7 +139,7 @@ def test_doctor_reports_partial_pull_pages(tmp_path: Path) -> None:
 
 
 def test_doctor_does_not_report_partial_pull_for_component_only_pages(tmp_path: Path) -> None:
-    """A page with md_path=None but component_md_paths populated is a
+    """INVARIANT PP-1: a page with md_path=None but component_md_paths populated is a
     valid component-only page (the H2 fix makes this the default state
     for top-level COMPONENT_SET pages). Must NOT be flagged as a
     partial-pull — false positives would erode trust in the check."""
@@ -181,7 +181,7 @@ def test_doctor_does_not_report_partial_pull_for_component_only_pages(tmp_path: 
 
 
 def test_doctor_counts_all_partial_pull_pages_not_only_first_five(tmp_path: Path) -> None:
-    """INVARIANT: doctor reports the true partial-pull count.
+    """INVARIANT PP-1: doctor reports the true partial-pull count.
 
     PR 129 found hundreds of linear-git entries in the empty-list-hash shape.
     Capping collection at five hides the blast radius and makes before/after

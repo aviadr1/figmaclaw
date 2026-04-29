@@ -176,6 +176,9 @@ async def _run(
                         click.echo("  ✓ committed")
 
         if require_authoritative:
+            # Canon AUTH-1: callers that claim authoritative token coverage must
+            # fail on unavailable/observed-only/zero-definition catalogs instead
+            # of letting downstream automation treat bridge data as DS truth.
             required_keys = [
                 key
                 for key in keys
@@ -229,6 +232,9 @@ async def _get_local_variables(
     *,
     mcp_unavailable_reason: str | None = None,
 ) -> tuple[LocalVariablesResponse | None, str, str | None]:
+    # Canon ERR-1: only persistent configuration absence is cached across files.
+    # Transient MCP/API failures must mark the current file unavailable but leave
+    # later files free to retry the fallback reader.
     if source in {"auto", "rest"}:
         response = await client.get_local_variables(file_key)
         if response is not None or source == "rest":

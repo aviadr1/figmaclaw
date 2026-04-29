@@ -77,6 +77,7 @@ jobs:
         run: |
           REQUIRE_AUTHORITATIVE=""
           if [ "${{ inputs.require_authoritative }}" = "true" ]; then
+            # Canon AUTH-1: proof workflows fail unless selected files have authoritative definitions.
             REQUIRE_AUTHORITATIVE="--require-authoritative"
           fi
           if [ -n "${{ inputs.file_key }}" ]; then
@@ -104,10 +105,13 @@ jobs:
 
           echo "Push rejected; replaying variables refresh on latest ${{ inputs.target_ref }}"
           git fetch origin "${{ inputs.target_ref }}"
+          # Canon WF-1: reset to latest source state and replay deterministic
+          # generation instead of merging stale generated JSON.
           git reset --hard "origin/${{ inputs.target_ref }}"
 
           REQUIRE_AUTHORITATIVE=""
           if [ "${{ inputs.require_authoritative }}" = "true" ]; then
+            # Canon AUTH-1: preserve strict proof semantics on replay.
             REQUIRE_AUTHORITATIVE="--require-authoritative"
           fi
           if [ -n "${{ inputs.file_key }}" ]; then

@@ -1246,7 +1246,7 @@ async def pull_file(
 
             written_component_rels: list[str] = []
             previous_component_by_suffix: dict[str, str] = {}
-            # The pre-H6 legacy synthetic path used a constant filename
+            # Canon MIG-1 / SI-1: the pre-H6 legacy synthetic path used a constant filename
             # shared across every page that had top-level COMPONENT_SETs
             # (last writer wins; data is corrupt). On the v9 transition
             # we want to migrate this away exactly once — whichever page

@@ -65,7 +65,7 @@ def test_concurrency_groups_are_isolated_by_workflow_role() -> None:
 
 
 def test_variables_reusable_workflow_replays_generated_catalog_on_push_conflict() -> None:
-    """INVARIANT: variables commits survive concurrent census/enrichment pushes.
+    """INVARIANT WF-1: variables commits survive concurrent census/enrichment pushes.
 
     The variables job can commit many file-scope catalog refreshes while census
     or enrichment jobs also push. Recovery after a rejected push must replay the
@@ -88,7 +88,7 @@ def test_variables_reusable_workflow_replays_generated_catalog_on_push_conflict(
 
 
 def test_variables_push_replay_branch_executes_under_bash_errexit(tmp_path: Path) -> None:
-    """INVARIANT: rejected-push replay is executable under GitHub's bash -e wrapper.
+    """INVARIANT WF-1: rejected-push replay is executable under GitHub's bash -e wrapper.
 
     The linear-git run 25098005988 proved that string-level workflow checks were
     not enough: the first rejected ``git push`` stopped the Push step before the
@@ -180,7 +180,7 @@ def test_variables_push_replay_branch_executes_under_bash_errexit(tmp_path: Path
 
 
 def test_variables_workflows_can_require_authoritative_definitions() -> None:
-    """INVARIANT: CI can fail loudly when only unavailable markers exist."""
+    """INVARIANT AUTH-1: CI can fail loudly when only unavailable markers exist."""
 
     reusable = (Path(__file__).parents[1] / ".github" / "workflows" / "variables.yml").read_text(
         encoding="utf-8"
