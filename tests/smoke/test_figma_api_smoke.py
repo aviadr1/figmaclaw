@@ -201,9 +201,7 @@ async def test_pull_is_idempotent_for_written_page_markdown(tmp_path, api_key: s
     async with FigmaClient(api_key=api_key) as client:
         first = await pull_file(client, TEST_FILE_KEY, state, tmp_path, force=False, max_pages=1)
         if first.pages_errored and first.pages_written + first.pages_schema_upgraded == 0:
-            pytest.skip(
-                "Figma API returned page errors before live idempotency setup wrote a page"
-            )
+            pytest.skip("Figma API returned page errors before live idempotency setup wrote a page")
         assert first.pages_written + first.pages_schema_upgraded > 0
 
         pages = state.manifest.files[TEST_FILE_KEY].pages
@@ -220,9 +218,7 @@ async def test_pull_is_idempotent_for_written_page_markdown(tmp_path, api_key: s
 
         second = await pull_file(client, TEST_FILE_KEY, state, tmp_path, force=False, max_pages=1)
         if second.pages_errored:
-            pytest.skip(
-                "Figma API returned page errors during live idempotency verification"
-            )
+            pytest.skip("Figma API returned page errors during live idempotency verification")
         assert second.pages_written == 0
         assert second.pages_schema_upgraded == 0
         md_after = page_md.read_text()
@@ -483,9 +479,7 @@ async def test_build_context_generates_valid_call_specs_from_real_pull_data(
     async with FigmaClient(api_key=api_key) as client:
         result = await pull_file(client, TEST_FILE_KEY, state, tmp_path, force=False, max_pages=1)
     if result.pages_errored and result.pages_written + result.pages_schema_upgraded == 0:
-        pytest.skip(
-            "Figma API returned page errors before live build-context setup wrote a page"
-        )
+        pytest.skip("Figma API returned page errors before live build-context setup wrote a page")
     assert result.pages_written + result.pages_schema_upgraded > 0
 
     pages = state.manifest.files[TEST_FILE_KEY].pages

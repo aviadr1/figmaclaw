@@ -20,9 +20,7 @@ from figmaclaw.figma_mcp import FigmaMcpClient, FigmaMcpError
 _MCP_VARIABLE_CHUNK_SIZE = 50
 _MCP_EXPORT_RETRY_ATTEMPTS = 3
 _MCP_EXPORT_RETRY_DELAY_SECONDS = 2.0
-_TRANSIENT_MCP_EXPORT_ERRORS = (
-    "operation attempted to modify the file while in read-only mode",
-)
+_TRANSIENT_MCP_EXPORT_ERRORS = ("operation attempted to modify the file while in read-only mode",)
 
 _MCP_VARIABLES_COMMON_JS = r"""
 const variablesApi = figma.variables;
