@@ -194,7 +194,11 @@ async def _run(
                 continue
 
             if not component_sets:
-                # No published component sets — skip silently (e.g. product files)
+                # No published component sets — skip by default (e.g. product files).
+                # For an explicitly requested file, report the empty registry so
+                # operators can distinguish "not published" from "command missed it".
+                if file_key:
+                    click.echo(f"{file_name}: 0 published component set(s)")
                 continue
 
             content_hash = _compute_hash(component_sets)
