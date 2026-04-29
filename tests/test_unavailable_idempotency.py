@@ -94,6 +94,7 @@ def stepping_clock(monkeypatch) -> Iterator[_SteppingClock]:
     monkeypatch.setattr("figmaclaw.token_catalog.datetime.datetime", _ProxyDatetime)
     yield clock
 
+
 DS_FILE_KEY = "AZswXfXwfx2fff3RFBMo8h"
 DS_FILE_NAME = "❖ Design System"
 FILE_VERSION = "2347065942124128936"
@@ -123,7 +124,7 @@ class _Unavailable403Client:
         )
         self.calls: list[str] = []
 
-    async def __aenter__(self) -> "_Unavailable403Client":
+    async def __aenter__(self) -> _Unavailable403Client:
         return self
 
     async def __aexit__(self, *_args: object) -> None:
@@ -143,7 +144,15 @@ def _run_variables(repo_dir: Path, monkeypatch, client: _Unavailable403Client):
     with patch("figmaclaw.commands.variables.FigmaClient", return_value=client):
         return CliRunner().invoke(
             cli,
-            ["--repo-dir", str(repo_dir), "variables", "--file-key", DS_FILE_KEY, "--source", "rest"],
+            [
+                "--repo-dir",
+                str(repo_dir),
+                "variables",
+                "--file-key",
+                DS_FILE_KEY,
+                "--source",
+                "rest",
+            ],
             catch_exceptions=False,
         )
 
@@ -297,9 +306,7 @@ def test_write_json_if_changed_strips_nested_ignore_keys(tmp_path: Path) -> None
             }
         },
     }
-    assert write_json_if_changed(
-        path, payload, ignore_keys=frozenset({"updated_at", "fetched_at"})
-    )
+    assert write_json_if_changed(path, payload, ignore_keys=frozenset({"updated_at", "fetched_at"}))
 
     payload_with_new_timestamps = {
         "schema_version": 2,
