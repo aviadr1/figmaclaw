@@ -12,6 +12,7 @@ MAX_PAGES_PER_BATCH="${MAX_PAGES_PER_BATCH:-5}"
 FIGMACLAW_OUT_PATH="${FIGMACLAW_OUT_PATH:-/tmp/figmaclaw-out.txt}"
 FIGMA_TEAM_ID="${FIGMA_TEAM_ID:-}"
 SINCE="${SINCE:-3m}"
+TARGET_REF="${TARGET_REF:-main}"
 FIGMACLAW_SYNC_OBS_DIR="${FIGMACLAW_SYNC_OBS_DIR:-}"
 # Delegate commit/push to figmaclaw itself at page granularity. Makes individual
 # pages durable in origin as soon as they're written, so a batch-level SIGKILL
@@ -112,7 +113,7 @@ commit_if_changed() {
   GIT_PUSH_S=0
 
   t0="$(date +%s)"
-  git pull --no-rebase --ff-only origin main >&2
+  git pull --no-rebase --ff-only origin "$TARGET_REF" >&2
   t1="$(date +%s)"
   GIT_PULL_S="$((t1 - t0))"
 

@@ -1,5 +1,7 @@
 # Sync Observability (Checkpoint Pull Loop)
 
+> **Canon cross-reference:** the refresh-trigger ladder that produces these `SYNC_OBS` events is canonized in [`figmaclaw-canon` §3](../skills/figmaclaw-canon/SKILL.md#3-refresh-trigger-ladder). This document remains authoritative for the *event taxonomy and artifact format*.
+
 This document defines the structured telemetry emitted by
 `scripts/checkpoint_pull_loop.sh` in reusable sync workflow runs.
 It also documents per-file pull telemetry emitted by `figmaclaw pull`.

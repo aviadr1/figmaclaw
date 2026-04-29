@@ -1,0 +1,123 @@
+# Reusable workflow — called by host repos via:
+#   uses: aviadr1/figmaclaw/.github/workflows/variables.yml@main
+#
+# Refreshes .figma-sync/ds_catalog.json from Figma local variables.
+# Version-gated: only writes and commits when a tracked file's variable
+# registry is stale relative to the current Figma file version.
+
+on:
+  workflow_call:
+    inputs:
+      file_key:
+        description: 'Refresh variables only for this file key (default: all tracked files)'
+        required: false
+        type: string
+        default: ''
+      figmaclaw_ref:
+        required: false
+        type: string
+        default: main
+      target_ref:
+        required: false
+        type: string
+        default: main
+      variables_source:
+        description: 'Variable-definition reader: auto, rest, or mcp'
+        required: false
+        type: string
+        default: auto
+      require_authoritative:
+        description: 'Fail unless refreshed catalog contains authoritative variable definitions'
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      FIGMA_API_KEY:
+        required: true
+      FIGMA_VARIABLES_TOKEN:
+        required: false
+      FIGMA_MCP_TOKEN:
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  variables:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install figmaclaw
+        run: uv tool install "git+https://github.com/aviadr1/figmaclaw@${{ inputs.figmaclaw_ref }}"
+
+      - name: Pull latest changes
+        run: git pull --no-rebase --ff-only origin "${{ inputs.target_ref }}"
+
+      - name: Configure git
+        run: |
+          git config user.name "figmaclaw[bot]"
+          git config user.email "figmaclaw[bot]@users.noreply.github.com"
+
+      - name: Refresh variables
+        env:
+          FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+          FIGMA_VARIABLES_TOKEN: ${{ secrets.FIGMA_VARIABLES_TOKEN }}
+          FIGMA_MCP_TOKEN: ${{ secrets.FIGMA_MCP_TOKEN }}
+        run: |
+          REQUIRE_AUTHORITATIVE=""
+          if [ "${{ inputs.require_authoritative }}" = "true" ]; then
+            # Canon AUTH-1: proof workflows fail unless selected files have authoritative definitions.
+            REQUIRE_AUTHORITATIVE="--require-authoritative"
+          fi
+          if [ -n "${{ inputs.file_key }}" ]; then
+            figmaclaw variables --file-key "${{ inputs.file_key }}" --source "${{ inputs.variables_source }}" $REQUIRE_AUTHORITATIVE --auto-commit
+          else
+            figmaclaw variables --source "${{ inputs.variables_source }}" $REQUIRE_AUTHORITATIVE --auto-commit
+          fi
+
+      - name: Push
+        env:
+          FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+          FIGMA_VARIABLES_TOKEN: ${{ secrets.FIGMA_VARIABLES_TOKEN }}
+          FIGMA_MCP_TOKEN: ${{ secrets.FIGMA_MCP_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          set +e
+          git push
+          PUSH_STATUS=$?
+          set -e
+
+          if [ "$PUSH_STATUS" -eq 0 ]; then
+            exit 0
+          fi
+
+          echo "Push rejected; replaying variables refresh on latest ${{ inputs.target_ref }}"
+          git fetch origin "${{ inputs.target_ref }}"
+          # Canon WF-1: reset to latest source state and replay deterministic
+          # generation instead of merging stale generated JSON.
+          git reset --hard "origin/${{ inputs.target_ref }}"
+
+          REQUIRE_AUTHORITATIVE=""
+          if [ "${{ inputs.require_authoritative }}" = "true" ]; then
+            # Canon AUTH-1: preserve strict proof semantics on replay.
+            REQUIRE_AUTHORITATIVE="--require-authoritative"
+          fi
+          if [ -n "${{ inputs.file_key }}" ]; then
+            figmaclaw variables --file-key "${{ inputs.file_key }}" --source "${{ inputs.variables_source }}" $REQUIRE_AUTHORITATIVE --auto-commit
+          else
+            figmaclaw variables --source "${{ inputs.variables_source }}" $REQUIRE_AUTHORITATIVE --auto-commit
+          fi
+
+          git push

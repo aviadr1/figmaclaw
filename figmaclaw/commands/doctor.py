@@ -20,6 +20,8 @@ from pathlib import Path
 
 import click
 
+EMPTY_LIST_PAGE_HASH = "4f53cda18c2baa0c"
+
 
 def _check(label: str, ok: bool, detail: str = "") -> bool:
     """Print a check result and return whether it passed."""
@@ -107,6 +109,7 @@ def doctor_cmd(ctx: click.Context) -> None:
     manifest_file = manifest_dir / "manifest.json"
     if manifest_file.exists():
         try:
+            from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
             from figmaclaw.figma_sync_state import FigmaSyncState
 
             state = FigmaSyncState(repo_dir)
@@ -119,6 +122,71 @@ def doctor_cmd(ctx: click.Context) -> None:
                 f"{n_files} file(s), {n_pages} page(s) tracked",
             )
             passed += 1
+
+            stale_schema_files = [
+                f"{file_entry.file_name} (v{file_entry.pull_schema_version})"
+                for file_entry in state.manifest.files.values()
+                if file_entry.pull_schema_version < CURRENT_PULL_SCHEMA_VERSION
+            ]
+            if stale_schema_files:
+                detail = "; ".join(stale_schema_files[:3])
+                if len(stale_schema_files) > 3:
+                    detail += f" (+{len(stale_schema_files) - 3} more)"
+                _check(
+                    "pull schema current",
+                    False,
+                    f"{len(stale_schema_files)} file(s) below "
+                    f"v{CURRENT_PULL_SCHEMA_VERSION}: {detail}",
+                )
+                warnings += 1
+            else:
+                _check("pull schema current", True, f"v{CURRENT_PULL_SCHEMA_VERSION}")
+                passed += 1
+
+            # 6b. Canon PP-1 / partial-pull check (PR 129 H2): a page with md_path=None
+            # AND component_md_paths=[] AND not a deliberate skip is the
+            # exact "stuck" shape we shipped v8/v9 to fix. If any survive,
+            # surface them so the user knows a pull is needed (typically
+            # caused by being on an old figmaclaw before the schema bump).
+            partial_pulls: list[tuple[str, bool]] = []
+            skipped_empty_pages = 0
+            for file_entry in state.manifest.files.values():
+                for page_entry in file_entry.pages.values():
+                    if not page_entry.md_path and not page_entry.component_md_paths:
+                        if state.should_skip_page(page_entry.page_name):
+                            skipped_empty_pages += 1
+                            continue
+                        partial_pulls.append(
+                            (
+                                f"{file_entry.file_name} / {page_entry.page_name}",
+                                page_entry.page_hash == EMPTY_LIST_PAGE_HASH,
+                            )
+                        )
+            if partial_pulls:
+                sample = [label for label, _empty_hash in partial_pulls[:3]]
+                empty_hash_count = sum(1 for _label, empty_hash in partial_pulls if empty_hash)
+                detail = "; ".join(sample)
+                if len(partial_pulls) > 3:
+                    detail += f" (+{len(partial_pulls) - 3} more)"
+                if empty_hash_count:
+                    detail += f"; {empty_hash_count} with empty-list hash"
+                if skipped_empty_pages:
+                    detail += f"; {skipped_empty_pages} skipped empty page(s) matched skip_pages"
+                _check(
+                    "no partial-pull pages",
+                    False,
+                    f"{len(partial_pulls)} page(s) with md_path=null and "
+                    f"component_md_paths=[]: {detail}",
+                )
+                warnings += 1
+            else:
+                detail = (
+                    f"{skipped_empty_pages} skipped empty page(s) matched skip_pages"
+                    if skipped_empty_pages
+                    else ""
+                )
+                _check("no partial-pull pages", True, detail)
+                passed += 1
         except Exception as e:
             _check("manifest loadable", False, str(e))
             failed += 1

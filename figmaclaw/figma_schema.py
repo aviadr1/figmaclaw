@@ -82,6 +82,19 @@ UNGROUPED_SECTION: str = "(Ungrouped)"
 #: write-descriptions) must skip it when making API calls.
 UNGROUPED_NODE_ID: str = "ungrouped"
 
+#: Synthetic section name used when top-level COMPONENT/COMPONENT_SET nodes
+#: are not grouped by a SECTION parent in Figma. Pages with components placed
+#: directly on the canvas (no SECTION wrapper) used to drop silently — no
+#: section, no .md file, page hash collapsing to the empty-list digest. This
+#: synthetic section keeps them visible to pull and to the manifest. Marked
+#: ``is_component_library=True`` so downstream rendering writes a component
+#: .md alongside the page rather than a screen .md.
+UNGROUPED_COMPONENTS_SECTION: str = "(Ungrouped components)"
+
+#: Synthetic node_id for the ``(Ungrouped components)`` section. As with
+#: ``UNGROUPED_NODE_ID``, no real Figma node corresponds to this id.
+UNGROUPED_COMPONENTS_NODE_ID: str = "ungrouped-components"
+
 #: Section name used by component library files (``figma/*/components/*.md``).
 VARIANTS_SECTION: str = "Variants"
 

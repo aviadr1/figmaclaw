@@ -281,8 +281,8 @@ def test_component_library_section_lists_component_nodes_as_frames():
     assert section.frames[1].name == "icon / heart"
 
 
-def test_section_with_both_frames_and_components_prefers_frames():
-    """INVARIANT: Mixed sections (frames + components) use frames and are not flagged as library."""
+def test_section_with_both_frames_and_components_emits_component_sibling():
+    """INVARIANT NC-2: mixed sections preserve both frames and components."""
     page = _canvas(
         "0:1",
         "Mixed",
@@ -300,9 +300,10 @@ def test_section_with_both_frames_and_components_prefers_frames():
     result = from_page_node(page, file_key="abc", file_name="App")
     section = result.sections[0]
     assert section.is_component_library is False
-    # Only the frame should appear (frames take priority)
     assert len(section.frames) == 1
     assert section.frames[0].name == "some screen"
+    component_sibling = next(s for s in result.sections if s.is_component_library)
+    assert [f.name for f in component_sibling.frames] == ["Button"]
 
 
 def test_figma_section_is_component_library_defaults_to_false():

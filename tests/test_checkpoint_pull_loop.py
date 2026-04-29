@@ -116,6 +116,7 @@ def _run_loop(
             "BATCH_TIMEOUT_SECONDS": "1",
             "MAX_PAGES_PER_BATCH": "5",
             "INPUT_FORCE": "false",
+            "TARGET_REF": "main",
             # Default off in the test harness so existing expected-args assertions
             # (e.g. "pull --max-pages 7") stay stable; individual tests flip this
             # on when they want to exercise the auto-commit wiring.
@@ -146,6 +147,19 @@ def test_stops_after_repeated_has_more_without_commits(tmp_path: Path) -> None:
     count = int((tmp_path / "count.txt").read_text())
     assert count == 3
     assert "Stopping loop after repeated HAS_MORE:true without progress." in out
+
+
+def test_commit_safety_net_pulls_configured_target_ref(tmp_path: Path) -> None:
+    _run_loop(
+        tmp_path,
+        scenario="single_done",
+        git_dirty="1",
+        timeout_mode="pass",
+        TARGET_REF="test/figmaclaw-pr-129-ci",
+    )
+    trace = (tmp_path / "git-trace.txt").read_text()
+    assert "git pull --no-rebase --ff-only origin test/figmaclaw-pr-129-ci" in trace
+    assert "git pull --no-rebase --ff-only origin main" not in trace
 
 
 def test_stops_immediately_on_pull_timeout(tmp_path: Path) -> None:

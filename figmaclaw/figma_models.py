@@ -12,6 +12,8 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field
 
 from figmaclaw.figma_schema import (
+    UNGROUPED_COMPONENTS_NODE_ID,
+    UNGROUPED_COMPONENTS_SECTION,
     UNGROUPED_NODE_ID,
     UNGROUPED_SECTION,
     is_component,
@@ -122,9 +124,12 @@ def from_page_node(page_node: dict, *, file_key: str, file_name: str) -> FigmaPa
     Tree traversal rules:
 
     * ``SECTION`` nodes at the top level → :class:`FigmaSection` with
-      visible FRAME children.
+      visible FRAME and/or component children. Canon: NC-1, NC-2.
     * ``FRAME`` nodes at the top level (not inside a SECTION) → collected
       into a synthetic ``(Ungrouped)`` section.
+    * ``COMPONENT`` / ``COMPONENT_SET`` nodes at the top level → collected
+      into a source-scoped synthetic ``(Ungrouped components)`` section.
+      Canon: PP-1, NC-1, SI-1.
     * ``CONNECTOR``, ``TEXT``, ``VECTOR`` and other non-visual nodes →
       filtered out via :func:`figma_schema.is_structural` /
       :func:`figma_schema.is_component`.
@@ -139,6 +144,13 @@ def from_page_node(page_node: dict, *, file_key: str, file_name: str) -> FigmaPa
 
     sections: list[FigmaSection] = []
     ungrouped_frames: list[FigmaFrame] = []
+    # Canon PP-1 / NC-1: top-level COMPONENT/COMPONENT_SET nodes that aren't wrapped in a SECTION
+    # — collected into a synthetic component-library section below so the
+    # page produces a non-empty manifest entry and a component .md, instead
+    # of dropping silently with md_path=null and component_md_paths=[].
+    # Real Gigaverse pages with this shape: ✅ Tooltip & Help icon,
+    # ☼ Logo, ☼ App Icon, ☼ Date & Time Format. See agent-A H2.
+    ungrouped_components: list[FigmaFrame] = []
     all_frames_for_flows: list[dict] = []
 
     for child in children:
@@ -159,23 +171,59 @@ def from_page_node(page_node: dict, *, file_key: str, file_name: str) -> FigmaPa
             # no frames. This classification is content-based, not
             # metadata-based.
             is_component_lib = bool(component_nodes) and not frame_nodes
-            # Render frames when present; fall back to components for libs.
-            render_nodes = frame_nodes if frame_nodes else component_nodes
             all_frames_for_flows.extend(frame_nodes)
-            sections.append(
-                FigmaSection(
-                    node_id=child["id"],
-                    name=normalize_name(raw_name(child)),
-                    frames=[_node_to_frame(f, file_key) for f in render_nodes],
-                    is_component_library=is_component_lib,
+
+            if frame_nodes and component_nodes:
+                # Canon NC-2 / SI-1: a mixed SECTION carries both FRAMEs (screens or
+                # usage examples) and COMPONENT_SETs (the actual library
+                # components on the side). Pre-v9 the components were
+                # silently dropped — "frames win, components disappear" —
+                # producing a screen .md with no record of the
+                # COMPONENT_SETs and no component .md alongside it. Now
+                # we emit two sibling sections: the screen one keeps the
+                # original SECTION node_id, and the components get a
+                # page+section-scoped synthetic node_id so they don't
+                # collide across pages or with the screen section.
+                sections.append(
+                    FigmaSection(
+                        node_id=child["id"],
+                        name=normalize_name(raw_name(child)),
+                        frames=[_node_to_frame(f, file_key) for f in frame_nodes],
+                        is_component_library=False,
+                    )
                 )
-            )
+                synthetic_id = f"{UNGROUPED_COMPONENTS_NODE_ID}-{child['id'].replace(':', '-')}"
+                sections.append(
+                    FigmaSection(
+                        node_id=synthetic_id,
+                        name=UNGROUPED_COMPONENTS_SECTION,
+                        frames=[_node_to_frame(c, file_key) for c in component_nodes],
+                        is_component_library=True,
+                    )
+                )
+            else:
+                render_nodes = frame_nodes if frame_nodes else component_nodes
+                sections.append(
+                    FigmaSection(
+                        node_id=child["id"],
+                        name=normalize_name(raw_name(child)),
+                        frames=[_node_to_frame(f, file_key) for f in render_nodes],
+                        is_component_library=is_component_lib,
+                    )
+                )
 
         elif child.get("type") == "FRAME":
             # Visibility for FRAMEs already guarded by the outer
             # ``is_visible(child)`` check above.
             all_frames_for_flows.append(child)
             ungrouped_frames.append(_node_to_frame(child, file_key))
+
+        elif is_component(child):
+            # Top-level COMPONENT or COMPONENT_SET — no SECTION wrapper.
+            # Visibility already guarded above. We treat these as a
+            # synthetic component-library section (see UNGROUPED_COMPONENTS_*
+            # in figma_schema) so they don't drop silently.
+            ungrouped_components.append(_node_to_frame(child, file_key))
 
         # Every other top-level child type (CONNECTOR, TEXT, VECTOR, ...)
         # is skipped — not rendered to markdown.
@@ -186,6 +234,28 @@ def from_page_node(page_node: dict, *, file_key: str, file_name: str) -> FigmaPa
                 node_id=UNGROUPED_NODE_ID,
                 name=UNGROUPED_SECTION,
                 frames=ungrouped_frames,
+            )
+        )
+
+    if ungrouped_components:
+        # Canon SI-1: page-scoped synthetic node_id. Without this, every page that has
+        # top-level COMPONENT_SETs would produce a section with the same
+        # constant node_id (UNGROUPED_COMPONENTS_NODE_ID), and pull_logic's
+        # component_path slug computation would collide:
+        #   sect_slug = f"{slugify(section.name)}-{section.node_id.replace(':', '-')}"
+        # would resolve to a single
+        # ``components/ungrouped-components-ungrouped-components.md``
+        # for every such page in the file. Last writer wins; previous
+        # pages' components are silently overwritten on disk.
+        # Encoding the page_node_id keeps each synthetic section uniquely
+        # identifiable while still sharing the human-readable name.
+        synthetic_id = f"{UNGROUPED_COMPONENTS_NODE_ID}-{page_node_id.replace(':', '-')}"
+        sections.append(
+            FigmaSection(
+                node_id=synthetic_id,
+                name=UNGROUPED_COMPONENTS_SECTION,
+                frames=ungrouped_components,
+                is_component_library=True,
             )
         )
 

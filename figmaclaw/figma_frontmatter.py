@@ -70,6 +70,15 @@ Pull schema changelog:
       iter_body_frame_rows (issue #121). Forcing a refresh cleans up
       existing files whose `frames` list shrank in a prior pull but whose
       enriched_frame_hashes / body-table rows retained the orphans.
+  v8: surfaced top-level COMPONENT/COMPONENT_SET pages via a synthetic
+      ``(Ungrouped components)`` section and included them in
+      compute_page_hash so Tier 2 invalidates correctly. PR 129 H2 + H6.
+  v9: descended one more level into COMPONENT_SETs in compute_page_hash
+      and extended compute_frame_hashes to cover top-level COMPONENT/
+      COMPONENT_SET and SECTION-wrapped COMPONENT_SETs. Variant
+      additions / renames / removals now bump page_hash and per-variant
+      frame_hashes are tracked, closing the Tier 2 + Tier 3 short-
+      circuits for component-library pages.
 
 Enrichment schema changelog:
   v1: initial enrichment format — frame table + page summary + Mermaid flows
@@ -98,7 +107,7 @@ _TOMBSTONE_HASH_RE = re.compile(r"^[0-9a-f]+$")
 # Files in the manifest with pull_schema_version < this get frontmatter-refreshed
 # on the next pull run even if Figma content is unchanged. Body is never touched
 # (except for the narrow orphan-row prune in figmaclaw#121 — structural, not prose).
-CURRENT_PULL_SCHEMA_VERSION: int = 7
+CURRENT_PULL_SCHEMA_VERSION: int = 9
 
 # Enrichment schema version. Bump when the LLM prompt or output format changes.
 # Pages with enriched_schema_version < MIN_REQUIRED MUST be re-enriched (broken output).

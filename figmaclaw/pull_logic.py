@@ -46,6 +46,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 from figmaclaw.body_validation import iter_body_frame_rows
+from figmaclaw.figma_api_models import LocalVariablesResponse
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_frontmatter import (
     CURRENT_PULL_SCHEMA_VERSION,
@@ -72,15 +73,24 @@ from figmaclaw.figma_render import (
     scaffold_page,
     section_frame_ids,
 )
+from figmaclaw.figma_schema import UNGROUPED_COMPONENTS_NODE_ID
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
 from figmaclaw.figma_utils import write_json_if_changed
 from figmaclaw.prune_utils import (
+    LEGACY_UNGROUPED_COMPONENTS_BASENAME,
     entry_paths,
     find_generated_orphans,
     remove_generated_relpath,
 )
 from figmaclaw.schema_status import is_pull_schema_stale
-from figmaclaw.token_catalog import load_catalog, merge_bindings, save_catalog
+from figmaclaw.token_catalog import (
+    library_hashes_for_file,
+    load_catalog,
+    mark_local_variables_unavailable,
+    merge_bindings,
+    merge_local_variables,
+    save_catalog,
+)
 from figmaclaw.token_scan import PageTokenScan, scan_page
 
 log = logging.getLogger(__name__)
@@ -406,6 +416,7 @@ def _aggregate_issues(issues: list) -> list[dict]:
         hex_val = issue.hex
         cur_val = issue.current_value
         stale_var = issue.stale_variable_id
+        library_hash = getattr(issue, "library_hash", None)
 
         # Normalize current_value for grouping: round floats, stringify dicts
         if isinstance(cur_val, float):
@@ -416,7 +427,7 @@ def _aggregate_issues(issues: list) -> list[dict]:
         else:
             norm_val = cur_val
 
-        key = (prop, cls, hex_val, norm_val, stale_var)
+        key = (prop, cls, hex_val, norm_val, stale_var, library_hash)
         buckets[key] += 1
 
         if key not in representatives:
@@ -427,6 +438,8 @@ def _aggregate_issues(issues: list) -> list[dict]:
                 entry["current_value"] = cur_val
             if stale_var is not None:
                 entry["stale_variable_id"] = stale_var
+            if library_hash is not None:
+                entry["library_hash"] = library_hash
             representatives[key] = entry
 
     result = []
@@ -801,6 +814,40 @@ async def pull_file(
         file_name=file_name,
     )
 
+    # Tier 1.5 file-scope registry refresh: variables are file-level data and
+    # must not be gated by per-page hashes (canon TC-5 / D11).
+    try:
+        local_variables = await client.get_local_variables(file_key)
+        if local_variables is None:
+            mark_local_variables_unavailable(
+                catalog,
+                file_key=file_key,
+                file_name=file_name,
+                file_version=api_version,
+            )
+        elif not isinstance(local_variables, LocalVariablesResponse):
+            log.warning(
+                "Unexpected variables response type (%s) — continuing with existing catalog",
+                type(local_variables).__name__,
+            )
+        else:
+            merge_local_variables(
+                catalog,
+                local_variables,
+                file_key=file_key,
+                file_name=file_name,
+                file_version=api_version,
+            )
+        save_catalog(catalog, repo_root)
+        hashes = library_hashes_for_file(catalog, file_key)
+        if hashes:
+            state.manifest.files[file_key].library_hash = hashes[0]
+    except Exception as exc:
+        log.warning(
+            "Failed to refresh variables catalog (%s) — continuing with existing catalog",
+            type(exc).__name__,
+        )
+
     # Fetch component sets once per changed file. Used to populate component_set_keys
     # in component section .md frontmatter so build skills can skip search_design_system().
     try:
@@ -1130,7 +1177,11 @@ async def pull_file(
             )
             if should_scan_tokens:
                 try:
-                    token_scan = scan_page(page_node, set(screen_frame_ids))
+                    token_scan = scan_page(
+                        page_node,
+                        set(screen_frame_ids),
+                        libraries=catalog.libraries,
+                    )
                     # Sparse frontmatter summary — only frames with at least one issue
                     raw_tokens = {
                         fid: RawTokenCounts(raw=fscan.raw, stale=fscan.stale, valid=fscan.valid)
@@ -1195,11 +1246,20 @@ async def pull_file(
 
             written_component_rels: list[str] = []
             previous_component_by_suffix: dict[str, str] = {}
+            # Canon MIG-1 / SI-1: the pre-H6 legacy synthetic path used a constant filename
+            # shared across every page that had top-level COMPONENT_SETs
+            # (last writer wins; data is corrupt). On the v9 transition
+            # we want to migrate this away exactly once — whichever page
+            # is processed first inherits the legacy file's content; the
+            # rest write fresh. Better than leaving the orphan on disk.
+            previous_legacy_synthetic: str | None = None
             if previous_entry:
                 for comp_path in previous_entry.component_md_paths:
                     suffix = _node_suffix_from_relpath(comp_path)
                     if suffix:
                         previous_component_by_suffix[suffix] = comp_path
+                    elif Path(comp_path).name == LEGACY_UNGROUPED_COMPONENTS_BASENAME:
+                        previous_legacy_synthetic = comp_path
             for section in component_sections:
                 if not section.frames:
                     continue
@@ -1207,6 +1267,17 @@ async def pull_file(
                 sect_slug = f"{slugify(section.name)}-{sect_suffix}"
                 comp_rel = component_path(file_slug, sect_slug)
                 old_comp_rel = previous_component_by_suffix.get(sect_suffix)
+                # Fall back to the legacy synthetic if there was no
+                # canonical-suffix match — first synthetic section wins
+                # the migration; subsequent calls find old_comp_rel
+                # already migrated away and write fresh.
+                if (
+                    old_comp_rel is None
+                    and previous_legacy_synthetic
+                    and section.node_id.startswith(UNGROUPED_COMPONENTS_NODE_ID)
+                ):
+                    old_comp_rel = previous_legacy_synthetic
+                    previous_legacy_synthetic = None  # consume once per page
                 if old_comp_rel and old_comp_rel != comp_rel and prune:
                     _migrate_generated_path(
                         repo_root,

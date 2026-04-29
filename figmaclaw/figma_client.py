@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
@@ -18,6 +19,7 @@ import httpx
 from figmaclaw.figma_api_models import (
     FileMetaResponse,
     FileSummary,
+    LocalVariablesResponse,
     NodesResponse,
     ProjectFilesResponse,
     ProjectSummary,
@@ -26,6 +28,10 @@ from figmaclaw.figma_api_models import (
     VersionSummary,
     _validate,
 )
+
+DEFAULT_RATE_LIMIT_RPM = 15
+DEFAULT_RETRY_AFTER_S = 10
+MIN_429_RETRY_AFTER_S = 5
 
 
 class FigmaClient:
@@ -38,13 +44,29 @@ class FigmaClient:
 
     _base_url = "https://api.figma.com"
 
-    def __init__(self, api_key: str, *, rate_limit_rpm: int = 30) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        rate_limit_rpm: int = DEFAULT_RATE_LIMIT_RPM,
+        variables_api_key: str | None = None,
+    ) -> None:
         self._api_key = api_key
+        self._variables_api_key = variables_api_key or api_key
         self._client: httpx.AsyncClient | None = None
+        self._variables_client: httpx.AsyncClient | None = None
         self._min_interval = 60.0 / rate_limit_rpm if rate_limit_rpm > 0 else 0.0
         self._last_request_time: float = 0.0
+        self._pace_lock = asyncio.Lock()
 
-    async def _ensure_client(self) -> httpx.AsyncClient:
+    async def _ensure_client(self, *, variables: bool = False) -> httpx.AsyncClient:
+        if variables and self._variables_api_key != self._api_key:
+            if self._variables_client is None or self._variables_client.is_closed:
+                self._variables_client = httpx.AsyncClient(
+                    headers={"X-Figma-Token": self._variables_api_key},
+                    timeout=300.0,
+                )
+            return self._variables_client
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
                 headers={"X-Figma-Token": self._api_key},
@@ -56,6 +78,9 @@ class FigmaClient:
         if self._client and not self._client.is_closed:
             await self._client.aclose()
             self._client = None
+        if self._variables_client and not self._variables_client.is_closed:
+            await self._variables_client.aclose()
+            self._variables_client = None
 
     async def __aenter__(self) -> FigmaClient:
         await self._ensure_client()
@@ -68,14 +93,36 @@ class FigmaClient:
         """Sleep if needed to stay under the rate limit."""
         if self._min_interval <= 0:
             return
-        elapsed = time.monotonic() - self._last_request_time
-        if elapsed < self._min_interval:
-            await asyncio.sleep(self._min_interval - elapsed)
-        self._last_request_time = time.monotonic()
+        async with self._pace_lock:
+            elapsed = time.monotonic() - self._last_request_time
+            if elapsed < self._min_interval:
+                await asyncio.sleep(self._min_interval - elapsed)
+            self._last_request_time = time.monotonic()
 
-    async def _get(self, path: str, params: dict[str, str] | None = None) -> dict[str, Any]:
+    @staticmethod
+    def _retry_after_seconds(response: httpx.Response) -> float:
+        raw = response.headers.get("retry-after")
+        if raw:
+            try:
+                return max(float(raw), MIN_429_RETRY_AFTER_S)
+            except ValueError:
+                try:
+                    retry_at = parsedate_to_datetime(raw)
+                    delay = retry_at.timestamp() - time.time()
+                    return max(delay, MIN_429_RETRY_AFTER_S)
+                except (TypeError, ValueError, IndexError, OverflowError):
+                    pass
+        return DEFAULT_RETRY_AFTER_S
+
+    async def _get(
+        self,
+        path: str,
+        params: dict[str, str] | None = None,
+        *,
+        variables: bool = False,
+    ) -> dict[str, Any]:
         """GET request with proactive pacing and retry on 429 / 5xx / connection errors."""
-        client = await self._ensure_client()
+        client = await self._ensure_client(variables=variables)
         url = f"{self._base_url}{path}"
         last_exc: Exception | None = None
         response: httpx.Response | None = None
@@ -97,8 +144,7 @@ class FigmaClient:
                     continue
                 raise
             if response.status_code == 429:
-                retry_after = int(response.headers.get("retry-after", "10"))
-                await asyncio.sleep(max(retry_after, 5))
+                await asyncio.sleep(self._retry_after_seconds(response))
                 continue
             if response.status_code >= 500 and attempt < 9:
                 await asyncio.sleep(2 * (attempt + 1))
@@ -291,8 +337,7 @@ class FigmaClient:
                     continue
                 raise
             if response.status_code == 429:
-                retry_after = int(response.headers.get("retry-after", "10"))
-                await asyncio.sleep(max(retry_after, 5))
+                await asyncio.sleep(self._retry_after_seconds(response))
                 continue
             if response.status_code >= 500 and attempt < 9:
                 await asyncio.sleep(2 * (attempt + 1))
@@ -433,6 +478,32 @@ class FigmaClient:
         data = await self._get(f"/v1/files/{file_key}/component_sets")
         result: list[dict[str, Any]] = data.get("meta", {}).get("component_sets", [])
         return result
+
+    async def get_local_variables(self, file_key: str) -> LocalVariablesResponse | None:
+        """GET /v1/files/{file_key}/variables/local — Figma local-variables registry.
+
+        Returns the typed response on success. Returns ``None`` when the API
+        responds 403 (Enterprise scope ``file_variables:read`` not granted).
+        Per canon §5 D14, callers are expected to fall back to ``seeded:*``
+        catalog entries in that case.
+
+        Other HTTP errors (4xx/5xx other than 403, network errors) propagate
+        as ``httpx.HTTPStatusError`` so callers can decide whether to retry
+        or skip the file. We do NOT swallow non-403 errors silently — that
+        would be the LW-1 "WARN-and-drop" anti-pattern.
+        """
+        try:
+            data = await self._get(f"/v1/files/{file_key}/variables/local", variables=True)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 403:
+                return None
+            raise
+        return _validate(
+            LocalVariablesResponse,
+            data,
+            endpoint="GET /v1/files/{key}/variables/local",
+            context=f"file_key={file_key}",
+        )
 
     async def get_nodes(
         self,

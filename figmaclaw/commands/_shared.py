@@ -10,6 +10,7 @@ import click
 from figmaclaw.figma_sync_state import FigmaSyncState
 
 FIGMA_API_KEY_ENV = "FIGMA_API_KEY"
+FIGMA_VARIABLES_TOKEN_ENV = "FIGMA_VARIABLES_TOKEN"
 FIGMA_WEBHOOK_SECRET_ENV = "FIGMA_WEBHOOK_SECRET"
 FIGMA_WEBHOOK_PAYLOAD_ENV = "FIGMA_WEBHOOK_PAYLOAD"
 
@@ -20,6 +21,17 @@ def require_figma_api_key() -> str:
     if not api_key:
         raise click.UsageError(f"{FIGMA_API_KEY_ENV} environment variable is not set.")
     return api_key
+
+
+def figma_variables_api_key(fallback_api_key: str) -> str:
+    """Return the token used for Figma Variables endpoints.
+
+    ``FIGMA_API_KEY`` in older installations is often a content-read token
+    without Figma's ``file_variables:read`` scope. Let operators provide a
+    narrower, variables-capable token without changing the token used for the
+    rest of the sync pipeline.
+    """
+    return os.environ.get(FIGMA_VARIABLES_TOKEN_ENV, "") or fallback_api_key
 
 
 def load_state(repo_dir: Path) -> FigmaSyncState:

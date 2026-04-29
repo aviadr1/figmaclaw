@@ -150,7 +150,9 @@ def census_cmd(
     """Snapshot published component sets for all tracked files.
 
     Writes figma/{file-slug}/_census.md for each file that has published
-    component sets. Only updates the file when the component registry changes.
+    component sets. With --file-key, also writes an explicit empty census
+    when the file has zero published sets. Only updates the file when the
+    component registry changes.
     """
     repo_dir = Path(ctx.obj["repo_dir"])
     api_key = require_figma_api_key()
@@ -194,8 +196,13 @@ async def _run(
                 continue
 
             if not component_sets:
-                # No published component sets — skip silently (e.g. product files)
-                continue
+                # No published component sets — skip by default (e.g. product files).
+                # For an explicitly requested file, persist the empty registry so
+                # repo readers can distinguish "probed empty" from "not probed".
+                # Canon: REG-1 (explicit registry state).
+                if not file_key:
+                    continue
+                click.echo(f"{file_name}: 0 published component set(s)")
 
             content_hash = _compute_hash(component_sets)
             out_path = repo_dir / census_path(file_slug)

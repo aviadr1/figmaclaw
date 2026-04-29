@@ -16,9 +16,19 @@ on:
         required: false
         type: string
         default: ''
+      figmaclaw_ref:
+        required: false
+        type: string
+        default: main
+      target_ref:
+        required: false
+        type: string
+        default: main
     secrets:
       FIGMA_API_KEY:
         required: true
+      FIGMA_VARIABLES_TOKEN:
+        required: false
       # ANTHROPIC_API_KEY is intentionally absent — figmaclaw pull has zero LLM dependency.
       # LLM enrichment is done by the caller's enrich job via claude-run.yaml.
 
@@ -42,10 +52,10 @@ jobs:
           enable-cache: true
 
       - name: Install figmaclaw
-        run: uv tool install git+https://github.com/aviadr1/figmaclaw
+        run: uv tool install "git+https://github.com/aviadr1/figmaclaw@${{ inputs.figmaclaw_ref }}"
 
       - name: Pull latest changes
-        run: git pull --no-rebase --ff-only origin main
+        run: git pull --no-rebase --ff-only origin "${{ inputs.target_ref }}"
 
       - name: Configure git
         run: |
@@ -66,7 +76,7 @@ jobs:
             NEWLY="${NEWLY:-unknown}"
             git commit -m "sync: figmaclaw — tracking ${NEWLY} new file(s)"
             git push
-            git pull --no-rebase --ff-only origin main
+            git pull --no-rebase --ff-only origin "${{ inputs.target_ref }}"
           fi
 
       - name: Checkout checkpoint loop script
@@ -76,7 +86,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: aviadr1/figmaclaw
-          ref: main
+          ref: ${{ inputs.figmaclaw_ref }}
           path: .figmaclaw-workflow
           sparse-checkout: |
             scripts/checkpoint_pull_loop.sh
@@ -84,9 +94,11 @@ jobs:
       - name: Pull Figma files (checkpointed loop)
         env:
           FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
+          FIGMA_VARIABLES_TOKEN: ${{ secrets.FIGMA_VARIABLES_TOKEN }}
           INPUT_FORCE: ${{ inputs.force }}
           FIGMA_TEAM_ID: ${{ inputs.figma_team_id }}
           SINCE: ${{ inputs.since }}
+          TARGET_REF: ${{ inputs.target_ref }}
           FIGMACLAW_SYNC_OBS_DIR: ${{ runner.temp }}/figmaclaw-sync-observability
         run: |
           bash .figmaclaw-workflow/scripts/checkpoint_pull_loop.sh
