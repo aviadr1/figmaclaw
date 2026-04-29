@@ -112,7 +112,7 @@ class _FakeVariablesClient:
             lastModified="2026-04-28T16:10:25Z",
         )
 
-    async def __aenter__(self) -> "_FakeVariablesClient":
+    async def __aenter__(self) -> _FakeVariablesClient:
         return self
 
     async def __aexit__(self, *_args: object) -> None:
