@@ -77,3 +77,19 @@ def test_variables_reusable_workflow_merges_on_push_conflict() -> None:
     assert (
         'git pull --no-rebase --ff-only origin "${{ inputs.target_ref }}" && git push' not in text
     )
+
+
+def test_variables_workflows_can_require_authoritative_definitions() -> None:
+    """INVARIANT: CI can fail loudly when only unavailable markers exist."""
+
+    reusable = (Path(__file__).parents[1] / ".github" / "workflows" / "variables.yml").read_text(
+        encoding="utf-8"
+    )
+    installed = bundled_template_text("figmaclaw-variables.yaml")
+
+    assert "require_authoritative:" in reusable
+    assert "--require-authoritative" in reusable
+    assert "require_authoritative:" in installed
+    assert "require_authoritative: ${{ github.event.inputs.require_authoritative || false }}" in (
+        installed
+    )

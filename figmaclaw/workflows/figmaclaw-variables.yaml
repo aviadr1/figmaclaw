@@ -15,6 +15,11 @@ on:
         description: 'Variable-definition reader: auto, rest, or mcp'
         required: false
         default: auto
+      require_authoritative:
+        description: 'Fail unless refreshed catalog contains authoritative variable definitions'
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: figma-git-variables
@@ -26,6 +31,7 @@ jobs:
     with:
       file_key: ${{ github.event.inputs.file_key || '' }}
       variables_source: ${{ github.event.inputs.variables_source || 'auto' }}
+      require_authoritative: ${{ github.event.inputs.require_authoritative || false }}
     secrets:
       FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
       FIGMA_VARIABLES_TOKEN: ${{ secrets.FIGMA_VARIABLES_TOKEN }}

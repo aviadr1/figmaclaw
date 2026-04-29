@@ -306,3 +306,60 @@ def test_variables_command_source_mcp_skips_rest_variables(tmp_path: Path, monke
     assert fake.variables_calls == 0
     mcp_export.assert_awaited_once_with(FILE_KEY)
     assert "via figma_mcp" in result.output
+
+
+def test_variables_command_require_authoritative_fails_on_unavailable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """CI smoke can require real definitions instead of fallback markers."""
+    _track(tmp_path)
+    monkeypatch.setenv("FIGMA_API_KEY", "figd_test")
+    fake = _FakeClient(None, version="v6")
+
+    with patch("figmaclaw.commands.variables.FigmaClient", return_value=fake):
+        result = CliRunner().invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "variables",
+                "--file-key",
+                FILE_KEY,
+                "--source",
+                "rest",
+                "--require-authoritative",
+            ],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code != 0
+    assert "authoritative variables missing" in result.output
+    assert "library source(s): unavailable" in result.output
+    data = json.loads((tmp_path / ".figma-sync" / "ds_catalog.json").read_text())
+    assert data["libraries"][f"local:{FILE_KEY}"]["source"] == "unavailable"
+
+
+def test_variables_command_require_authoritative_accepts_definitions(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Authoritative requirement passes when REST or MCP produced definitions."""
+    _track(tmp_path)
+    monkeypatch.setenv("FIGMA_API_KEY", "figd_test")
+    fake = _FakeClient(LocalVariablesResponse.model_validate(_variables()), version="v7")
+
+    with patch("figmaclaw.commands.variables.FigmaClient", return_value=fake):
+        result = CliRunner().invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "variables",
+                "--file-key",
+                FILE_KEY,
+                "--require-authoritative",
+            ],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0
+    assert "refreshed 1 variable(s) via figma_api" in result.output

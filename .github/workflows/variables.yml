@@ -26,6 +26,11 @@ on:
         required: false
         type: string
         default: auto
+      require_authoritative:
+        description: 'Fail unless refreshed catalog contains authoritative variable definitions'
+        required: false
+        type: boolean
+        default: false
     secrets:
       FIGMA_API_KEY:
         required: true
@@ -70,10 +75,14 @@ jobs:
           FIGMA_VARIABLES_TOKEN: ${{ secrets.FIGMA_VARIABLES_TOKEN }}
           FIGMA_MCP_TOKEN: ${{ secrets.FIGMA_MCP_TOKEN }}
         run: |
+          REQUIRE_AUTHORITATIVE=""
+          if [ "${{ inputs.require_authoritative }}" = "true" ]; then
+            REQUIRE_AUTHORITATIVE="--require-authoritative"
+          fi
           if [ -n "${{ inputs.file_key }}" ]; then
-            figmaclaw variables --file-key "${{ inputs.file_key }}" --source "${{ inputs.variables_source }}" --auto-commit
+            figmaclaw variables --file-key "${{ inputs.file_key }}" --source "${{ inputs.variables_source }}" $REQUIRE_AUTHORITATIVE --auto-commit
           else
-            figmaclaw variables --source "${{ inputs.variables_source }}" --auto-commit
+            figmaclaw variables --source "${{ inputs.variables_source }}" $REQUIRE_AUTHORITATIVE --auto-commit
           fi
 
       - name: Push

@@ -21,7 +21,9 @@ from figmaclaw.git_utils import git_commit
 from figmaclaw.status_markers import COMMIT_MSG_PREFIX
 from figmaclaw.token_catalog import (
     AUTHORITATIVE_DEFINITION_SOURCES,
+    TokenCatalog,
     catalog_path,
+    has_figma_api_definitions_for_file,
     libraries_for_file,
     load_catalog,
     mark_local_variables_unavailable,
@@ -49,6 +51,11 @@ from figmaclaw.token_catalog import (
     show_default=True,
     help="Variable-definition reader to use.",
 )
+@click.option(
+    "--require-authoritative",
+    is_flag=True,
+    help="Exit non-zero unless selected files have authoritative variable definitions.",
+)
 @click.pass_context
 def variables_cmd(
     ctx: click.Context,
@@ -56,11 +63,14 @@ def variables_cmd(
     auto_commit: bool,
     force: bool,
     source: str,
+    require_authoritative: bool,
 ) -> None:
     """Refresh .figma-sync/ds_catalog.json from Figma local variables."""
     repo_dir = Path(ctx.obj["repo_dir"])
     api_key = require_figma_api_key()
-    asyncio.run(_run(api_key, repo_dir, file_key, auto_commit, force, source))
+    asyncio.run(
+        _run(api_key, repo_dir, file_key, auto_commit, force, source, require_authoritative)
+    )
 
 
 async def _run(
@@ -70,6 +80,7 @@ async def _run(
     auto_commit: bool,
     force: bool,
     source: str,
+    require_authoritative: bool,
 ) -> None:
     state = load_state(repo_dir)
     if not require_tracked_files(state):
@@ -164,6 +175,21 @@ async def _run(
                     if committed:
                         click.echo("  ✓ committed")
 
+        if require_authoritative:
+            required_keys = [
+                key
+                for key in keys
+                if key in state.manifest.tracked_files and key not in state.manifest.skipped_files
+            ]
+            errors = _authoritative_catalog_errors(catalog, required_keys)
+            if errors:
+                raise click.ClickException(
+                    "authoritative variables missing:\n"
+                    + "\n".join(f"- {error}" for error in errors)
+                    + "\nConfigure FIGMA_VARIABLES_TOKEN with file_variables:read "
+                    "or FIGMA_MCP_TOKEN before relying on design-token definitions."
+                )
+
     if written:
         click.echo(f"{COMMIT_MSG_PREFIX}sync: figmaclaw variables updated")
 
@@ -173,6 +199,27 @@ def _catalog_text(repo_dir: Path) -> str | None:
     if not path.exists():
         return None
     return path.read_text(encoding="utf-8")
+
+
+def _authoritative_catalog_errors(catalog: TokenCatalog, file_keys: list[str]) -> list[str]:
+    errors: list[str] = []
+    for key in file_keys:
+        libraries = libraries_for_file(catalog, key)
+        if not libraries:
+            errors.append(f"{key}: no variables registry entry exists")
+            continue
+
+        sources = sorted({lib.source or "missing" for lib in libraries})
+        if not any(source in AUTHORITATIVE_DEFINITION_SOURCES for source in sources):
+            errors.append(
+                f"{key}: variables registry is not authoritative "
+                f"(library source(s): {', '.join(sources)})"
+            )
+            continue
+
+        if not has_figma_api_definitions_for_file(catalog, key):
+            errors.append(f"{key}: authoritative reader returned zero variable definitions")
+    return errors
 
 
 async def _get_local_variables(
