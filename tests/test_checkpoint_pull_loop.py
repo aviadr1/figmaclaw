@@ -171,12 +171,28 @@ def test_stops_immediately_on_pull_timeout(tmp_path: Path) -> None:
     )
     assert (tmp_path / "count.txt").exists() is False
     assert "timed out" in out
+    assert "with no dirty progress" in out
+    assert "retrying with --max-pages" not in out
     trace = (
         (tmp_path / "git-trace.txt").read_text() if (tmp_path / "git-trace.txt").exists() else ""
     )
     # With no dirty state, the timeout path must not attempt to commit, so no
     # `git pull` / `git add` / `git commit` should be traced.
     assert "git commit" not in trace
+
+
+def test_default_batch_timeout_fires_before_hosted_runner_shutdown() -> None:
+    """INVARIANT: shell timeout must fire before GitHub cancels the step.
+
+    Linear-git runs proved hosted runners can deliver a shutdown signal around
+    13 minutes into the checkpointed pull step. The loop timeout must be lower
+    so the script can flush progress and write observability before that.
+    """
+    script = (Path(__file__).parents[1] / "scripts" / "checkpoint_pull_loop.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'BATCH_TIMEOUT_SECONDS="${BATCH_TIMEOUT_SECONDS:-420}"' in script
 
 
 def test_force_mode_runs_single_batch_even_when_has_more(tmp_path: Path) -> None:

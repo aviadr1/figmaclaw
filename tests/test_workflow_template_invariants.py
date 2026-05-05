@@ -31,6 +31,23 @@ def test_sync_template_isolated_from_webhook_cancellation() -> None:
     assert "group: figma-git-webhook" not in text
 
 
+def test_sync_template_threads_figmaclaw_ref_to_reusable_jobs() -> None:
+    """INVARIANT: consumer repos can run a figmaclaw PR branch in real CI."""
+    text = bundled_template_text("figmaclaw-sync.yaml")
+
+    assert "figmaclaw_ref:" in text
+    assert text.count("figmaclaw_ref: ${{ github.event.inputs.figmaclaw_ref || 'main' }}") == 5
+
+
+def test_sync_template_threads_current_branch_to_stateful_jobs() -> None:
+    """INVARIANT: workflow_dispatch on consumer PR branches must not pull main."""
+    text = bundled_template_text("figmaclaw-sync.yaml")
+
+    assert text.count("target_ref: ${{ github.ref_name }}") == 2
+    assert "uses: aviadr1/figmaclaw/.github/workflows/sync.yml@main" in text
+    assert "uses: aviadr1/figmaclaw/.github/workflows/variables.yml@main" in text
+
+
 def test_manage_webhooks_template_is_installed() -> None:
     """INVARIANT: webhook-management stub is part of managed templates."""
     text = bundled_template_text("figmaclaw-manage-webhooks.yaml")

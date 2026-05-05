@@ -12,6 +12,10 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from figmaclaw.figma_utils import write_json_if_changed
+
+MANIFEST_TIMESTAMP_KEYS = frozenset({"last_checked_at", "last_refreshed_at"})
+
 
 class PageEntry(BaseModel):
     """State for a single Figma page within a tracked file.
@@ -94,7 +98,11 @@ class FigmaSyncState:
     def save(self) -> None:
         """Persist manifest to disk."""
         self._sync_dir.mkdir(parents=True, exist_ok=True)
-        self._manifest_file.write_text(self.manifest.model_dump_json(indent=2) + "\n")
+        write_json_if_changed(
+            self._manifest_file,
+            self.manifest.model_dump(mode="json"),
+            ignore_keys=MANIFEST_TIMESTAMP_KEYS,
+        )
 
     def get_page_hash(self, file_key: str, page_node_id: str) -> str | None:
         """Return the stored hash for a page, or None if unknown."""

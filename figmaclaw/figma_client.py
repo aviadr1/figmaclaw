@@ -30,6 +30,8 @@ from figmaclaw.figma_api_models import (
 )
 
 DEFAULT_RATE_LIMIT_RPM = 15
+DEFAULT_TIMEOUT_S = 300.0
+DEFAULT_MAX_ATTEMPTS = 10
 DEFAULT_RETRY_AFTER_S = 10
 MIN_429_RETRY_AFTER_S = 5
 
@@ -49,10 +51,16 @@ class FigmaClient:
         api_key: str,
         *,
         rate_limit_rpm: int = DEFAULT_RATE_LIMIT_RPM,
+        timeout_s: float = DEFAULT_TIMEOUT_S,
+        max_attempts: int = DEFAULT_MAX_ATTEMPTS,
         variables_api_key: str | None = None,
     ) -> None:
         self._api_key = api_key
         self._variables_api_key = variables_api_key or api_key
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be at least 1.")
+        self._timeout_s = timeout_s
+        self._max_attempts = max_attempts
         self._client: httpx.AsyncClient | None = None
         self._variables_client: httpx.AsyncClient | None = None
         self._min_interval = 60.0 / rate_limit_rpm if rate_limit_rpm > 0 else 0.0
@@ -64,13 +72,13 @@ class FigmaClient:
             if self._variables_client is None or self._variables_client.is_closed:
                 self._variables_client = httpx.AsyncClient(
                     headers={"X-Figma-Token": self._variables_api_key},
-                    timeout=300.0,
+                    timeout=self._timeout_s,
                 )
             return self._variables_client
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
                 headers={"X-Figma-Token": self._api_key},
-                timeout=300.0,
+                timeout=self._timeout_s,
             )
         return self._client
 
@@ -124,9 +132,19 @@ class FigmaClient:
         """GET request with proactive pacing and retry on 429 / 5xx / connection errors."""
         client = await self._ensure_client(variables=variables)
         url = f"{self._base_url}{path}"
+        return await self._request_json(client, url, params=params)
+
+    async def _request_json(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        *,
+        params: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """GET JSON with proactive pacing and retry on transient Figma/API failures."""
         last_exc: Exception | None = None
         response: httpx.Response | None = None
-        for attempt in range(10):
+        for attempt in range(self._max_attempts):
             await self._pace()
             try:
                 response = await client.get(url, params=params)
@@ -139,16 +157,20 @@ class FigmaClient:
                 # Connection dropped mid-transfer — retry with backoff.
                 # Large file trees (e.g. 50+ pages) sometimes get truncated.
                 last_exc = e
-                if attempt < 9:
+                if attempt < self._max_attempts - 1:
                     await asyncio.sleep(2 * (attempt + 1))
                     continue
                 raise
             if response.status_code == 429:
-                await asyncio.sleep(self._retry_after_seconds(response))
-                continue
-            if response.status_code >= 500 and attempt < 9:
-                await asyncio.sleep(2 * (attempt + 1))
-                continue
+                if attempt < self._max_attempts - 1:
+                    await asyncio.sleep(self._retry_after_seconds(response))
+                    continue
+                response.raise_for_status()
+            if response.status_code >= 500:
+                if attempt < self._max_attempts - 1:
+                    await asyncio.sleep(2 * (attempt + 1))
+                    continue
+                response.raise_for_status()
             response.raise_for_status()
             result: dict[str, Any] = response.json()
             return result
@@ -319,38 +341,7 @@ class FigmaClient:
         """GET an absolute Figma API URL (used for pagination)."""
         client = await self._ensure_client()
         full_url = url if url.startswith("http") else f"{self._base_url}{url}"
-        last_exc: Exception | None = None
-        response: httpx.Response | None = None
-        for attempt in range(10):
-            await self._pace()
-            try:
-                response = await client.get(full_url)
-            except (
-                httpx.RemoteProtocolError,
-                httpx.ReadError,
-                httpx.ReadTimeout,
-                httpx.ConnectError,
-            ) as e:
-                last_exc = e
-                if attempt < 9:
-                    await asyncio.sleep(2 * (attempt + 1))
-                    continue
-                raise
-            if response.status_code == 429:
-                await asyncio.sleep(self._retry_after_seconds(response))
-                continue
-            if response.status_code >= 500 and attempt < 9:
-                await asyncio.sleep(2 * (attempt + 1))
-                continue
-            response.raise_for_status()
-            result: dict[str, Any] = response.json()
-            return result
-        if last_exc:
-            raise last_exc
-        if response is None:
-            raise RuntimeError("GET request loop exited without a response.")
-        response.raise_for_status()
-        return {}
+        return await self._request_json(client, full_url)
 
     async def get_versions(
         self,

@@ -7,7 +7,7 @@ set -euo pipefail
 INPUT_FORCE="${INPUT_FORCE:-false}"
 MAX_BATCHES="${MAX_BATCHES:-180}"
 MAX_IDLE_HAS_MORE_BATCHES="${MAX_IDLE_HAS_MORE_BATCHES:-3}"
-BATCH_TIMEOUT_SECONDS="${BATCH_TIMEOUT_SECONDS:-900}"
+BATCH_TIMEOUT_SECONDS="${BATCH_TIMEOUT_SECONDS:-420}"
 MAX_PAGES_PER_BATCH="${MAX_PAGES_PER_BATCH:-5}"
 FIGMACLAW_OUT_PATH="${FIGMACLAW_OUT_PATH:-/tmp/figmaclaw-out.txt}"
 FIGMA_TEAM_ID="${FIGMA_TEAM_ID:-}"
@@ -207,6 +207,12 @@ while true; do
       # timed-out batch made forward progress or was completely wasted.
       echo "figmaclaw pull timed out but partial progress committed (batch $BATCH)."
       emit_obs "partial_commit_on_timeout" "timeout commit saved work"
+    else
+      echo "figmaclaw pull timed out after ${BATCH_TIMEOUT_SECONDS}s with no dirty progress; stopping checkpoint loop early."
+      FINAL_REASON="timeout_no_progress_stop"
+      emit_obs "batch_timeout_stop" "timeout without dirty progress"
+      emit_obs "batch_end" "timeout no progress"
+      break
     fi
     if [ "$INPUT_FORCE" != "true" ] && [ "$CURRENT_MAX_PAGES_PER_BATCH" -gt 1 ]; then
       CURRENT_MAX_PAGES_PER_BATCH=$((CURRENT_MAX_PAGES_PER_BATCH / 2))

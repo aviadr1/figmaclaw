@@ -199,6 +199,52 @@ def test_sync_state_save_then_load_round_trips(tmp_path: Path):
     assert state2.manifest.files["abc123"].pages["0:1"].page_hash == "deadbeef12345678"
 
 
+def test_sync_state_save_skips_manifest_timestamp_only_changes(tmp_path: Path):
+    """W-1: manifest timestamp-only updates must not rewrite the committed cache.
+
+    linear-git exposed commits where only ``last_checked_at`` /
+    ``last_refreshed_at`` changed. Those commits wake downstream CI and can
+    trigger avoidable enrichment work despite carrying no load-bearing state.
+    """
+    from figmaclaw.figma_sync_state import FileEntry, PageEntry
+
+    state = FigmaSyncState(tmp_path)
+    state.manifest.tracked_files.append("abc123")
+    state.manifest.files["abc123"] = FileEntry(
+        file_name="Web App",
+        version="v1",
+        last_modified="2026-04-28T00:00:00Z",
+        last_checked_at="2026-05-05T00:00:00Z",
+        pages={
+            "0:1": PageEntry(
+                page_name="Onboarding",
+                page_slug="onboarding",
+                md_path="figma/web-app-abc123/pages/onboarding.md",
+                page_hash="deadbeef12345678",
+                last_refreshed_at="2026-05-05T00:00:00Z",
+                frame_hashes={"1:1": "aaaabbbb"},
+            )
+        },
+    )
+    state.save()
+    manifest_path = tmp_path / ".figma-sync" / "manifest.json"
+    original = manifest_path.read_text()
+
+    state.manifest.files["abc123"].last_checked_at = "2026-05-05T01:00:00Z"
+    state.manifest.files["abc123"].pages["0:1"].last_refreshed_at = "2026-05-05T01:00:00Z"
+    state.save()
+
+    assert manifest_path.read_text() == original
+
+    state.manifest.files["abc123"].version = "v2"
+    state.save()
+
+    updated = manifest_path.read_text()
+    assert updated != original
+    assert '"version": "v2"' in updated
+    assert "2026-05-05T01:00:00Z" in updated
+
+
 def test_sync_state_get_page_hash_returns_none_for_unknown(tmp_path: Path):
     """INVARIANT: get_page_hash returns None for a page not yet in manifest."""
     state = FigmaSyncState(tmp_path)
