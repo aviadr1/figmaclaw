@@ -52,11 +52,21 @@ def test_sync_template_threads_figmaclaw_ref_to_reusable_jobs() -> None:
     assert text.count("figmaclaw_ref: ${{ github.event.inputs.figmaclaw_ref || 'main' }}") == 5
 
 
-def test_sync_template_threads_current_branch_to_stateful_jobs() -> None:
-    """INVARIANT: workflow_dispatch on consumer PR branches must not pull main."""
+def test_host_templates_do_not_repeat_target_ref_boilerplate() -> None:
+    """INVARIANT WF-3: caller branch refresh is owned by reusable workflows."""
+
+    for template_name in (
+        "figmaclaw-sync.yaml",
+        "figmaclaw-webhook.yaml",
+        "figmaclaw-variables.yaml",
+    ):
+        assert "target_ref:" not in bundled_template_text(template_name)
+
+
+def test_sync_template_uses_reusable_stateful_jobs() -> None:
+    """INVARIANT: consumer repos call upstream reusable jobs, not local logic."""
     text = bundled_template_text("figmaclaw-sync.yaml")
 
-    assert text.count("target_ref: ${{ github.ref_name }}") == 5
     assert "uses: aviadr1/figmaclaw/.github/workflows/sync.yml@main" in text
     assert "uses: aviadr1/figmaclaw/.github/workflows/census.yml@main" in text
     assert "uses: aviadr1/figmaclaw/.github/workflows/variables.yml@main" in text
@@ -64,17 +74,38 @@ def test_sync_template_threads_current_branch_to_stateful_jobs() -> None:
 
 
 def test_variables_template_threads_current_branch_to_reusable_workflow() -> None:
-    """INVARIANT: standalone variables dispatch on PR branches must not pull main."""
+    """INVARIANT: standalone variables dispatch uses upstream reusable workflow."""
     text = bundled_template_text("figmaclaw-variables.yaml")
 
-    assert "target_ref: ${{ github.ref_name }}" in text
+    assert "uses: aviadr1/figmaclaw/.github/workflows/variables.yml@main" in text
+    assert "target_ref:" not in text
 
 
-def test_webhook_template_threads_current_branch_to_stateful_jobs() -> None:
-    """INVARIANT WF-3: webhook apply/enrich jobs refresh the current target branch."""
+def test_webhook_template_uses_reusable_stateful_jobs() -> None:
+    """INVARIANT: webhook caller stays a thin reusable-workflow stub."""
     text = bundled_template_text("figmaclaw-webhook.yaml")
 
-    assert text.count("target_ref: ${{ github.ref_name }}") == 2
+    assert "uses: aviadr1/figmaclaw/.github/workflows/webhook.yml@main" in text
+    assert "uses: aviadr1/figmaclaw/.github/workflows/claude-run.yml@main" in text
+    assert "target_ref:" not in text
+
+
+def test_reusable_stateful_workflows_default_target_ref_to_caller_branch() -> None:
+    """INVARIANT WF-3: called workflows refresh the caller branch by default."""
+
+    for workflow_name in (
+        "sync.yml",
+        "webhook.yml",
+        "census.yml",
+        "variables.yml",
+        "claude-run.yml",
+    ):
+        text = _reusable_workflow_text(workflow_name)
+
+        assert "target_ref:" in text
+        assert "default: ''" in text
+        assert "${{ inputs.target_ref || github.ref_name }}" in text
+        assert 'origin "${{ inputs.target_ref }}"' not in text
 
 
 def test_claude_run_refreshes_target_ref_before_selecting_work() -> None:
@@ -82,7 +113,10 @@ def test_claude_run_refreshes_target_ref_before_selecting_work() -> None:
     text = _reusable_workflow_text("claude-run.yml")
 
     assert "target_ref:" in text
-    assert 'git pull --no-rebase --ff-only origin "${{ inputs.target_ref }}"' in text
+    assert (
+        'git pull --no-rebase --ff-only origin "${{ inputs.target_ref || github.ref_name }}"'
+        in text
+    )
     assert text.index("name: Pull latest changes") < text.index("          figmaclaw claude-run \\")
 
 
@@ -136,7 +170,7 @@ def test_reusable_registry_workflows_replay_generated_artifacts_on_push_conflict
 
         assert "PUSH_STATUS=$?" in text
         assert 'if [ "$PUSH_STATUS" -eq 0 ]; then' in text
-        assert 'git reset --hard "origin/${{ inputs.target_ref }}"' in text
+        assert 'git reset --hard "origin/${{ inputs.target_ref || github.ref_name }}"' in text
         assert "This is safe only because this GitHub runner has no human edits" in text
         assert text.count(command) >= 2
         assert "git push ||" not in text
@@ -203,7 +237,7 @@ def test_registry_push_replay_branch_executes_under_bash_errexit(tmp_path: Path)
             "variables.yml",
             "variables",
             {
-                "${{ inputs.target_ref }}": "test/figmaclaw-pr-129-ci",
+                "${{ inputs.target_ref || github.ref_name }}": "test/figmaclaw-pr-129-ci",
                 "${{ inputs.require_authoritative }}": "false",
                 "${{ inputs.file_key }}": "",
                 "${{ inputs.variables_source }}": "auto",
@@ -214,7 +248,7 @@ def test_registry_push_replay_branch_executes_under_bash_errexit(tmp_path: Path)
             "census.yml",
             "census",
             {
-                "${{ inputs.target_ref }}": "test/figmaclaw-pr-129-ci",
+                "${{ inputs.target_ref || github.ref_name }}": "test/figmaclaw-pr-129-ci",
                 "${{ inputs.file_key }}": "",
             },
             "figmaclaw census --auto-commit",
