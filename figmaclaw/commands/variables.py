@@ -20,7 +20,7 @@ from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_mcp import FigmaMcpError
 from figmaclaw.figma_variables_mcp import get_local_variables_via_mcp
 from figmaclaw.git_utils import git_commit
-from figmaclaw.source_context import source_context_from_manifest_entry
+from figmaclaw.source_context import SourceContext, source_context_from_manifest_entry
 from figmaclaw.status_markers import COMMIT_MSG_PREFIX
 from figmaclaw.token_catalog import (
     AUTHORITATIVE_DEFINITION_SOURCES,
@@ -312,21 +312,18 @@ def _catalog_text(repo_dir: Path) -> str | None:
 
 def _apply_source_context_to_libraries(
     libraries: list[CatalogLibrary],
-    source_context: object,
+    source_context: SourceContext,
 ) -> bool:
     changed = False
-    project_id = getattr(source_context, "project_id", None)
-    project_name = getattr(source_context, "project_name", None)
-    lifecycle = getattr(source_context, "lifecycle", None) or "unknown"
     for library in libraries:
-        if library.source_project_id != project_id:
-            library.source_project_id = project_id
+        if library.source_project_id != source_context.project_id:
+            library.source_project_id = source_context.project_id
             changed = True
-        if library.source_project_name != project_name:
-            library.source_project_name = project_name
+        if library.source_project_name != source_context.project_name:
+            library.source_project_name = source_context.project_name
             changed = True
-        if library.source_lifecycle != lifecycle:
-            library.source_lifecycle = lifecycle
+        if library.source_lifecycle != source_context.lifecycle:
+            library.source_lifecycle = source_context.lifecycle
             changed = True
     return changed
 

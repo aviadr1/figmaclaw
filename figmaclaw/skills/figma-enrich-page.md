@@ -131,8 +131,10 @@ Check `needs_enrichment` is false.
 ```bash
 git add <file_path>
 git commit -m "sync: describe <page-name> frames"
-git push || (git pull --no-rebase && git push)
+git push
 ```
+
+If push is rejected, stop and report the rejected push. Do not merge or rewrite generated artifacts as recovery.
 
 ## Notes
 

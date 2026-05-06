@@ -58,6 +58,7 @@ jobs:
     uses: aviadr1/figmaclaw/.github/workflows/census.yml@main
     with:
       figmaclaw_ref: ${{ github.event.inputs.figmaclaw_ref || 'main' }}
+      target_ref: ${{ github.ref_name }}
     secrets:
       FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
 

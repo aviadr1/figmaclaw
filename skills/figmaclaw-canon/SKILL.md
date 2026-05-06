@@ -1,6 +1,6 @@
 ---
 name: figmaclaw canon
-description: Use when working with figmaclaw-generated data (figma/*.md pages, _census.md, ds_catalog.json, token sidecars) or modifying figmaclaw itself. Covers the four-layer data contract (frontmatter / body / manifest / file-scope registries), invariant classes (BP/SC/FM/CL/W/CR/KS/TS/CW/LW/HE/TC/TS-S/REG/PP/NC/HSH/SI/MIG/AUTH/ERR/WF), design decisions D1-D14, refresh-trigger ladder, and the failure-mode catalog F1-F20. Authoritative for "is this change safe?" questions.
+description: Use when working with figmaclaw-generated data (figma/*.md pages, _census.md, ds_catalog.json, token sidecars) or modifying figmaclaw itself. Covers the four-layer data contract (frontmatter / body / manifest / file-scope registries), invariant classes (BP/SC/FM/CL/W/CR/KS/TS/CW/LW/HE/TC/TS-S/REG/PP/NC/HSH/SI/MIG/AUTH/ERR/WF), design decisions D1-D15, refresh-trigger ladder, and the failure-mode catalog F1-F21. Authoritative for "is this change safe?" questions.
 ---
 
 # figmaclaw canon — invariants and design decisions
@@ -40,7 +40,7 @@ description: Use when working with figmaclaw-generated data (figma/*.md pages, _
    - [AUTH — Authority claims](#auth--authority-claims)
    - [ERR — Failure scoping](#err--failure-scoping)
    - [WF — Workflow recovery](#wf--workflow-recovery)
-5. [Design decisions D1..D14](#5-design-decisions)
+5. [Design decisions D1..D15](#5-design-decisions)
 6. [Failure-mode catalog](#6-failure-mode-catalog)
 7. [Document index](#7-document-index)
 8. [Anti-pattern checklist for PR review](#8-anti-pattern-checklist-for-pr-review)
@@ -70,14 +70,14 @@ figmaclaw's data is organized in four layers. Every artifact figmaclaw writes be
 | **Frontmatter** (in page `.md` files) | Source of truth for page identity, structure, and enrichment state. | No — losing it loses the page's identity in git. | figmaclaw CLI only. | `frames`, `flows`, `enriched_hash`, `enriched_frame_hashes`, `enriched_at`. |
 | **Body** (in page `.md` files) | LLM/human-authored prose. | No — costs Figma screenshots + LLM inference + human review. | LLMs/humans only, via `write-body`. **Code never writes prose.** | Page summary, section intros, frame description tables, Mermaid charts. |
 | **Manifest** (`.figma-sync/manifest.json`) | Sync-engine cache. | Yes — if deleted, sync re-fetches everything. Zero data loss. | figmaclaw CLI. | Per-file `version`, `last_modified`, `pull_schema_version`; per-page `page_hash`, `frame_hashes`. |
-| **File-scope registries** (`.figma-sync/ds_catalog.json`, `figma/{slug}/_census.md`) | Authoritative cache of file-level Figma data. Recomputable from REST. | Yes — `figmaclaw variables` and `figmaclaw census` reproduce them in seconds. | figmaclaw CLI (dedicated subcommands). | Variable catalog, published component-set census. |
+| **File-scope registries** (`.figma-sync/ds_catalog.json`, `figma/{slug}/_census.md`) | Authoritative cache of file-level Figma data. Recomputable from file-scoped Figma registry readers. | Yes — `figmaclaw variables` and `figmaclaw census` reproduce them without page, screenshot, or LLM work. | figmaclaw CLI (dedicated subcommands). | Variable catalog, published component-set census. |
 
 **The law:**
 
 - Frontmatter is the index of what exists on a page. **Use it to make enrichment decisions cheaply (no API calls).**
 - Body is prose. **No Python code, no CLI command, no agent tool may parse prose or use prose as source of truth.** Code may inspect canonical generated headings/tables only through the canonical walkers named in CW-1. No `parse_page_summary()`. No `parse_section_intros()`. No ad hoc regex over body tables.
 - Manifest is engineering cache. Treat it as recomputable; never store load-bearing information in it that isn't reproducible from the API.
-- File-scope registries are file-scope answers cached in committed files for cross-tool consumption (suggest-tokens, agent skills, CI). They are recomputable from REST and must remain so.
+- File-scope registries are file-scope answers cached in committed files for cross-tool consumption (suggest-tokens, agent skills, CI). They are recomputable from file-scoped Figma registry readers and must remain so.
 
 The full body-preservation argument and the full manifest-vs-frontmatter argument are derived from this contract. See [§4 BP, FM](#bp--body-preservation), [§4 W](#w--write-idempotency), [§5 D3, D4, D11](#5-design-decisions).
 
@@ -85,11 +85,11 @@ The full body-preservation argument and the full manifest-vs-frontmatter argumen
 
 Every artifact figmaclaw produces, what it caches, when it refreshes, who writes it, and whether losing it is recoverable.
 
-| Tier | Storage | What it caches | Refresh trigger | Writer | Recoverable from REST? |
+| Tier | Storage | What it caches | Refresh trigger | Writer | Recoverable from file-scoped source? |
 |---|---|---|---|---|---|
 | File meta | `manifest.files[k].version`, `last_modified`, `last_checked_at` | "Has the file changed?" | every `pull` (cheap meta call) | `pull_logic.py` | yes |
 | File registry: components | `figma/{slug}/_census.md` | Published/importable component sets (name, key, page, updated). Stable content hash over `(name, key)` pairs. Local unpublished component definitions are page structure and render to `components/*.md`; they are not census entries. | `figmaclaw census` standalone. `pull` fetches component sets for `component_set_keys`, but does not write `_census.md`. | `commands/census.py` | yes |
-| **File registry: variables** | `.figma-sync/ds_catalog.json` (schema v2) | Variable definitions per library: name, collection, resolved_type, values_by_mode, scopes, code_syntax, alias_of. | `figmaclaw variables` standalone, **and** opportunistic during `pull` when file version changed and repo config is Enterprise | `commands/variables.py`, `token_catalog.py` | yes (Figma MCP plugin-runtime export by default, or REST `/variables/local` only when `[tool.figmaclaw] license_type = "enterprise"`; `seeded:*` entries fill the gap when no authoritative reader is available) |
+| **File registry: variables** | `.figma-sync/ds_catalog.json` (schema v2) | Variable definitions per library: name, collection, resolved_type, values_by_mode, scopes, code_syntax, alias_of. | `figmaclaw variables` standalone, **and** opportunistic during `pull` when file version changed and repo config is Enterprise | `commands/variables.py`, `token_catalog.py` | yes (from any complete, file-scoped variable-registry reader available in the install: Figma MCP by default, REST `/variables/local` only when `[tool.figmaclaw] license_type = "enterprise"`; `seeded:*` entries fill the gap when no authoritative reader is available) |
 | Page structure | `figma/{slug}/pages/*.md` frontmatter (`frames`, `flows`); `manifest.files[k].pages[p].page_hash` / `frame_hashes` | Page node tree, prototype edges, hashes. | `pull` when file version changed AND page hash changed | `pull_logic.py`, `figma_render.py` | yes |
 | Page tokens (raw/stale usage) | `figma/{slug}/pages/*.tokens.json` | Per-frame `(property, classification, value)` aggregates with `count`. Schema v2. | `pull` when page hash changed | `pull_logic.py`, `token_scan.py` | yes (re-walk page) |
 | Page body | `figma/{slug}/pages/*.md` body | LLM-authored prose. | `claude-run` (LLM enrichment, downstream of pull) | LLM via `write-body`; figmaclaw never overwrites | **no — protected by BP-1..6** |
@@ -110,7 +110,7 @@ When a sync runs, figmaclaw cascades through these checks. Higher tiers gate low
                        │
 ┌──────────────────────▼───────────────────────────────────────────┐
 │ Tier 1.5 File-scope registry refresh                             │
-│          `get_local_variables(file_key)` / MCP export → catalog   │
+│          complete variable-registry reader → catalog              │
 │          (TC-1, TC-5)                                             │
 │          `get_component_sets(file_key)`  → component_set_keys    │
 │          for component markdown. `pull` does not write census.   │
@@ -278,17 +278,17 @@ The catalog (`.figma-sync/ds_catalog.json`) is the file-scope authoritative answ
 
 | ID | Invariant | Enforced by |
 |---|---|---|
-| **TC-1 — Authoritative source.** | Catalog is built from Figma's file-scope variable registry: first `GET /v1/files/{key}/variables/local` when REST scope allows it, otherwise the Figma MCP plugin-runtime export. It is never built from page-walk observation. It enumerates every variable Figma defines for the file, including ones never bound to any node. Page walks may produce *usage* facts; they MUST NOT add a variable to the catalog or set its definitional fields. | `tests/test_token_catalog.py::test_tc1_*` |
+| **TC-1 — Authoritative source.** | Catalog is built from a complete Figma file-scope variable-registry reader with explicit capability gating. Provider choice and call shape are implementation details; the contract is completeness for the file. It is never built from page-walk observation. It enumerates every variable Figma defines for the file, including ones never bound to any node. Page walks may produce *usage* facts; they MUST NOT add a variable to the catalog or set its definitional fields. | `tests/test_token_catalog.py::test_tc1_*` |
 | **TC-2 — Complete identity.** | Every variable entry stores: `library_hash`, `collection_id`, `name`, `resolved_type` (`COLOR`/`FLOAT`/`STRING`/`BOOLEAN`), `values_by_mode`, `scopes`, `code_syntax`, `alias_of`, `source` (`figma_api`/`figma_mcp`/`seeded:*`/`observed`). No definitional field is "set later by another code path." | `tests/test_token_catalog.py::test_tc2_*` |
 | **TC-3 — No dead fields.** | Every field on `CatalogVariable` and `CatalogLibrary` has exactly one canonical writer. CI fails if a model field is declared but no source location writes it. | source-scan meta-test in `tests/test_dead_fields.py` |
 | **TC-4 — Mode-aware storage.** | Variables store `values_by_mode: dict[mode_id, value]`, never flattened to a single value. Readers that need a single value pick an explicit `default_mode_id` from the library entry. There is no implicit last-write-wins. | `tests/test_token_catalog.py::test_tc4_*` |
 | **TC-5 — Refresh is page-independent.** | The catalog refresh code path takes `file_key` and a `FigmaClient` only. It never reads or writes any `pages/*.md`, never consults `enriched_hash`, `page_hash`, or `frame_hashes`. It joins `pull` at Tier 1.5 (file-version-gated, once per changed file) — at the same tier as `get_component_sets`. | `tests/test_variables_command.py::test_tc5_*` |
-| **TC-6 — Cheap subcommand exists.** | `figmaclaw variables --file-key <key>` refreshes the catalog without touching pages, screenshots, or sidecars. Runtime is dominated by one HTTP call per file. | smoke test |
+| **TC-6 — Cheap subcommand exists.** | `figmaclaw variables --file-key <key>` refreshes the catalog without touching pages, screenshots, sidecars, or LLM-authored body. Runtime must scale with file-scoped registry reads, not with page count or frame count. | smoke test |
 | **TC-7 — Observability of staleness.** | Each library entry records `source_version` (Figma file version at fetch) and `fetched_at`. Consumers compare the entry's `source_version` against `manifest.files[k].version` to decide if the cache is current. | `tests/test_token_catalog.py::test_tc7_*` |
 | **TC-8 — Idempotent writes.** | `save_catalog` skips writes when only `fetched_at` would change (W-1 applied to the catalog). Source-scan meta-test pins this. | `tests/test_catalog_idempotency.py` |
 | **TC-9 — Schema upgrades migrate, never drop.** | Schema bumps either migrate forward in place (preserving `seeded:*` entries and any human-set fields) or auto-archive to `ds_catalog.bak.<UTC>.json` and start fresh. Never silently overwrite or warn-and-skip. (LW-2 applied to the catalog.) | `tests/test_catalog_migration.py` |
 | **TC-10 — Current unavailable markers use bounded retry backoff.** | When `figmaclaw variables --source auto` records `source: unavailable` for the current Figma file version, it may also record an `unavailable_retry_after` timestamp. Later default runs skip that file only until the retry deadline, instead of re-running MCP and re-emitting the same fallback errors every CI tick. Missing/expired deadlines, `--force`, and explicit readers retry; `--source rest` additionally requires `license_type = "enterprise"`. | `tests/test_variables_command.py::test_variables_command_skips_current_unavailable_marker_during_retry_cooldown` |
-| **TC-11 — MCP write-tool boundaries are explicit.** | Non-Enterprise `figmaclaw variables --source auto` may use MCP for authoritative variables, but it must not blindly treat every `use_figma` failure as transient. Figma Design files may use the plugin-runtime export; FigJam files are not sent through the local-variable MCP export path; `Operation attempted to modify the file while in read-only mode` is a per-file/tool capability denial and is not immediately retried. The resulting unavailable marker remains version-scoped and bounded by TC-10, not permanent poison. | `tests/test_variables_command.py::test_variables_command_auto_skips_mcp_variable_export_for_figjam`, `tests/test_figma_variables_mcp.py::test_get_local_variables_via_mcp_runner_does_not_retry_read_only_denial` |
+| **TC-11 — MCP write-tool boundaries are explicit.** | Non-Enterprise `figmaclaw variables --source auto` may use MCP for authoritative variables, but it must not blindly treat every tool failure as transient. Readers must distinguish file-type ineligibility, provider capability/read-only denial, and transient failure. Ineligible files are not sent through the local-variable MCP export path; capability/read-only denials are scoped to the file/tool and are not immediately retried. The resulting unavailable marker remains version-scoped and bounded by TC-10, not permanent poison. | `tests/test_variables_command.py::test_variables_command_auto_skips_mcp_variable_export_for_figjam`, `tests/test_figma_variables_mcp.py::test_get_local_variables_via_mcp_runner_does_not_retry_read_only_denial` |
 | **TC-12 — Registry provenance includes source-system lifecycle.** | Every file-scope registry row must be joinable to its source Figma file and source system lifecycle. `CatalogLibrary` entries carry `source_file_key`, optional source project id/name, and source lifecycle (`active`, `archived`, or implicit `unknown`). Component census files carry the same source context in frontmatter when known. Archived/legacy libraries are preserved as migration evidence, but readers must not treat them as the default current design-system target unless explicitly selected. | `tests/test_source_context.py`, `tests/test_variables_command.py::test_variables_command_records_source_lifecycle_from_manifest`, `tests/test_census.py::TestCensus::test_census_frontmatter_records_source_lifecycle` |
 
 **`source` enum values:**
@@ -385,10 +385,11 @@ Reusable workflows write generated cache artifacts in shared git branches. Their
 | ID | Name | Description | Rationale | Proof |
 |---|---|---|---|---|
 | **WF-1** | Replay deterministic generated artifacts | When a workflow push is rejected for deterministic generated artifacts, recovery must recompute those artifacts from the latest remote source state instead of text-merging stale generated JSON/markdown. | Generated artifacts are cache snapshots. Text-merging two snapshots can create a state that was never generated from any Figma/Linear source. Reset-and-replay preserves determinism and avoids cache corruption. | Concurrent variables/census/enrichment pushes produced generated JSON conflicts. Evidence: [PR #129 replay note](https://github.com/aviadr1/figmaclaw/pull/129#issuecomment-4341938356), commit [`60bfbb4`](https://github.com/aviadr1/figmaclaw/commit/60bfbb4), commit [`f5bdc51`](https://github.com/aviadr1/figmaclaw/commit/f5bdc51), `tests/test_workflow_template_invariants.py`. |
+| **WF-2** | Prompts must not teach merge recovery | Agent prompts and skills that ask LLMs/humans to commit generated or enriched Figma data must not prescribe `git push || git pull && git push` or any equivalent merge-pull retry. If the work is deterministic generated cache, workflows reset and replay it under WF-1. If the work is LLM/human-authored body, the prompt stops on rejected push and lets a human or orchestrator choose the integration strategy. | Workflow fixes do not kill the category if bundled prompts keep teaching the same unsafe pattern. Body edits are not deterministic replayable; generated registries are. Keeping those recovery paths separate prevents agents from accidentally text-merging generated cache snapshots while trying to publish page prose. | `tests/test_prompt_git_add_rules.py`, `tests/test_workflow_template_invariants.py`. |
 
 ## 5. Design decisions
 
-D1..D10 are carried forward verbatim from `frontmatter-v2-plan.md`. D11..D14 are new and resolve the audit in issue #128.
+D1..D10 are carried forward verbatim from `frontmatter-v2-plan.md`. D11..D14 resolve the audit in issue #128. D15 records source-lifecycle provenance for migration work.
 
 ### D1: Descriptions out of frontmatter
 
@@ -427,7 +428,7 @@ D1..D10 are carried forward verbatim from `frontmatter-v2-plan.md`. D11..D14 are
 
 If the manifest is deleted, sync re-fetches everything on the next run. **Zero data loss.** If frontmatter is deleted, we lose the page's identity and enrichment history.
 
-D11 extends this axis: file-scope registries (catalog, census) belong in the cache layer because they are recomputable from REST. They do NOT belong in frontmatter.
+D11 extends this axis: file-scope registries (catalog, census) belong in the cache layer because they are recomputable from file-scoped Figma registry readers. They do NOT belong in frontmatter.
 
 ### D5: `mark-enriched` as separate command
 
@@ -594,6 +595,7 @@ Use this checklist when reviewing any PR that touches figmaclaw's data model, ca
 - [ ] Does this PR change generated path schemes or schema versions? If yes, are legacy generated names still narrowly recognized, migrated, or pruned (MIG-1)?
 - [ ] Does this PR cache an API/MCP failure or suppress retries? If yes, is the cache scoped only to evidence that is persistent at that scope (ERR-1)?
 - [ ] Does this PR recover from rejected pushes of generated artifacts? If yes, does it reset/replay deterministic generation instead of text-merging generated cache snapshots (WF-1)?
+- [ ] Does this PR edit prompts or skills that tell agents to push commits? If yes, do they avoid merge-pull retry recipes and preserve the authored-vs-generated recovery split (WF-2)?
 
 ### Token catalog and sidecar specifically
 

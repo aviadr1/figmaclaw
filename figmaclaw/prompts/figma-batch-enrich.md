@@ -56,13 +56,13 @@ Follow this workflow exactly:
    ```
    git add {file_path}
    git commit -m "sync: describe {{page-name}} frames"
-   git push || (git pull --no-rebase && git push)
+   git push
    ```
 
 IMPORTANT:
 - Descriptions live in the **body** only. Use `write-body`, not `set-frames`.
 - `mark-enriched` tells the system the body is current. Always call it after `write-body`.
 - Commit and push after EVERY file. Never batch commits.
-- If push is rejected, use ONLY: `git pull --no-rebase && git push`
+- If push is rejected, stop and report the rejected push. Do not merge or rewrite generated artifacts as recovery.
 - NEVER use `git stash`, `git stash pop`, `git reset --hard`, `git checkout --`, or `rm` for recovery.
 - NEVER delete `.figma-sync/*` files to make git/push succeed.

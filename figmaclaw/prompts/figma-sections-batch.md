@@ -33,7 +33,7 @@ Follow this workflow exactly:
    ```
    git add {file_path}
    git commit -m "sync: describe frames in {{page-name}}"
-   git push || (git pull --no-rebase && git push)
+   git push
    ```
 
 IMPORTANT:
@@ -42,6 +42,6 @@ IMPORTANT:
 - Descriptions must be valid JSON strings (escape quotes with \").
 - ALWAYS include failed frames with "(no screenshot available)" — do NOT leave them as "(no description yet)". This marker is unresolved and retryable in future runs.
 - If there were more than 80 pending screenshots, you will be called again for the rest.
-- If push is rejected, use ONLY: `git pull --no-rebase && git push`
+- If push is rejected, stop and report the rejected push. Do not merge or rewrite generated artifacts as recovery.
 - NEVER use `git stash`, `git stash pop`, `git reset --hard`, `git checkout --`, or `rm` for recovery.
 - NEVER delete `.figma-sync/*` files to make git/push succeed.

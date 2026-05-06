@@ -107,6 +107,10 @@ jobs:
           git fetch origin "${{ inputs.target_ref }}"
           # Canon WF-1: reset to latest source state and replay deterministic
           # generation instead of merging stale generated JSON.
+          # This is safe only because this GitHub runner has no human edits,
+          # this job writes only deterministic catalog artifacts, and the next
+          # command immediately recomputes those artifacts from Figma. Do not
+          # copy this reset pattern to LLM/human-authored body workflows.
           git reset --hard "origin/${{ inputs.target_ref }}"
 
           REQUIRE_AUTHORITATIVE=""
