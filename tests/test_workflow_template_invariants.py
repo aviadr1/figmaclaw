@@ -56,10 +56,11 @@ def test_sync_template_threads_current_branch_to_stateful_jobs() -> None:
     """INVARIANT: workflow_dispatch on consumer PR branches must not pull main."""
     text = bundled_template_text("figmaclaw-sync.yaml")
 
-    assert text.count("target_ref: ${{ github.ref_name }}") == 3
+    assert text.count("target_ref: ${{ github.ref_name }}") == 5
     assert "uses: aviadr1/figmaclaw/.github/workflows/sync.yml@main" in text
     assert "uses: aviadr1/figmaclaw/.github/workflows/census.yml@main" in text
     assert "uses: aviadr1/figmaclaw/.github/workflows/variables.yml@main" in text
+    assert "uses: aviadr1/figmaclaw/.github/workflows/claude-run.yml@main" in text
 
 
 def test_variables_template_threads_current_branch_to_reusable_workflow() -> None:
@@ -67,6 +68,22 @@ def test_variables_template_threads_current_branch_to_reusable_workflow() -> Non
     text = bundled_template_text("figmaclaw-variables.yaml")
 
     assert "target_ref: ${{ github.ref_name }}" in text
+
+
+def test_webhook_template_threads_current_branch_to_stateful_jobs() -> None:
+    """INVARIANT WF-3: webhook apply/enrich jobs refresh the current target branch."""
+    text = bundled_template_text("figmaclaw-webhook.yaml")
+
+    assert text.count("target_ref: ${{ github.ref_name }}") == 2
+
+
+def test_claude_run_refreshes_target_ref_before_selecting_work() -> None:
+    """INVARIANT WF-3: enrichment must not select work from a stale dispatch snapshot."""
+    text = _reusable_workflow_text("claude-run.yml")
+
+    assert "target_ref:" in text
+    assert 'git pull --no-rebase --ff-only origin "${{ inputs.target_ref }}"' in text
+    assert text.index("name: Pull latest changes") < text.index("          figmaclaw claude-run \\")
 
 
 def test_manage_webhooks_template_is_installed() -> None:

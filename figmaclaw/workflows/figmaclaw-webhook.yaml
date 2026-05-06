@@ -22,6 +22,7 @@ jobs:
     with:
       # github.event is not available in the callee — pass payload as input
       webhook_payload: ${{ toJson(github.event.client_payload) }}
+      target_ref: ${{ github.ref_name }}
     secrets:
       FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
       FIGMA_WEBHOOK_SECRET: ${{ secrets.FIGMA_WEBHOOK_SECRET }}
@@ -36,6 +37,7 @@ jobs:
       model: claude-sonnet-4-6
       max_turns: 80
       changed_only: true
+      target_ref: ${{ github.ref_name }}
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}

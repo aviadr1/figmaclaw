@@ -55,6 +55,10 @@ on:
         required: false
         type: string
         default: main
+      target_ref:
+        required: false
+        type: string
+        default: main
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
@@ -92,6 +96,9 @@ jobs:
 
       - name: Install figmaclaw
         run: pip install uv && uv tool install "git+https://github.com/aviadr1/figmaclaw@${{ inputs.figmaclaw_ref }}"
+
+      - name: Pull latest changes
+        run: git pull --no-rebase --ff-only origin "${{ inputs.target_ref }}"
 
       - name: Configure git
         run: |
