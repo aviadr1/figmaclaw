@@ -42,7 +42,6 @@ jobs:
       since: ${{ github.event.inputs.since || '3m' }}
       figma_team_id: ${{ vars.FIGMA_TEAM_ID }}
       figmaclaw_ref: ${{ github.event.inputs.figmaclaw_ref || 'main' }}
-      target_ref: ${{ github.ref_name }}
     secrets:
       FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
 
@@ -58,7 +57,6 @@ jobs:
     uses: aviadr1/figmaclaw/.github/workflows/census.yml@main
     with:
       figmaclaw_ref: ${{ github.event.inputs.figmaclaw_ref || 'main' }}
-      target_ref: ${{ github.ref_name }}
     secrets:
       FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
 
@@ -73,7 +71,6 @@ jobs:
     uses: aviadr1/figmaclaw/.github/workflows/variables.yml@main
     with:
       figmaclaw_ref: ${{ github.event.inputs.figmaclaw_ref || 'main' }}
-      target_ref: ${{ github.ref_name }}
     secrets:
       FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
       FIGMA_VARIABLES_TOKEN: ${{ secrets.FIGMA_VARIABLES_TOKEN }}
@@ -97,7 +94,6 @@ jobs:
       max_frames: 80
       max_files: 0
       figmaclaw_ref: ${{ github.event.inputs.figmaclaw_ref || 'main' }}
-      target_ref: ${{ github.ref_name }}
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
@@ -124,7 +120,6 @@ jobs:
       max_files: 0
       section_mode: true
       figmaclaw_ref: ${{ github.event.inputs.figmaclaw_ref || 'main' }}
-      target_ref: ${{ github.ref_name }}
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}

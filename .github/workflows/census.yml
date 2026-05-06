@@ -20,7 +20,7 @@ on:
       target_ref:
         required: false
         type: string
-        default: main
+        default: ''
     secrets:
       FIGMA_API_KEY:
         required: true
@@ -39,7 +39,7 @@ jobs:
         run: pip install uv && uv tool install "git+https://github.com/aviadr1/figmaclaw@${{ inputs.figmaclaw_ref }}"
 
       - name: Pull latest changes
-        run: git pull --no-rebase --ff-only origin "${{ inputs.target_ref }}"
+        run: git pull --no-rebase --ff-only origin "${{ inputs.target_ref || github.ref_name }}"
 
       - name: Configure git
         run: |
@@ -71,15 +71,15 @@ jobs:
             exit 0
           fi
 
-          echo "Push rejected; replaying census refresh on latest ${{ inputs.target_ref }}"
-          git fetch origin "${{ inputs.target_ref }}"
+          echo "Push rejected; replaying census refresh on latest ${{ inputs.target_ref || github.ref_name }}"
+          git fetch origin "${{ inputs.target_ref || github.ref_name }}"
           # Canon WF-1: reset to latest source state and replay deterministic
           # generation instead of merging stale generated registry markdown.
           # This is safe only because this GitHub runner has no human edits,
           # this job writes only deterministic census artifacts, and the next
           # command immediately recomputes those artifacts from Figma. Do not
           # copy this reset pattern to LLM/human-authored body workflows.
-          git reset --hard "origin/${{ inputs.target_ref }}"
+          git reset --hard "origin/${{ inputs.target_ref || github.ref_name }}"
 
           if [ -n "${{ inputs.file_key }}" ]; then
             figmaclaw census --file-key "${{ inputs.file_key }}" --auto-commit

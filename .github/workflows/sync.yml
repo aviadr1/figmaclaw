@@ -23,7 +23,7 @@ on:
       target_ref:
         required: false
         type: string
-        default: main
+        default: ''
     secrets:
       FIGMA_API_KEY:
         required: true
@@ -55,7 +55,7 @@ jobs:
         run: uv tool install "git+https://github.com/aviadr1/figmaclaw@${{ inputs.figmaclaw_ref }}"
 
       - name: Pull latest changes
-        run: git pull --no-rebase --ff-only origin "${{ inputs.target_ref }}"
+        run: git pull --no-rebase --ff-only origin "${{ inputs.target_ref || github.ref_name }}"
 
       - name: Configure git
         run: |
@@ -76,7 +76,7 @@ jobs:
             NEWLY="${NEWLY:-unknown}"
             git commit -m "sync: figmaclaw — tracking ${NEWLY} new file(s)"
             git push
-            git pull --no-rebase --ff-only origin "${{ inputs.target_ref }}"
+            git pull --no-rebase --ff-only origin "${{ inputs.target_ref || github.ref_name }}"
           fi
 
       - name: Checkout checkpoint loop script
@@ -98,7 +98,7 @@ jobs:
           INPUT_FORCE: ${{ inputs.force }}
           FIGMA_TEAM_ID: ${{ inputs.figma_team_id }}
           SINCE: ${{ inputs.since }}
-          TARGET_REF: ${{ inputs.target_ref }}
+          TARGET_REF: ${{ inputs.target_ref || github.ref_name }}
           FIGMACLAW_SYNC_OBS_DIR: ${{ runner.temp }}/figmaclaw-sync-observability
         run: |
           bash .figmaclaw-workflow/scripts/checkpoint_pull_loop.sh
