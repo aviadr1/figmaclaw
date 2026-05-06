@@ -66,8 +66,8 @@ on:
         required: false
 
 concurrency:
-  group: claude-run-${{ github.ref }}-${{ inputs.target }}-${{ inputs.section_mode && 'sections' || 'bulk' }}
-  cancel-in-progress: true
+  group: claude-run-${{ github.ref }}-${{ inputs.target }}
+  cancel-in-progress: false
 
 jobs:
   run:
@@ -154,6 +154,29 @@ jobs:
             $FLAGS \
             | figmaclaw stream-format
           echo "::endgroup::"
+
+      - name: Preserve unpublished authored commits
+        if: always()
+        run: |
+          set -euo pipefail
+
+          TARGET_REF="${{ inputs.target_ref || github.ref_name }}"
+          git fetch origin "$TARGET_REF"
+          LOCAL_COMMITS="$(git rev-list --count "origin/${TARGET_REF}..HEAD")"
+          if [ "$LOCAL_COMMITS" = "0" ]; then
+            echo "No unpublished claude-run commits to preserve."
+            exit 0
+          fi
+
+          SAFE_TARGET="$(printf '%s' "$TARGET_REF" | tr -c 'A-Za-z0-9._-' '-')"
+          RESCUE_REF="refs/heads/figmaclaw-rescue/${SAFE_TARGET}/${{ github.run_id }}-${{ github.run_attempt }}"
+          echo "::warning::Preserving $LOCAL_COMMITS unpublished claude-run commit(s) at ${RESCUE_REF}"
+          git push origin "HEAD:${RESCUE_REF}"
+
+          if [ "${{ steps.claude.outcome }}" = "success" ]; then
+            echo "::error::claude-run succeeded but left unpublished authored commit(s); preserved at ${RESCUE_REF}"
+            exit 1
+          fi
 
       - name: Verify figma enrichment complete
         if: success()

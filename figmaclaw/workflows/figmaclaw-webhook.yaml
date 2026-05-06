@@ -8,16 +8,14 @@ on:
   repository_dispatch:
     types: [figma-webhook]
 
-# Must be in caller: concurrency groups are repo-scoped.
-# Webhook debounce must not cancel sync runs.
-# cancel-in-progress: true debounces rapid-fire Figma edit events —
-# if a designer saves repeatedly, only the last webhook runs.
-concurrency:
-  group: figma-git-webhook
-  cancel-in-progress: true
-
 jobs:
   apply-webhook:
+    # Debounce only the cheap webhook apply job. Do not use workflow-level
+    # cancellation here: changed-only Claude enrichment is expensive authored
+    # work and must not be killed by a later webhook.
+    concurrency:
+      group: figma-git-webhook-apply-${{ github.ref }}
+      cancel-in-progress: true
     uses: aviadr1/figmaclaw/.github/workflows/webhook.yml@main
     with:
       # github.event is not available in the callee — pass payload as input

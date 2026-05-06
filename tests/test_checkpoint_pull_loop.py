@@ -198,14 +198,14 @@ def test_default_batch_timeout_fires_before_hosted_runner_shutdown() -> None:
     """INVARIANT: shell timeout must fire before GitHub cancels the step.
 
     Linear-git runs proved hosted runners can deliver a shutdown signal around
-    13 minutes into the checkpointed pull step. The loop timeout must be lower
+    5-6 minutes into the checkpointed pull step. The loop timeout must be lower
     so the script can flush progress and write observability before that.
     """
     script = (Path(__file__).parents[1] / "scripts" / "checkpoint_pull_loop.sh").read_text(
         encoding="utf-8"
     )
 
-    assert 'BATCH_TIMEOUT_SECONDS="${BATCH_TIMEOUT_SECONDS:-420}"' in script
+    assert 'BATCH_TIMEOUT_SECONDS="${BATCH_TIMEOUT_SECONDS:-240}"' in script
     assert 'TIMEOUT_KILL_AFTER_SECONDS="${TIMEOUT_KILL_AFTER_SECONDS:-30}"' in script
     assert 'timeout --kill-after="${TIMEOUT_KILL_AFTER_SECONDS}s"' in script
 
@@ -214,7 +214,7 @@ def test_timeout_passes_kill_after_to_coreutils_timeout(tmp_path: Path) -> None:
     """The timeout must be a hard boundary, not a best-effort SIGTERM.
 
     GNU timeout waits indefinitely after SIGTERM unless --kill-after is set.
-    Live CI proved figmaclaw can stay stuck past the nominal 420s budget, so
+    Live CI proved figmaclaw can stay stuck until a hosted-runner shutdown, so
     the reusable loop must always give timeout a SIGKILL deadline.
     """
     _run_loop(

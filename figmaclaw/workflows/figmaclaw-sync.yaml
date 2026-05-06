@@ -31,10 +31,11 @@ on:
 
 jobs:
   sync:
-    # Must be in caller: concurrency groups are repo-scoped.
+    # Must be in caller: concurrency groups are repo-scoped. Scope by branch
+    # because jobs on different refs do not race on the same git branch.
     # cancel-in-progress: false — never drop a scheduled sync pull.
     concurrency:
-      group: figma-git-sync-pull
+      group: figma-git-sync-pull-${{ github.ref }}
       cancel-in-progress: false
     uses: aviadr1/figmaclaw/.github/workflows/sync.yml@main
     with:
@@ -52,7 +53,7 @@ jobs:
     if: success()
     # Only the latest census run matters; cancel stale in-flight runs.
     concurrency:
-      group: figma-git-census
+      group: figma-git-census-${{ github.ref }}
       cancel-in-progress: true
     uses: aviadr1/figmaclaw/.github/workflows/census.yml@main
     with:
@@ -66,7 +67,7 @@ jobs:
     needs: sync
     if: success()
     concurrency:
-      group: figma-git-variables
+      group: figma-git-variables-${{ github.ref }}
       cancel-in-progress: true
     uses: aviadr1/figmaclaw/.github/workflows/variables.yml@main
     with:
@@ -81,10 +82,12 @@ jobs:
   enrich:
     needs: sync
     if: success()
-    # Debounce enrichment backlog across scheduled runs.
+    # Claude writes expensive authored prose. Serialize both enrichment lanes
+    # and never cancel in-flight work; newer pending runs may replace older
+    # pending runs at the GitHub concurrency layer.
     concurrency:
-      group: figma-git-enrich
-      cancel-in-progress: true
+      group: figma-git-enrich-publisher-${{ github.ref }}
+      cancel-in-progress: false
     uses: aviadr1/figmaclaw/.github/workflows/claude-run.yml@main
     with:
       target: figma/
@@ -106,10 +109,11 @@ jobs:
   enrich-large:
     needs: sync
     if: success()
-    # Debounce large-page enrichment backlog across scheduled runs.
+    # Shares the publisher lane with small-page enrichment so expensive body
+    # commits cannot race each other.
     concurrency:
-      group: figma-git-enrich-large
-      cancel-in-progress: true
+      group: figma-git-enrich-publisher-${{ github.ref }}
+      cancel-in-progress: false
     uses: aviadr1/figmaclaw/.github/workflows/claude-run.yml@main
     with:
       target: figma/

@@ -26,12 +26,25 @@ def _reusable_push_script(workflow_name: str, job_name: str) -> str:
     )
 
 
-def test_webhook_template_debounces_with_isolated_group() -> None:
-    """INVARIANT: webhook debounce uses a dedicated concurrency group."""
-    text = bundled_template_text("figmaclaw-webhook.yaml")
+def _reusable_step_script(workflow_name: str, job_name: str, step_name: str) -> str:
+    workflow = yaml.safe_load(_reusable_workflow_text(workflow_name))
+    return next(
+        step["run"] for step in workflow["jobs"][job_name]["steps"] if step.get("name") == step_name
+    )
 
+
+def _publisher_script_text() -> str:
+    return (REPO_ROOT / "scripts" / "publish_generated_registry.sh").read_text(encoding="utf-8")
+
+
+def test_webhook_template_debounces_with_isolated_group() -> None:
+    """INVARIANT WF-5: webhook debounce must not cancel Claude enrichment."""
+    text = bundled_template_text("figmaclaw-webhook.yaml")
+    workflow = yaml.safe_load(text)
+
+    assert "concurrency" not in workflow
     assert "cancel-in-progress: true" in text
-    assert "group: figma-git-webhook" in text
+    assert "group: figma-git-webhook-apply-${{ github.ref }}" in text
 
 
 def test_sync_template_isolated_from_webhook_cancellation() -> None:
@@ -39,7 +52,7 @@ def test_sync_template_isolated_from_webhook_cancellation() -> None:
     text = bundled_template_text("figmaclaw-sync.yaml")
 
     assert "sync:\n" in text
-    assert "group: figma-git-sync-pull" in text
+    assert "group: figma-git-sync-pull-${{ github.ref }}" in text
     assert "cancel-in-progress: false" in text
     assert "group: figma-git-webhook" not in text
 
@@ -132,7 +145,7 @@ def test_variables_template_is_installed() -> None:
     text = bundled_template_text("figmaclaw-variables.yaml")
 
     assert "variables.yml@main" in text
-    assert "group: figma-git-variables" in text
+    assert "group: figma-git-variables-${{ github.ref }}" in text
 
 
 def test_concurrency_groups_are_isolated_by_workflow_role() -> None:
@@ -144,13 +157,60 @@ def test_concurrency_groups_are_isolated_by_workflow_role() -> None:
     sync_groups = set(re.findall(r"^\s*group:\s*([^\n]+)\s*$", sync_text, flags=re.MULTILINE))
     webhook_groups = set(re.findall(r"^\s*group:\s*([^\n]+)\s*$", webhook_text, flags=re.MULTILINE))
 
-    assert "figma-git-sync-pull" in sync_groups
-    assert "figma-git-census" in sync_groups
-    assert "figma-git-variables" in sync_groups
-    assert "figma-git-enrich" in sync_groups
-    assert "figma-git-enrich-large" in sync_groups
-    assert webhook_groups == {"figma-git-webhook"}
+    assert "figma-git-sync-pull-${{ github.ref }}" in sync_groups
+    assert "figma-git-census-${{ github.ref }}" in sync_groups
+    assert "figma-git-variables-${{ github.ref }}" in sync_groups
+    assert "figma-git-enrich-publisher-${{ github.ref }}" in sync_groups
+    assert "figma-git-enrich" not in sync_groups
+    assert "figma-git-enrich-large" not in sync_groups
+    assert webhook_groups == {"figma-git-webhook-apply-${{ github.ref }}"}
     assert sync_groups.isdisjoint(webhook_groups)
+
+
+def test_concurrency_groups_are_branch_scoped() -> None:
+    """INVARIANT WF-7: branch-local writers must not cancel other branches."""
+
+    templates = {
+        "figmaclaw-sync.yaml": {
+            "figma-git-sync-pull-${{ github.ref }}",
+            "figma-git-census-${{ github.ref }}",
+            "figma-git-variables-${{ github.ref }}",
+            "figma-git-enrich-publisher-${{ github.ref }}",
+        },
+        "figmaclaw-webhook.yaml": {"figma-git-webhook-apply-${{ github.ref }}"},
+        "figmaclaw-variables.yaml": {"figma-git-variables-${{ github.ref }}"},
+    }
+
+    for template_name, expected_groups in templates.items():
+        text = bundled_template_text(template_name)
+        groups = set(re.findall(r"^\s*group:\s*([^\n]+)\s*$", text, flags=re.MULTILINE))
+        assert groups == expected_groups
+        for group in groups:
+            assert "${{ github.ref }}" in group
+
+
+def test_claude_publishers_are_serialized_and_not_cancelled() -> None:
+    """INVARIANT WF-5: expensive authored enrichment must not race itself."""
+
+    reusable = _reusable_workflow_text("claude-run.yml")
+    sync_text = bundled_template_text("figmaclaw-sync.yaml")
+    webhook = yaml.safe_load(bundled_template_text("figmaclaw-webhook.yaml"))
+
+    assert "group: claude-run-${{ github.ref }}-${{ inputs.target }}" in reusable
+    assert "cancel-in-progress: false" in reusable
+    assert "git reset --hard" not in reusable
+    assert "figmaclaw-rescue/" in reusable
+    assert "Preserve unpublished authored commits" in reusable
+
+    assert sync_text.count("group: figma-git-enrich-publisher-${{ github.ref }}") == 2
+    assert sync_text.count("cancel-in-progress: false") >= 3
+    assert "figma-git-enrich-large" not in sync_text
+
+    assert "concurrency" not in webhook
+    assert webhook["jobs"]["apply-webhook"]["concurrency"] == {
+        "group": "figma-git-webhook-apply-${{ github.ref }}",
+        "cancel-in-progress": True,
+    }
 
 
 def test_reusable_registry_workflows_replay_generated_artifacts_on_push_conflict() -> None:
@@ -168,10 +228,11 @@ def test_reusable_registry_workflows_replay_generated_artifacts_on_push_conflict
     ):
         text = _reusable_workflow_text(workflow_name)
 
-        assert "PUSH_STATUS=$?" in text
-        assert 'if [ "$PUSH_STATUS" -eq 0 ]; then' in text
-        assert 'git reset --hard "origin/${{ inputs.target_ref || github.ref_name }}"' in text
-        assert "This is safe only because this GitHub runner has no human edits" in text
+        assert "Checkout generated-registry publisher" in text
+        assert "scripts/publish_generated_registry.sh" in text
+        assert "PUBLISH_PROTECTED_PATH_RE:" in text
+        assert "REPLAY_COMMAND:" in text
+        assert "bash .figmaclaw-workflow/scripts/publish_generated_registry.sh" in text
         assert text.count(command) >= 2
         assert "git push ||" not in text
         assert 'git pull --no-rebase origin "${{ inputs.target_ref }}" && git push' not in text
@@ -180,16 +241,16 @@ def test_reusable_registry_workflows_replay_generated_artifacts_on_push_conflict
             not in text
         )
 
+    publisher = _publisher_script_text()
+    assert "MAX_PUBLISH_ATTEMPTS" in publisher
+    assert "remote_touched_protected_path" in publisher
+    assert 'git rebase "origin/${TARGET_REF}"' in publisher
+    assert 'git reset --hard "origin/${TARGET_REF}"' in publisher
+    assert 'bash -c "$REPLAY_COMMAND"' in publisher
+    assert "This is safe only because this GitHub runner has no human edits" in publisher
 
-def test_registry_push_replay_branch_executes_under_bash_errexit(tmp_path: Path) -> None:
-    """INVARIANT WF-1: rejected-push replay is executable under GitHub's bash -e wrapper.
 
-    The linear-git run 25098005988 proved that string-level workflow checks were
-    not enough: the first rejected ``git push`` stopped the Push step before the
-    generated-output replay branch ran. This test executes the actual Push step
-    bodies with fake ``git``/``figmaclaw`` binaries and requires the replay path.
-    """
-
+def _write_publisher_fake_bins(tmp_path: Path) -> Path:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
 
@@ -199,20 +260,39 @@ def test_registry_push_replay_branch_executes_under_bash_errexit(tmp_path: Path)
             """\
             #!/usr/bin/env bash
             set -euo pipefail
-            if [ "$1" = "push" ]; then
-              count=0
-              if [ -f "$PUSH_STATE" ]; then
-                count="$(cat "$PUSH_STATE")"
-              fi
-              count=$((count + 1))
-              echo "$count" > "$PUSH_STATE"
-              echo "git push $count" >> "$TRACE_FILE"
-              if [ "$count" -eq 1 ]; then
-                exit 1
-              fi
-              exit 0
-            fi
-            echo "git $*" >> "$TRACE_FILE"
+            case "${1:-}" in
+              fetch)
+                echo "git fetch ${*:2}" >> "$TRACE_FILE"
+                ;;
+              rev-list)
+                echo "${LOCAL_COMMIT_COUNT:-1}"
+                ;;
+              push)
+                count=0
+                if [ -f "$PUSH_STATE" ]; then
+                  count="$(cat "$PUSH_STATE")"
+                fi
+                count=$((count + 1))
+                echo "$count" > "$PUSH_STATE"
+                echo "git push $count" >> "$TRACE_FILE"
+                if [ "$count" -le "${FAIL_PUSHES:-1}" ]; then
+                  exit 1
+                fi
+                ;;
+              diff)
+                echo "git diff ${*:2}" >> "$TRACE_FILE"
+                printf "%b" "${REMOTE_DIFF:-}"
+                ;;
+              reset)
+                echo "git reset ${*:2}" >> "$TRACE_FILE"
+                ;;
+              rebase)
+                echo "git rebase ${*:2}" >> "$TRACE_FILE"
+                ;;
+              *)
+                echo "git $*" >> "$TRACE_FILE"
+                ;;
+            esac
             """
         ),
         encoding="utf-8",
@@ -232,58 +312,145 @@ def test_registry_push_replay_branch_executes_under_bash_errexit(tmp_path: Path)
     )
     figmaclaw_bin.chmod(0o755)
 
-    cases = (
-        (
-            "variables.yml",
-            "variables",
-            {
-                "${{ inputs.target_ref || github.ref_name }}": "test/figmaclaw-pr-129-ci",
-                "${{ inputs.require_authoritative }}": "false",
-                "${{ inputs.file_key }}": "",
-                "${{ inputs.variables_source }}": "auto",
-            },
-            "figmaclaw variables --source auto --auto-commit",
-        ),
-        (
-            "census.yml",
-            "census",
-            {
-                "${{ inputs.target_ref || github.ref_name }}": "test/figmaclaw-pr-129-ci",
-                "${{ inputs.file_key }}": "",
-            },
-            "figmaclaw census --auto-commit",
-        ),
+    return bin_dir
+
+
+def _run_publisher_script(
+    tmp_path: Path,
+    *,
+    protected_re: str = r"^\.figma-sync/ds_catalog\.json$",
+    replay_command: str = "figmaclaw variables --source auto --auto-commit",
+    remote_diff: str = "",
+    local_commits: str = "1",
+    fail_pushes: str = "1",
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    bin_dir = _write_publisher_fake_bins(tmp_path)
+    trace = tmp_path / "publisher.trace.log"
+    push_state = tmp_path / "publisher.push-count"
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+    env["TRACE_FILE"] = str(trace)
+    env["PUSH_STATE"] = str(push_state)
+    env["TARGET_REF"] = "test/figmaclaw-pr-143-ci"
+    env["PUBLISH_PROTECTED_PATH_RE"] = protected_re
+    env["REPLAY_COMMAND"] = replay_command
+    env["REMOTE_DIFF"] = remote_diff
+    env["LOCAL_COMMIT_COUNT"] = local_commits
+    env["FAIL_PUSHES"] = fail_pushes
+
+    result = subprocess.run(
+        ["bash", str(REPO_ROOT / "scripts" / "publish_generated_registry.sh")],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
     )
+    lines = trace.read_text(encoding="utf-8").splitlines() if trace.exists() else []
+    return result, lines
 
-    for workflow_name, job_name, replacements, expected_replay_command in cases:
-        push_script = _reusable_push_script(workflow_name, job_name)
-        for old, new in replacements.items():
-            push_script = push_script.replace(old, new)
 
-        trace = tmp_path / f"{workflow_name}.trace.log"
-        push_state = tmp_path / f"{workflow_name}.push-count"
-        env = os.environ.copy()
-        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
-        env["TRACE_FILE"] = str(trace)
-        env["PUSH_STATE"] = str(push_state)
+def test_generated_registry_publisher_replays_protected_remote_moves(tmp_path: Path) -> None:
+    """INVARIANT WF-8: protected registry movement resets and replays generation."""
+
+    result, trace = _run_publisher_script(tmp_path, remote_diff=".figma-sync/ds_catalog.json\\n")
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert trace == [
+        "git fetch origin test/figmaclaw-pr-143-ci",
+        "git push 1",
+        "git fetch origin test/figmaclaw-pr-143-ci",
+        "git diff --name-only HEAD...origin/test/figmaclaw-pr-143-ci",
+        "git fetch origin test/figmaclaw-pr-143-ci",
+        "git reset --hard origin/test/figmaclaw-pr-143-ci",
+        "figmaclaw variables --source auto --auto-commit",
+        "git fetch origin test/figmaclaw-pr-143-ci",
+        "git push 2",
+    ]
+    assert "Remote touched protected registry path" in result.stdout
+
+
+def test_generated_registry_publisher_rebases_disjoint_remote_moves(tmp_path: Path) -> None:
+    """INVARIANT WF-8: unrelated remote movement rebases instead of replaying."""
+
+    result, trace = _run_publisher_script(tmp_path, remote_diff="figma/app/pages/home.md\\n")
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert trace == [
+        "git fetch origin test/figmaclaw-pr-143-ci",
+        "git push 1",
+        "git fetch origin test/figmaclaw-pr-143-ci",
+        "git diff --name-only HEAD...origin/test/figmaclaw-pr-143-ci",
+        "git rebase origin/test/figmaclaw-pr-143-ci",
+        "git fetch origin test/figmaclaw-pr-143-ci",
+        "git push 2",
+    ]
+    assert not any(line.startswith("figmaclaw ") for line in trace)
+    assert "Remote did not touch protected registry path" in result.stdout
+
+
+def test_registry_noop_push_guard_exits_without_push(tmp_path: Path) -> None:
+    """INVARIANT WF-4: no-op generated registry jobs must not publish stale heads."""
+
+    result, trace = _run_publisher_script(tmp_path, local_commits="0")
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert trace == ["git fetch origin test/figmaclaw-pr-143-ci"]
+    assert "No local generated registry commits to publish." in result.stdout
+
+
+def test_claude_unpublished_commit_preservation_executes(tmp_path: Path) -> None:
+    """INVARIANT WF-5: rejected authored work is preserved before the runner exits."""
+
+    script = _reusable_step_script("claude-run.yml", "run", "Preserve unpublished authored commits")
+    script = script.replace("${{ inputs.target_ref || github.ref_name }}", "feature/pr")
+    script = script.replace("${{ github.run_id }}", "12345")
+    script = script.replace("${{ github.run_attempt }}", "2")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+
+    git_bin = bin_dir / "git"
+    git_bin.write_text(
+        textwrap.dedent(
+            """\
+            #!/usr/bin/env bash
+            set -euo pipefail
+            if [ "$1" = "rev-list" ]; then
+              echo "2"
+              exit 0
+            fi
+            echo "git $*" >> "$TRACE_FILE"
+            """
+        ),
+        encoding="utf-8",
+    )
+    git_bin.chmod(0o755)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+
+    for outcome, expected_status in (("failure", 0), ("success", 1)):
+        trace = tmp_path / f"claude-preserve-{outcome}.trace.log"
+        case_env = env.copy()
+        case_env["TRACE_FILE"] = str(trace)
+        case_script = script.replace("${{ steps.claude.outcome }}", outcome)
 
         result = subprocess.run(
-            ["bash", "-e", "-c", push_script],
+            ["bash", "-e", "-c", case_script],
             cwd=tmp_path,
-            env=env,
+            env=case_env,
             text=True,
             capture_output=True,
             check=False,
         )
 
-        assert result.returncode == 0, result.stderr + result.stdout
+        assert result.returncode == expected_status, result.stderr + result.stdout
         assert trace.read_text(encoding="utf-8").splitlines() == [
-            "git push 1",
-            "git fetch origin test/figmaclaw-pr-129-ci",
-            "git reset --hard origin/test/figmaclaw-pr-129-ci",
-            expected_replay_command,
-            "git push 2",
+            "git fetch origin feature/pr",
+            "git push origin HEAD:refs/heads/figmaclaw-rescue/feature-pr/12345-2",
         ]
+        assert "Preserving 2 unpublished claude-run commit(s)" in result.stdout
 
 
 def test_variables_workflows_can_require_authoritative_definitions() -> None:

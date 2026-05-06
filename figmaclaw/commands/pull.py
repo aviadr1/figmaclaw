@@ -28,6 +28,8 @@ from figmaclaw.schema_status import is_pull_schema_stale
 from figmaclaw.source_context import classify_source_lifecycle
 from figmaclaw.status_markers import COMMIT_MSG_PREFIX, HAS_MORE_TRUE
 
+DEFAULT_PER_FILE_TIMEOUT_S: float = 300.0
+
 
 @click.command("pull")
 @click.option("--file-key", "file_key", default=None, help="Pull only this file key.")
@@ -81,8 +83,19 @@ from figmaclaw.status_markers import COMMIT_MSG_PREFIX, HAS_MORE_TRUE
     type=float,
     show_default=True,
     help=(
-        "Abort get_page/get_nodes for a single page after this many seconds and "
-        "mark it errored so the loop can continue. Pass 0 to disable."
+        "Abort a single Figma API operation after this many seconds and "
+        "mark the affected page/probe errored so the loop can continue. Pass 0 to disable."
+    ),
+)
+@click.option(
+    "--per-file-timeout-s",
+    "per_file_timeout_s",
+    default=DEFAULT_PER_FILE_TIMEOUT_S,
+    type=float,
+    show_default=True,
+    help=(
+        "Abort a single tracked file after this many seconds so one slow Figma file "
+        "does not block the whole sync batch. Pass 0 to disable."
     ),
 )
 @click.pass_context
@@ -97,6 +110,7 @@ def pull_cmd(
     since: str,
     prune: bool,
     per_page_timeout_s: float,
+    per_file_timeout_s: float,
 ) -> None:
     """Pull all tracked Figma files and write changed pages to disk."""
     repo_dir = Path(ctx.obj["repo_dir"])
@@ -105,6 +119,7 @@ def pull_cmd(
     # 0 = caller opts out of per-page timeouts. Map to None to keep the signature
     # explicit in pull_logic.pull_file (None => no asyncio.wait_for wrapping).
     resolved_timeout: float | None = per_page_timeout_s if per_page_timeout_s > 0 else None
+    resolved_file_timeout: float | None = per_file_timeout_s if per_file_timeout_s > 0 else None
 
     asyncio.run(
         _run(
@@ -119,6 +134,7 @@ def pull_cmd(
             since,
             prune=prune,
             per_page_timeout_s=resolved_timeout,
+            per_file_timeout_s=resolved_file_timeout,
         )
     )
 
@@ -318,6 +334,7 @@ async def _run(
     since: str,
     prune: bool = True,
     per_page_timeout_s: float | None = None,
+    per_file_timeout_s: float | None = DEFAULT_PER_FILE_TIMEOUT_S,
 ) -> None:
     state = load_state(repo_dir)
 
@@ -433,7 +450,7 @@ async def _run(
                     )
                 )
                 try:
-                    result = await pull_file(
+                    pull_one = pull_file(
                         client,
                         key,
                         state,
@@ -444,9 +461,26 @@ async def _run(
                         on_page_written=on_page_written,
                         per_page_timeout_s=per_page_timeout_s,
                     )
+                    if per_file_timeout_s is None:
+                        result = await pull_one
+                    else:
+                        result = await asyncio.wait_for(pull_one, timeout=per_file_timeout_s)
                 finally:
                     stop_heartbeat.set()
                     await asyncio.gather(heartbeat_task, return_exceptions=True)
+            except TimeoutError:
+                timeout_label = (
+                    f"{per_file_timeout_s}s" if per_file_timeout_s is not None else "unknown"
+                )
+                click.echo(f"{key}: timed out after {timeout_label} (skipping)")
+                obs.files_errors += 1
+                obs.file_end(
+                    key,
+                    "file_timeout",
+                    file_start,
+                    timeout_s=per_file_timeout_s if per_file_timeout_s is not None else "none",
+                )
+                continue
             except Exception as exc:
                 click.echo(f"{key}: error — {exc} (skipping)")
                 obs.files_errors += 1
