@@ -60,6 +60,14 @@ exit 0
         bin_dir / "timeout",
         """#!/usr/bin/env bash
 set -euo pipefail
+if [ -n "${TIMEOUT_ARGS_FILE:-}" ]; then
+  printf '%s\\n' "$*" >> "$TIMEOUT_ARGS_FILE"
+fi
+if [[ "${1:-}" == --kill-after=* ]]; then
+  shift
+elif [ "${1:-}" = "--kill-after" ]; then
+  shift 2
+fi
 _duration="${1:?}"
 shift
 TIMEOUT_COUNT_FILE="${TIMEOUT_COUNT_FILE:-}"
@@ -67,6 +75,9 @@ timeout_count=0
 if [ -n "$TIMEOUT_COUNT_FILE" ] && [ -f "$TIMEOUT_COUNT_FILE" ]; then timeout_count="$(cat "$TIMEOUT_COUNT_FILE")"; fi
 if [ "${TIMEOUT_MODE:-pass}" = "always" ]; then
   exit 124
+fi
+if [ "${TIMEOUT_MODE:-pass}" = "killed" ]; then
+  exit 137
 fi
 if [ "${TIMEOUT_MODE:-pass}" = "first_only" ]; then
   timeout_count=$((timeout_count+1))
@@ -93,6 +104,7 @@ def _run_loop(
     trace = tmp_path / "git-trace.txt"
     count = tmp_path / "count.txt"
     args = tmp_path / "pull-args.txt"
+    timeout_args = tmp_path / "timeout-args.txt"
     timeout_count = tmp_path / "timeout-count.txt"
 
     bin_dir = _setup_fake_bin(
@@ -107,6 +119,7 @@ def _run_loop(
             "TRACE_FILE": str(trace),
             "FIGMACLAW_OUT_PATH": str(out_path),
             "ARGS_FILE": str(args),
+            "TIMEOUT_ARGS_FILE": str(timeout_args),
             "TIMEOUT_COUNT_FILE": str(timeout_count),
             "SCENARIO": scenario,
             "GIT_DIRTY": git_dirty,
@@ -171,12 +184,60 @@ def test_stops_immediately_on_pull_timeout(tmp_path: Path) -> None:
     )
     assert (tmp_path / "count.txt").exists() is False
     assert "timed out" in out
+    assert "with no dirty progress" in out
+    assert "retrying with --max-pages" not in out
     trace = (
         (tmp_path / "git-trace.txt").read_text() if (tmp_path / "git-trace.txt").exists() else ""
     )
     # With no dirty state, the timeout path must not attempt to commit, so no
     # `git pull` / `git add` / `git commit` should be traced.
     assert "git commit" not in trace
+
+
+def test_default_batch_timeout_fires_before_hosted_runner_shutdown() -> None:
+    """INVARIANT: shell timeout must fire before GitHub cancels the step.
+
+    Linear-git runs proved hosted runners can deliver a shutdown signal around
+    13 minutes into the checkpointed pull step. The loop timeout must be lower
+    so the script can flush progress and write observability before that.
+    """
+    script = (Path(__file__).parents[1] / "scripts" / "checkpoint_pull_loop.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'BATCH_TIMEOUT_SECONDS="${BATCH_TIMEOUT_SECONDS:-420}"' in script
+    assert 'TIMEOUT_KILL_AFTER_SECONDS="${TIMEOUT_KILL_AFTER_SECONDS:-30}"' in script
+    assert 'timeout --kill-after="${TIMEOUT_KILL_AFTER_SECONDS}s"' in script
+
+
+def test_timeout_passes_kill_after_to_coreutils_timeout(tmp_path: Path) -> None:
+    """The timeout must be a hard boundary, not a best-effort SIGTERM.
+
+    GNU timeout waits indefinitely after SIGTERM unless --kill-after is set.
+    Live CI proved figmaclaw can stay stuck past the nominal 420s budget, so
+    the reusable loop must always give timeout a SIGKILL deadline.
+    """
+    _run_loop(
+        tmp_path,
+        scenario="single_done",
+        git_dirty="0",
+        timeout_mode="pass",
+        TIMEOUT_KILL_AFTER_SECONDS="11",
+    )
+    timeout_args = (tmp_path / "timeout-args.txt").read_text()
+    assert "--kill-after=11s" in timeout_args
+
+
+def test_timeout_status_137_is_treated_as_batch_timeout(tmp_path: Path) -> None:
+    """If timeout has to SIGKILL the child it exits 137; handle it like 124."""
+    out = _run_loop(
+        tmp_path,
+        scenario="has_more_forever",
+        git_dirty="0",
+        timeout_mode="killed",
+    )
+    assert "timed out" in out
+    assert "with no dirty progress" in out
 
 
 def test_force_mode_runs_single_batch_even_when_has_more(tmp_path: Path) -> None:

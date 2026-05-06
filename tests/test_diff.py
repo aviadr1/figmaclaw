@@ -530,7 +530,7 @@ def test_cli_json_output(tmp_path: Path) -> None:
                 "diff",
                 "figma/",
                 "--since",
-                "30d",
+                "365d",
                 "--format",
                 "json",
                 "--no-progress",

@@ -885,6 +885,12 @@ async def pull_file(
     # one bad page does not poison the chunk.
     fetch_stubs = [s for s in page_stubs if not state.should_skip_page(s.name)]
 
+    def _is_rate_limit_error(exc: Exception) -> bool:
+        return isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429
+
+    def _is_chunk_scope_fetch_error(exc: Exception) -> bool:
+        return isinstance(exc, TimeoutError) or _is_rate_limit_error(exc)
+
     async def _fetch_page(node_id: str) -> dict | Exception:
         try:
             if per_page_timeout_s is not None:
@@ -903,6 +909,33 @@ async def pull_file(
         chunk = fetch_stubs[start:end]
         if not chunk:
             return
+        chunk_ids = [s.id for s in chunk]
+        try:
+            fetch_batch = client.get_pages(
+                file_key,
+                chunk_ids,
+                batch_size=max(1, len(chunk_ids)),
+            )
+            if per_page_timeout_s is not None:
+                batch_result = await asyncio.wait_for(fetch_batch, timeout=per_page_timeout_s)
+            else:
+                batch_result = await fetch_batch
+            if not isinstance(batch_result, dict):
+                raise TypeError(f"get_pages returned {type(batch_result).__name__}, expected dict")
+            for stub in chunk:
+                page_nodes_map[stub.id] = batch_result.get(stub.id, {})
+            return
+        except Exception as exc:
+            if _is_chunk_scope_fetch_error(exc):
+                for stub in chunk:
+                    page_nodes_map[stub.id] = exc
+                return
+            log.debug(
+                "Batch page fetch failed for %d page(s) (%s) — falling back to per-page fetch",
+                len(chunk),
+                type(exc).__name__,
+            )
+
         fetched = await asyncio.gather(*[_fetch_page(s.id) for s in chunk])
         for stub, result in zip(chunk, fetched, strict=False):
             page_nodes_map[stub.id] = result

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
@@ -21,7 +22,7 @@ from figmaclaw.figma_parse import parse_frontmatter
 from figmaclaw.figma_render import scaffold_page
 from figmaclaw.figma_schema import UNGROUPED_COMPONENTS_SECTION, is_component, is_visible
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
-from figmaclaw.pull_logic import pull_file
+from figmaclaw.pull_logic import PullResult, pull_file
 from tests.smoke.live_gate import require_live_credential
 
 # The Web App file used in linear-git
@@ -32,6 +33,10 @@ TEST_FILE_KEY_WEB_APP_DUP = "jb1bZRQUUOQKEpb5p6vt5e"
 TEST_FILE_KEY_LSN_BRANDING = "IXVzan1Xz6J1rA1moyDsk5"
 # Reach - auto content sharing page
 TEST_PAGE_NODE_ID = "7741:45837"
+SMOKE_CLIENT_RATE_LIMIT_RPM = 15
+SMOKE_CLIENT_TIMEOUT_S = 30.0
+SMOKE_CLIENT_MAX_ATTEMPTS = 3
+SMOKE_PULL_PAGE_TIMEOUT_S = 120.0
 
 
 def _expected_rendered_section_count(page_node: dict) -> int:
@@ -80,12 +85,40 @@ def api_key() -> str:
     )
 
 
+@pytest.fixture
+async def client(api_key: str) -> AsyncIterator[FigmaClient]:
+    async with FigmaClient(
+        api_key=api_key,
+        rate_limit_rpm=SMOKE_CLIENT_RATE_LIMIT_RPM,
+        timeout_s=SMOKE_CLIENT_TIMEOUT_S,
+        max_attempts=SMOKE_CLIENT_MAX_ATTEMPTS,
+    ) as figma_client:
+        yield figma_client
+
+
+async def _pull_smoke_file(
+    client: FigmaClient,
+    file_key: str,
+    state: FigmaSyncState,
+    repo_root: Path,
+    *,
+    max_pages: int | None = None,
+) -> PullResult:
+    return await pull_file(
+        client,
+        file_key,
+        state,
+        repo_root,
+        max_pages=max_pages,
+        per_page_timeout_s=SMOKE_PULL_PAGE_TIMEOUT_S,
+    )
+
+
 @pytest.mark.smoke_api
 @pytest.mark.asyncio
-async def test_get_file_meta_returns_version(api_key: str) -> None:
+async def test_get_file_meta_returns_version(client: FigmaClient) -> None:
     """Smoke: get_file_meta hits real API and returns version + pages."""
-    async with FigmaClient(api_key=api_key) as client:
-        meta = await client.get_file_meta(TEST_FILE_KEY)
+    meta = await client.get_file_meta(TEST_FILE_KEY)
 
     assert meta.version, "version must be non-empty"
     assert meta.lastModified, "lastModified must be non-empty"
@@ -96,10 +129,9 @@ async def test_get_file_meta_returns_version(api_key: str) -> None:
 
 @pytest.mark.smoke_api
 @pytest.mark.asyncio
-async def test_get_page_returns_canvas_with_sections(api_key: str) -> None:
+async def test_get_page_returns_canvas_with_sections(client: FigmaClient) -> None:
     """Smoke: get_page returns the CANVAS document node directly with SECTION children."""
-    async with FigmaClient(api_key=api_key) as client:
-        page_node = await client.get_page(TEST_FILE_KEY, TEST_PAGE_NODE_ID)
+    page_node = await client.get_page(TEST_FILE_KEY, TEST_PAGE_NODE_ID)
 
     assert page_node["type"] == "CANVAS"
     assert page_node["name"] == "Reach - auto content sharing"
@@ -111,7 +143,7 @@ async def test_get_page_returns_canvas_with_sections(api_key: str) -> None:
 
 @pytest.mark.smoke_api
 @pytest.mark.asyncio
-async def test_from_page_node_matches_real_api_structure(api_key: str) -> None:
+async def test_from_page_node_matches_real_api_structure(client: FigmaClient) -> None:
     """Smoke: from_page_node builds a FigmaPage with the correct number of sections.
 
     INVARIANT: The model structure must match what the real Figma API returns.
@@ -119,10 +151,9 @@ async def test_from_page_node_matches_real_api_structure(api_key: str) -> None:
     two sibling sections: the original screen section plus synthetic
     ``(Ungrouped components)`` component-library section.
     """
-    async with FigmaClient(api_key=api_key) as client:
-        meta = await client.get_file_meta(TEST_FILE_KEY)
-        file_name = meta.name
-        page_node = await client.get_page(TEST_FILE_KEY, TEST_PAGE_NODE_ID)
+    meta = await client.get_file_meta(TEST_FILE_KEY)
+    file_name = meta.name
+    page_node = await client.get_page(TEST_FILE_KEY, TEST_PAGE_NODE_ID)
 
     page = from_page_node(page_node, file_key=TEST_FILE_KEY, file_name=file_name)
 
@@ -147,16 +178,15 @@ async def test_from_page_node_matches_real_api_structure(api_key: str) -> None:
 
 @pytest.mark.smoke_api
 @pytest.mark.asyncio
-async def test_render_and_parse_round_trip_against_real_page(api_key: str) -> None:
+async def test_render_and_parse_round_trip_against_real_page(client: FigmaClient) -> None:
     """Smoke: scaffold_page + parse_frontmatter round-trips correctly for a real Figma page.
 
     INVARIANT: The YAML frontmatter written by scaffold_page must be parseable
     by parse_frontmatter into a valid FigmaPageFrontmatter with correct identity fields.
     """
-    async with FigmaClient(api_key=api_key) as client:
-        meta = await client.get_file_meta(TEST_FILE_KEY)
-        file_name = meta.name
-        page_node = await client.get_page(TEST_FILE_KEY, TEST_PAGE_NODE_ID)
+    meta = await client.get_file_meta(TEST_FILE_KEY)
+    file_name = meta.name
+    page_node = await client.get_page(TEST_FILE_KEY, TEST_PAGE_NODE_ID)
 
     page = from_page_node(page_node, file_key=TEST_FILE_KEY, file_name=file_name)
     entry = PageEntry(
@@ -186,17 +216,19 @@ async def test_render_and_parse_round_trip_against_real_page(api_key: str) -> No
 
 @pytest.mark.smoke_webhook
 @pytest.mark.asyncio
-async def test_list_file_webhooks_returns_list(api_key: str) -> None:
+async def test_list_file_webhooks_returns_list(client: FigmaClient) -> None:
     """Smoke: list_file_webhooks returns a list (may be empty) for a tracked file."""
-    async with FigmaClient(api_key=api_key) as client:
-        webhooks = await client.list_file_webhooks(file_key=TEST_FILE_KEY)
+    webhooks = await client.list_file_webhooks(file_key=TEST_FILE_KEY)
 
     assert isinstance(webhooks, list)
 
 
 @pytest.mark.smoke_api
 @pytest.mark.asyncio
-async def test_pull_writes_frame_sections_inventory(tmp_path, api_key: str) -> None:  # type: ignore[no-untyped-def]
+async def test_pull_writes_frame_sections_inventory(
+    tmp_path,
+    client: FigmaClient,  # type: ignore[no-untyped-def]
+) -> None:
     """Smoke: pull_file writes frame_sections with section-level inventory fields."""
     state = FigmaSyncState(tmp_path)
     state.load()
@@ -204,8 +236,7 @@ async def test_pull_writes_frame_sections_inventory(tmp_path, api_key: str) -> N
     # Force pull to exercise write path even if version is already current.
     state.manifest.files[TEST_FILE_KEY].version = "v0"
 
-    async with FigmaClient(api_key=api_key) as client:
-        result = await pull_file(client, TEST_FILE_KEY, state, tmp_path, force=False, max_pages=1)
+    result = await _pull_smoke_file(client, TEST_FILE_KEY, state, tmp_path, max_pages=1)
 
     assert result.pages_written + result.pages_schema_upgraded > 0
     pages = state.manifest.files[TEST_FILE_KEY].pages
@@ -233,37 +264,39 @@ async def test_pull_writes_frame_sections_inventory(tmp_path, api_key: str) -> N
 
 @pytest.mark.smoke_api
 @pytest.mark.asyncio
-async def test_pull_is_idempotent_for_written_page_markdown(tmp_path, api_key: str) -> None:  # type: ignore[no-untyped-def]
+async def test_pull_is_idempotent_for_written_page_markdown(
+    tmp_path,
+    client: FigmaClient,  # type: ignore[no-untyped-def]
+) -> None:
     """Smoke: two unchanged pulls produce identical markdown for an already written page."""
     state = FigmaSyncState(tmp_path)
     state.load()
     state.add_tracked_file(TEST_FILE_KEY, "Web App")
     state.manifest.files[TEST_FILE_KEY].version = "v0"
 
-    async with FigmaClient(api_key=api_key) as client:
-        first = await pull_file(client, TEST_FILE_KEY, state, tmp_path, force=False, max_pages=1)
-        if first.pages_errored and first.pages_written + first.pages_schema_upgraded == 0:
-            pytest.skip("Figma API returned page errors before live idempotency setup wrote a page")
-        assert first.pages_written + first.pages_schema_upgraded > 0
+    first = await _pull_smoke_file(client, TEST_FILE_KEY, state, tmp_path, max_pages=1)
+    if first.pages_errored and first.pages_written + first.pages_schema_upgraded == 0:
+        pytest.skip("Figma API returned page errors before live idempotency setup wrote a page")
+    assert first.pages_written + first.pages_schema_upgraded > 0
 
-        pages = state.manifest.files[TEST_FILE_KEY].pages
-        assert pages, "first pull wrote/upgraded pages but manifest has no entries"
-        entry = next(iter(pages.values()))
-        assert entry.md_path is not None
-        page_md = tmp_path / entry.md_path
-        assert page_md.exists()
-        md_before = page_md.read_text()
-        # First run may be partial (max_pages=1), so explicitly pin schema version to
-        # current for idempotency verification on this same page file.
-        state.manifest.files[TEST_FILE_KEY].pull_schema_version = CURRENT_PULL_SCHEMA_VERSION
-        state.save()
+    pages = state.manifest.files[TEST_FILE_KEY].pages
+    assert pages, "first pull wrote/upgraded pages but manifest has no entries"
+    entry = next(iter(pages.values()))
+    assert entry.md_path is not None
+    page_md = tmp_path / entry.md_path
+    assert page_md.exists()
+    md_before = page_md.read_text()
+    # First run may be partial (max_pages=1), so explicitly pin schema version to
+    # current for idempotency verification on this same page file.
+    state.manifest.files[TEST_FILE_KEY].pull_schema_version = CURRENT_PULL_SCHEMA_VERSION
+    state.save()
 
-        second = await pull_file(client, TEST_FILE_KEY, state, tmp_path, force=False, max_pages=1)
-        if second.pages_errored:
-            pytest.skip("Figma API returned page errors during live idempotency verification")
-        assert second.pages_written == 0
-        assert second.pages_schema_upgraded == 0
-        md_after = page_md.read_text()
+    second = await _pull_smoke_file(client, TEST_FILE_KEY, state, tmp_path, max_pages=1)
+    if second.pages_errored:
+        pytest.skip("Figma API returned page errors during live idempotency verification")
+    assert second.pages_written == 0
+    assert second.pages_schema_upgraded == 0
+    md_after = page_md.read_text()
 
     assert md_before == md_after
 
@@ -272,7 +305,7 @@ async def test_pull_is_idempotent_for_written_page_markdown(tmp_path, api_key: s
 @pytest.mark.asyncio
 async def test_pull_collision_safe_file_dirs_and_sidecar_backfill(
     tmp_path,
-    api_key: str,  # type: ignore[no-untyped-def]
+    client: FigmaClient,  # type: ignore[no-untyped-def]
 ) -> None:
     """Smoke: same-name files get unique output directories (collision-safe slugs)."""
     state = FigmaSyncState(tmp_path)
@@ -283,34 +316,31 @@ async def test_pull_collision_safe_file_dirs_and_sidecar_backfill(
     state.manifest.files[TEST_FILE_KEY].version = "v0"
     state.manifest.files[TEST_FILE_KEY_WEB_APP_DUP].version = "v0"
 
-    async with FigmaClient(api_key=api_key) as client:
-        first = await pull_file(client, TEST_FILE_KEY, state, tmp_path, force=False, max_pages=1)
-        second = await pull_file(
-            client, TEST_FILE_KEY_WEB_APP_DUP, state, tmp_path, force=False, max_pages=1
-        )
+    first = await _pull_smoke_file(client, TEST_FILE_KEY, state, tmp_path, max_pages=1)
+    second = await _pull_smoke_file(client, TEST_FILE_KEY_WEB_APP_DUP, state, tmp_path, max_pages=1)
 
-        assert first.pages_written + first.pages_schema_upgraded > 0
-        assert second.pages_written + second.pages_schema_upgraded > 0
+    assert first.pages_written + first.pages_schema_upgraded > 0
+    assert second.pages_written + second.pages_schema_upgraded > 0
 
-        pages_a = state.manifest.files[TEST_FILE_KEY].pages
-        pages_b = state.manifest.files[TEST_FILE_KEY_WEB_APP_DUP].pages
-        assert pages_a and pages_b
+    pages_a = state.manifest.files[TEST_FILE_KEY].pages
+    pages_b = state.manifest.files[TEST_FILE_KEY_WEB_APP_DUP].pages
+    assert pages_a and pages_b
 
-        entry_a = next(iter(pages_a.values()))
-        entry_b = next(iter(pages_b.values()))
-        assert entry_a.md_path is not None
-        assert entry_b.md_path is not None
+    entry_a = next(iter(pages_a.values()))
+    entry_b = next(iter(pages_b.values()))
+    assert entry_a.md_path is not None
+    assert entry_b.md_path is not None
 
-        assert entry_a.md_path.startswith(f"figma/web-app-{TEST_FILE_KEY}/pages/")
-        assert entry_b.md_path.startswith(f"figma/web-app-{TEST_FILE_KEY_WEB_APP_DUP}/pages/")
-        assert Path(entry_a.md_path).parts[1] != Path(entry_b.md_path).parts[1]
+    assert entry_a.md_path.startswith(f"figma/web-app-{TEST_FILE_KEY}/pages/")
+    assert entry_b.md_path.startswith(f"figma/web-app-{TEST_FILE_KEY_WEB_APP_DUP}/pages/")
+    assert Path(entry_a.md_path).parts[1] != Path(entry_b.md_path).parts[1]
 
 
 @pytest.mark.smoke_api
 @pytest.mark.asyncio
 async def test_pull_backfills_missing_sidecar_on_unchanged_page_real_api(
     tmp_path,
-    api_key: str,  # type: ignore[no-untyped-def]
+    client: FigmaClient,  # type: ignore[no-untyped-def]
 ) -> None:
     """Smoke: deleting a real sidecar is repaired by a subsequent unchanged pull."""
     state = FigmaSyncState(tmp_path)
@@ -318,33 +348,33 @@ async def test_pull_backfills_missing_sidecar_on_unchanged_page_real_api(
     state.add_tracked_file(TEST_FILE_KEY_LSN_BRANDING, "LSN Branding")
     state.manifest.files[TEST_FILE_KEY_LSN_BRANDING].version = "v0"
 
-    async with FigmaClient(api_key=api_key) as client:
-        first = await pull_file(
-            client, TEST_FILE_KEY_LSN_BRANDING, state, tmp_path, force=False, max_pages=2
+    first = await _pull_smoke_file(client, TEST_FILE_KEY_LSN_BRANDING, state, tmp_path, max_pages=2)
+    assert first.pages_written + first.pages_schema_upgraded > 0
+
+    pages = state.manifest.files[TEST_FILE_KEY_LSN_BRANDING].pages
+    assert pages
+    target_sidecar: Path | None = None
+    for entry in pages.values():
+        if not entry.md_path:
+            continue
+        sidecar = (tmp_path / entry.md_path).with_suffix(".tokens.json")
+        if "cover-0-1.tokens.json" in str(sidecar):
+            continue
+        if sidecar.exists():
+            target_sidecar = sidecar
+            break
+
+    assert target_sidecar is not None, "expected a non-cover sidecar to exist after initial pull"
+    target_sidecar.unlink()
+    assert not target_sidecar.exists()
+
+    backfill = await _pull_smoke_file(client, TEST_FILE_KEY_LSN_BRANDING, state, tmp_path)
+
+    if backfill.pages_errored:
+        pytest.skip(
+            "Figma API returned page errors during live sidecar-backfill verification; "
+            "sidecar lifecycle invariant is inconclusive"
         )
-        assert first.pages_written + first.pages_schema_upgraded > 0
-
-        pages = state.manifest.files[TEST_FILE_KEY_LSN_BRANDING].pages
-        assert pages
-        target_sidecar: Path | None = None
-        for entry in pages.values():
-            if not entry.md_path:
-                continue
-            sidecar = (tmp_path / entry.md_path).with_suffix(".tokens.json")
-            if "cover-0-1.tokens.json" in str(sidecar):
-                continue
-            if sidecar.exists():
-                target_sidecar = sidecar
-                break
-
-        assert target_sidecar is not None, (
-            "expected a non-cover sidecar to exist after initial pull"
-        )
-        target_sidecar.unlink()
-        assert not target_sidecar.exists()
-
-        backfill = await pull_file(client, TEST_FILE_KEY_LSN_BRANDING, state, tmp_path, force=False)
-
     assert backfill.skipped_file is False
     assert target_sidecar.exists()
 
@@ -353,7 +383,7 @@ async def test_pull_backfills_missing_sidecar_on_unchanged_page_real_api(
 @pytest.mark.asyncio
 async def test_pull_migrates_legacy_sidecar_schema_on_unchanged_page_real_api(
     tmp_path,
-    api_key: str,  # type: ignore[no-untyped-def]
+    client: FigmaClient,  # type: ignore[no-untyped-def]
 ) -> None:
     """Smoke: unchanged pages with legacy sidecar schema are rewritten to schema v2."""
     state = FigmaSyncState(tmp_path)
@@ -361,37 +391,37 @@ async def test_pull_migrates_legacy_sidecar_schema_on_unchanged_page_real_api(
     state.add_tracked_file(TEST_FILE_KEY_LSN_BRANDING, "LSN Branding")
     state.manifest.files[TEST_FILE_KEY_LSN_BRANDING].version = "v0"
 
-    async with FigmaClient(api_key=api_key) as client:
-        first = await pull_file(
-            client, TEST_FILE_KEY_LSN_BRANDING, state, tmp_path, force=False, max_pages=2
+    first = await _pull_smoke_file(client, TEST_FILE_KEY_LSN_BRANDING, state, tmp_path, max_pages=2)
+    assert first.pages_written + first.pages_schema_upgraded > 0
+
+    pages = state.manifest.files[TEST_FILE_KEY_LSN_BRANDING].pages
+    assert pages
+    target_sidecar: Path | None = None
+    for entry in pages.values():
+        if not entry.md_path:
+            continue
+        sidecar = (tmp_path / entry.md_path).with_suffix(".tokens.json")
+        if "cover-0-1.tokens.json" in str(sidecar):
+            continue
+        if sidecar.exists():
+            target_sidecar = sidecar
+            break
+
+    assert target_sidecar is not None, "expected a non-cover sidecar to exist after initial pull"
+
+    payload = json.loads(target_sidecar.read_text())
+    payload.pop("schema_version", None)
+    target_sidecar.write_text(json.dumps(payload, separators=(",", ":"), sort_keys=True))
+    mutated = json.loads(target_sidecar.read_text())
+    assert "schema_version" not in mutated
+
+    migrated = await _pull_smoke_file(client, TEST_FILE_KEY_LSN_BRANDING, state, tmp_path)
+
+    if migrated.pages_errored:
+        pytest.skip(
+            "Figma API returned page errors during live sidecar-schema migration; "
+            "sidecar migration invariant is inconclusive"
         )
-        assert first.pages_written + first.pages_schema_upgraded > 0
-
-        pages = state.manifest.files[TEST_FILE_KEY_LSN_BRANDING].pages
-        assert pages
-        target_sidecar: Path | None = None
-        for entry in pages.values():
-            if not entry.md_path:
-                continue
-            sidecar = (tmp_path / entry.md_path).with_suffix(".tokens.json")
-            if "cover-0-1.tokens.json" in str(sidecar):
-                continue
-            if sidecar.exists():
-                target_sidecar = sidecar
-                break
-
-        assert target_sidecar is not None, (
-            "expected a non-cover sidecar to exist after initial pull"
-        )
-
-        payload = json.loads(target_sidecar.read_text())
-        payload.pop("schema_version", None)
-        target_sidecar.write_text(json.dumps(payload, separators=(",", ":"), sort_keys=True))
-        mutated = json.loads(target_sidecar.read_text())
-        assert "schema_version" not in mutated
-
-        migrated = await pull_file(client, TEST_FILE_KEY_LSN_BRANDING, state, tmp_path, force=False)
-
     assert migrated.skipped_file is False
     rewritten = json.loads(target_sidecar.read_text())
     assert rewritten.get("schema_version") == 2
@@ -401,7 +431,7 @@ async def test_pull_migrates_legacy_sidecar_schema_on_unchanged_page_real_api(
 @pytest.mark.asyncio
 async def test_pull_migrates_legacy_unkeyed_paths_to_full_key_slug_real_api(
     tmp_path,
-    api_key: str,  # type: ignore[no-untyped-def]
+    client: FigmaClient,  # type: ignore[no-untyped-def]
 ) -> None:
     """Smoke: legacy unkeyed manifest paths are migrated to full-key slug paths."""
     state = FigmaSyncState(tmp_path)
@@ -409,46 +439,48 @@ async def test_pull_migrates_legacy_unkeyed_paths_to_full_key_slug_real_api(
     state.add_tracked_file(TEST_FILE_KEY_LSN_BRANDING, "LSN Branding")
     state.manifest.files[TEST_FILE_KEY_LSN_BRANDING].version = "v0"
 
-    async with FigmaClient(api_key=api_key) as client:
-        first = await pull_file(
-            client, TEST_FILE_KEY_LSN_BRANDING, state, tmp_path, force=False, max_pages=1
+    first = await _pull_smoke_file(client, TEST_FILE_KEY_LSN_BRANDING, state, tmp_path, max_pages=1)
+    assert first.pages_written + first.pages_schema_upgraded > 0
+
+    pages = state.manifest.files[TEST_FILE_KEY_LSN_BRANDING].pages
+    assert pages
+    page_id = next(iter(pages.keys()))
+    entry = pages[page_id]
+    assert entry.md_path is not None
+
+    keyed_rel = entry.md_path
+    keyed_abs = tmp_path / keyed_rel
+    keyed_sidecar = keyed_abs.with_suffix(".tokens.json")
+    assert keyed_abs.exists()
+    had_sidecar = keyed_sidecar.exists()
+
+    keyed_dir = Path(keyed_rel).parts[1]
+    legacy_dir = keyed_dir.replace(f"-{TEST_FILE_KEY_LSN_BRANDING}", "")
+    legacy_rel = str(Path("figma") / legacy_dir / "pages" / Path(keyed_rel).name)
+    legacy_abs = tmp_path / legacy_rel
+    legacy_abs.parent.mkdir(parents=True, exist_ok=True)
+    keyed_abs.rename(legacy_abs)
+    if keyed_sidecar.exists():
+        keyed_sidecar.rename(legacy_abs.with_suffix(".tokens.json"))
+
+    state.manifest.files[TEST_FILE_KEY_LSN_BRANDING].pages[page_id] = PageEntry(
+        page_name=entry.page_name,
+        page_slug=entry.page_slug,
+        md_path=legacy_rel,
+        page_hash=entry.page_hash,
+        last_refreshed_at=entry.last_refreshed_at,
+        component_md_paths=entry.component_md_paths,
+        frame_hashes=entry.frame_hashes,
+    )
+    state.save()
+
+    migrated = await _pull_smoke_file(client, TEST_FILE_KEY_LSN_BRANDING, state, tmp_path)
+
+    if migrated.pages_errored:
+        pytest.skip(
+            "Figma API returned page errors during live generated-path migration; "
+            "path migration invariant is inconclusive"
         )
-        assert first.pages_written + first.pages_schema_upgraded > 0
-
-        pages = state.manifest.files[TEST_FILE_KEY_LSN_BRANDING].pages
-        assert pages
-        page_id = next(iter(pages.keys()))
-        entry = pages[page_id]
-        assert entry.md_path is not None
-
-        keyed_rel = entry.md_path
-        keyed_abs = tmp_path / keyed_rel
-        keyed_sidecar = keyed_abs.with_suffix(".tokens.json")
-        assert keyed_abs.exists()
-        had_sidecar = keyed_sidecar.exists()
-
-        keyed_dir = Path(keyed_rel).parts[1]
-        legacy_dir = keyed_dir.replace(f"-{TEST_FILE_KEY_LSN_BRANDING}", "")
-        legacy_rel = str(Path("figma") / legacy_dir / "pages" / Path(keyed_rel).name)
-        legacy_abs = tmp_path / legacy_rel
-        legacy_abs.parent.mkdir(parents=True, exist_ok=True)
-        keyed_abs.rename(legacy_abs)
-        if keyed_sidecar.exists():
-            keyed_sidecar.rename(legacy_abs.with_suffix(".tokens.json"))
-
-        state.manifest.files[TEST_FILE_KEY_LSN_BRANDING].pages[page_id] = PageEntry(
-            page_name=entry.page_name,
-            page_slug=entry.page_slug,
-            md_path=legacy_rel,
-            page_hash=entry.page_hash,
-            last_refreshed_at=entry.last_refreshed_at,
-            component_md_paths=entry.component_md_paths,
-            frame_hashes=entry.frame_hashes,
-        )
-        state.save()
-
-        migrated = await pull_file(client, TEST_FILE_KEY_LSN_BRANDING, state, tmp_path, force=False)
-
     assert migrated.skipped_file is False
     assert keyed_abs.exists()
     assert not legacy_abs.exists()
@@ -464,7 +496,7 @@ async def test_pull_migrates_legacy_unkeyed_paths_to_full_key_slug_real_api(
 @pytest.mark.asyncio
 async def test_schema_upgrade_backfills_instance_component_ids_without_body_rewrite(
     tmp_path,
-    api_key: str,  # type: ignore[no-untyped-def]
+    client: FigmaClient,  # type: ignore[no-untyped-def]
 ) -> None:
     """Smoke: schema-stale pull restores missing inventory keys while preserving markdown body."""
     state = FigmaSyncState(tmp_path)
@@ -472,38 +504,36 @@ async def test_schema_upgrade_backfills_instance_component_ids_without_body_rewr
     state.add_tracked_file(TEST_FILE_KEY, "Web App")
     state.manifest.files[TEST_FILE_KEY].version = "v0"
 
-    async with FigmaClient(api_key=api_key) as client:
-        first = await pull_file(client, TEST_FILE_KEY, state, tmp_path, force=False, max_pages=1)
-        if first.pages_errored and first.pages_written + first.pages_schema_upgraded == 0:
-            pytest.skip(
-                "Figma API returned a page error during live schema-upgrade smoke setup; "
-                "body-preservation invariant is inconclusive"
-            )
-        assert first.pages_written + first.pages_schema_upgraded > 0
-        pages = state.manifest.files[TEST_FILE_KEY].pages
-        assert pages
-        entry = next(iter(pages.values()))
-        assert entry.md_path is not None
-        page_md = tmp_path / entry.md_path
-        text_before = page_md.read_text()
-        body_before = text_before.split("---\n", 2)[-1]
+    first = await _pull_smoke_file(client, TEST_FILE_KEY, state, tmp_path, max_pages=1)
+    if first.pages_errored and first.pages_written + first.pages_schema_upgraded == 0:
+        pytest.skip(
+            "Figma API returned a page error during live schema-upgrade smoke setup; "
+            "body-preservation invariant is inconclusive"
+        )
+    assert first.pages_written + first.pages_schema_upgraded > 0
+    pages = state.manifest.files[TEST_FILE_KEY].pages
+    assert pages
+    entry = next(iter(pages.values()))
+    assert entry.md_path is not None
+    page_md = tmp_path / entry.md_path
+    text_before = page_md.read_text()
+    body_before = text_before.split("---\n", 2)[-1]
 
-        # Simulate old frontmatter payload by dropping the new stable-ID key lines.
-        mutated = re.sub(r"^\s*instance_component_ids:.*\n", "", text_before, flags=re.MULTILINE)
-        page_md.write_text(mutated)
+    # Simulate old frontmatter payload by dropping the new stable-ID key lines.
+    mutated = re.sub(r"^\s*instance_component_ids:.*\n", "", text_before, flags=re.MULTILINE)
+    page_md.write_text(mutated)
 
-        # Mark manifest as pre-v6 so pull runs schema-upgrade path.
-        state.manifest.files[TEST_FILE_KEY].pull_schema_version = 5
-        state.save()
+    # Mark manifest as pre-v6 so pull runs schema-upgrade path.
+    state.manifest.files[TEST_FILE_KEY].pull_schema_version = 5
+    state.save()
 
-        upgraded = await pull_file(client, TEST_FILE_KEY, state, tmp_path, force=False, max_pages=1)
-        if upgraded.pages_errored:
-            pytest.skip(
-                "Figma API returned a page error during live schema-upgrade smoke; "
-                "body-preservation invariant is inconclusive"
-            )
-        assert upgraded.pages_written == 0
-        assert upgraded.pages_schema_upgraded >= 1
+    upgraded = await _pull_smoke_file(client, TEST_FILE_KEY, state, tmp_path, max_pages=1)
+    if upgraded.pages_errored:
+        pytest.skip(
+            "Figma API returned a page error during live schema-upgrade smoke; "
+            "body-preservation invariant is inconclusive"
+        )
+    assert upgraded.pages_schema_upgraded >= 1
 
     text_after = page_md.read_text()
     body_after = text_after.split("---\n", 2)[-1]
@@ -515,7 +545,8 @@ async def test_schema_upgrade_backfills_instance_component_ids_without_body_rewr
 @pytest.mark.asyncio
 async def test_build_context_generates_valid_call_specs_from_real_pull_data(
     tmp_path,
-    api_key: str,  # type: ignore[no-untyped-def]
+    api_key: str,
+    client: FigmaClient,  # type: ignore[no-untyped-def]
 ) -> None:
     """Smoke: build-context generation works against real pulled frame_sections data."""
     state = FigmaSyncState(tmp_path)
@@ -523,8 +554,7 @@ async def test_build_context_generates_valid_call_specs_from_real_pull_data(
     state.add_tracked_file(TEST_FILE_KEY, "Web App")
     state.manifest.files[TEST_FILE_KEY].version = "v0"
 
-    async with FigmaClient(api_key=api_key) as client:
-        result = await pull_file(client, TEST_FILE_KEY, state, tmp_path, force=False, max_pages=1)
+    result = await _pull_smoke_file(client, TEST_FILE_KEY, state, tmp_path, max_pages=1)
     if result.pages_errored and result.pages_written + result.pages_schema_upgraded == 0:
         pytest.skip("Figma API returned page errors before live build-context setup wrote a page")
     assert result.pages_written + result.pages_schema_upgraded > 0

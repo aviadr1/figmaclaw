@@ -3,7 +3,7 @@
 INVARIANTS:
 - FigmaClient always uses X-Figma-Token header (not Authorization: Bearer)
 - Retries on 429 with Retry-After respect
-- Retries on 5xx up to 5 attempts
+- Retries on transient failures up to the configured attempt budget
 - get_file_meta returns version, lastModified, and pages list
 - get_page returns node tree for a single page
 """
@@ -185,6 +185,23 @@ def test_default_rate_limit_matches_figma_tier_one_guidance():
     assert client._min_interval == 4.0
 
 
+def test_client_retry_budget_is_configurable():
+    """INVARIANT: live smoke can use a lower retry budget without changing production defaults."""
+    default_client = FigmaClient(api_key="figd_test")
+    smoke_client = FigmaClient(api_key="figd_test", timeout_s=30.0, max_attempts=3)
+
+    assert default_client._timeout_s == 300.0
+    assert default_client._max_attempts == 10
+    assert smoke_client._timeout_s == 30.0
+    assert smoke_client._max_attempts == 3
+
+
+def test_client_rejects_empty_retry_budget():
+    """INVARIANT: max_attempts=0 would make the request loop nonsensical."""
+    with pytest.raises(ValueError, match="max_attempts"):
+        FigmaClient(api_key="figd_test", max_attempts=0)
+
+
 @pytest.mark.asyncio
 async def test_concurrent_requests_are_paced_serially():
     """INVARIANT: concurrent callers share one pacing gate.
@@ -268,6 +285,44 @@ async def test_retries_on_5xx():
 
     assert call_count == 2
     assert meta.version == "123456"
+
+
+@pytest.mark.asyncio
+async def test_5xx_retry_respects_configured_attempt_budget():
+    """INVARIANT: CI smoke can fail fast instead of waiting for production retry depth."""
+    call_count = 0
+
+    with respx.mock:
+
+        def server_error(request: httpx.Request) -> httpx.Response:
+            nonlocal call_count
+            call_count += 1
+            return httpx.Response(500, json={"err": "server error"})
+
+        respx.get(f"https://api.figma.com/v1/files/{FILE_KEY}").mock(side_effect=server_error)
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            async with FigmaClient(api_key="figd_test", max_attempts=3) as client:
+                with pytest.raises(httpx.HTTPStatusError):
+                    await client.get_file_meta(FILE_KEY)
+
+    assert call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_429_does_not_sleep_after_final_attempt():
+    """INVARIANT: exhausted retry budgets fail immediately on the final response."""
+    with respx.mock:
+        respx.get(f"https://api.figma.com/v1/files/{FILE_KEY}").mock(
+            return_value=httpx.Response(429, headers={"retry-after": "60"}, json={})
+        )
+
+        with patch("asyncio.sleep", new_callable=AsyncMock) as sleep_mock:
+            async with FigmaClient(api_key="figd_test", max_attempts=1) as client:
+                with pytest.raises(httpx.HTTPStatusError):
+                    await client.get_file_meta(FILE_KEY)
+
+    sleep_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio

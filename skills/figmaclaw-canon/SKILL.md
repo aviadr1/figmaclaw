@@ -204,7 +204,7 @@ Every function that writes a file must be idempotent: skip the write if only a t
 
 | ID | Invariant | Enforced by |
 |---|---|---|
-| **W-1** | All writers compare load-bearing content (timestamps stripped) before writing; no-op when unchanged. Reference implementations: `_write_token_sidecar`, `save_catalog`, `census._render`. | source-scan meta-test (commits `488788c`, `496cb43`); `tests/test_*idempotency*` |
+| **W-1** | All writers compare load-bearing content (timestamps stripped) before writing; no-op when unchanged. Reference implementations: `_write_token_sidecar`, `save_catalog`, `census._render`, `FigmaSyncState.save`. | source-scan meta-test (commits `488788c`, `496cb43`); `tests/test_*idempotency*` |
 | **W-2** | When a writer DOES write, the resulting file must round-trip through its own reader (e.g. census's `_existing_hash(out_path) == content_hash`, commit `f56eb17`). | runtime assertion in writer + golden test |
 | **W-3** | **Bypass-flag budget rule.** Any flag that bypasses the page-hash check (`--force`, `schema_stale`) must NOT consume the `max_pages` budget for pages it processes. Otherwise the `while pull` loop never terminates. Schema-only upgrades are the canonical example. | `tests/test_*budget*`, commit `5612e2b` |
 

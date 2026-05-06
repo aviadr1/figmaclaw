@@ -7,7 +7,8 @@ set -euo pipefail
 INPUT_FORCE="${INPUT_FORCE:-false}"
 MAX_BATCHES="${MAX_BATCHES:-180}"
 MAX_IDLE_HAS_MORE_BATCHES="${MAX_IDLE_HAS_MORE_BATCHES:-3}"
-BATCH_TIMEOUT_SECONDS="${BATCH_TIMEOUT_SECONDS:-900}"
+BATCH_TIMEOUT_SECONDS="${BATCH_TIMEOUT_SECONDS:-420}"
+TIMEOUT_KILL_AFTER_SECONDS="${TIMEOUT_KILL_AFTER_SECONDS:-30}"
 MAX_PAGES_PER_BATCH="${MAX_PAGES_PER_BATCH:-5}"
 FIGMACLAW_OUT_PATH="${FIGMACLAW_OUT_PATH:-/tmp/figmaclaw-out.txt}"
 FIGMA_TEAM_ID="${FIGMA_TEAM_ID:-}"
@@ -96,7 +97,7 @@ run_pull_batch() {
   local t0 t1
   t0="$(date +%s)"
   set +e
-  timeout "$BATCH_TIMEOUT_SECONDS" figmaclaw pull "${PULL_ARGS[@]}" | tee "$FIGMACLAW_OUT_PATH"
+  timeout --kill-after="${TIMEOUT_KILL_AFTER_SECONDS}s" "$BATCH_TIMEOUT_SECONDS" figmaclaw pull "${PULL_ARGS[@]}" | tee "$FIGMACLAW_OUT_PATH"
   PULL_STATUS=${PIPESTATUS[0]}
   set -e
   t1="$(date +%s)"
@@ -188,7 +189,7 @@ while true; do
   run_pull_batch
   pull_status="$PULL_STATUS"
 
-  if [ "$pull_status" -eq 124 ]; then
+  if [ "$pull_status" -eq 124 ] || [ "$pull_status" -eq 137 ]; then
     TOTAL_TIMEOUTS=$((TOTAL_TIMEOUTS + 1))
     # Persist partial progress before retrying/stopping. Two sources of work to save:
     #   1. Local page commits from --auto-commit that weren't pushed yet (possible
@@ -207,6 +208,12 @@ while true; do
       # timed-out batch made forward progress or was completely wasted.
       echo "figmaclaw pull timed out but partial progress committed (batch $BATCH)."
       emit_obs "partial_commit_on_timeout" "timeout commit saved work"
+    else
+      echo "figmaclaw pull timed out after ${BATCH_TIMEOUT_SECONDS}s with no dirty progress; stopping checkpoint loop early."
+      FINAL_REASON="timeout_no_progress_stop"
+      emit_obs "batch_timeout_stop" "timeout without dirty progress"
+      emit_obs "batch_end" "timeout no progress"
+      break
     fi
     if [ "$INPUT_FORCE" != "true" ] && [ "$CURRENT_MAX_PAGES_PER_BATCH" -gt 1 ]; then
       CURRENT_MAX_PAGES_PER_BATCH=$((CURRENT_MAX_PAGES_PER_BATCH / 2))
@@ -276,6 +283,7 @@ final_reason=${FINAL_REASON}
 max_batches=${MAX_BATCHES}
 max_pages_per_batch=${MAX_PAGES_PER_BATCH}
 batch_timeout_seconds=${BATCH_TIMEOUT_SECONDS}
+timeout_kill_after_seconds=${TIMEOUT_KILL_AFTER_SECONDS}
 input_force=${INPUT_FORCE}
 EOF
   echo "SYNC_OBS summary_file=${OBS_SUMMARY_FILE}"
