@@ -69,6 +69,17 @@ async def test_session_reuse_makes_two_calls(mcp_client: FigmaMcpClient) -> None
 
 @pytest.mark.smoke_mcp
 @pytest.mark.asyncio
+async def test_mcp_exposes_read_variable_tools(mcp_client: FigmaMcpClient) -> None:
+    """Smoke: Figma MCP exposes read-tool alternatives to use_figma."""
+    tools = await mcp_client.list_tools()
+    tool_names = {tool.get("name") for tool in tools}
+
+    assert "get_variable_defs" in tool_names
+    assert "search_design_system" in tool_names
+
+
+@pytest.mark.smoke_mcp
+@pytest.mark.asyncio
 async def test_mcp_exports_design_system_variable_definitions(
     mcp_client: FigmaMcpClient,
 ) -> None:

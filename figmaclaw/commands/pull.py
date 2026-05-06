@@ -25,6 +25,7 @@ from figmaclaw.git_utils import git_commit, git_push
 from figmaclaw.prune_utils import prune_file_artifacts_from_manifest
 from figmaclaw.pull_logic import DEFAULT_PER_PAGE_TIMEOUT_S, PullResult, pull_file
 from figmaclaw.schema_status import is_pull_schema_stale
+from figmaclaw.source_context import classify_source_lifecycle
 from figmaclaw.status_markers import COMMIT_MSG_PREFIX, HAS_MORE_TRUE
 
 
@@ -255,19 +256,21 @@ async def _listing_prefilter(
     projects = await client.list_team_projects(team_id)
 
     # Fetch all project file listings concurrently
-    async def _list_project(project: ProjectSummary) -> list[FileSummary]:
+    async def _list_project(project: ProjectSummary) -> tuple[ProjectSummary, list[FileSummary]]:
         try:
-            return await client.list_project_files(str(project.id))
+            return project, await client.list_project_files(str(project.id))
         except Exception:
-            return []
+            return project, []
 
-    all_file_lists = await asyncio.gather(*[_list_project(p) for p in projects])
+    all_project_file_lists = await asyncio.gather(*[_list_project(p) for p in projects])
 
     listing_last_modified: dict[str, str] = {}
     newly_tracked = 0
     tracked = set(state.manifest.tracked_files)
 
-    for files in all_file_lists:
+    for project, files in all_project_file_lists:
+        project_id = str(project.id)
+        project_name = project.name
         for file_info in files:
             file_key = file_info.key
             file_name = file_info.name
@@ -291,6 +294,11 @@ async def _listing_prefilter(
                 click.echo(f"  → now tracking {file_name!r}")
                 tracked.add(file_key)
                 newly_tracked += 1
+            entry = state.manifest.files.get(file_key)
+            if entry is not None:
+                entry.source_project_id = project_id
+                entry.source_project_name = project_name
+                entry.source_lifecycle = classify_source_lifecycle(file_name, project_name)
 
     if newly_tracked:
         click.echo(f"NEWLY_TRACKED:{newly_tracked}")

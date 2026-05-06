@@ -94,6 +94,23 @@ class FigmaMcpSession:
             description,
         )
 
+    async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Execute an arbitrary MCP tool on this open session."""
+        if self._closed:
+            raise FigmaMcpError("Cannot use a closed FigmaMcpSession.")
+        return await self._owner._call_tool(
+            self._client,
+            self._session_id,
+            name,
+            arguments or {},
+        )
+
+    async def list_tools(self) -> list[dict[str, Any]]:
+        """Return tools exposed by the MCP server for this authenticated client."""
+        if self._closed:
+            raise FigmaMcpError("Cannot use a closed FigmaMcpSession.")
+        return await self._owner._list_tools(self._client, self._session_id)
+
     async def refresh(self) -> str | None:
         """Re-run MCP initialize + initialized notification on the same connection."""
         if self._closed:
@@ -170,7 +187,7 @@ class FigmaMcpClient:
         1. ``mcpOAuth`` — any key whose name contains ``"figma"`` (case-insensitive).
            This is where Claude Code stores per-server MCP OAuth tokens.
            Key format: ``"plugin:figma:figma|<hash>"``.
-        2. ``claudeAiOauthToken`` — legacy / fallback path.
+        2. ``claudeAiOauthToken`` / ``claudeAiOauth`` — legacy / fallback paths.
 
         Raises
         ------
@@ -196,16 +213,16 @@ class FigmaMcpClient:
                 if token:
                     return cls(token)
 
-        # Fallback: claudeAiOauthToken["accessToken"]
-        token_obj: dict[str, Any] = data.get("claudeAiOauthToken") or {}
-        token = (token_obj.get("accessToken") or "").strip()
-        if token:
-            return cls(token)
+        for fallback_key in ("claudeAiOauthToken", "claudeAiOauth"):
+            token_obj: dict[str, Any] = data.get(fallback_key) or {}
+            token = (token_obj.get("accessToken") or "").strip()
+            if token:
+                return cls(token)
 
         raise FigmaMcpError(
             f"Could not find a Figma OAuth access token in {cred_path}.\n"
             "Expected: mcpOAuth['plugin:figma:figma|...']['accessToken'] "
-            "or claudeAiOauthToken['accessToken']"
+            "or claudeAiOauthToken['accessToken'] / claudeAiOauth['accessToken']"
         )
 
     @classmethod
@@ -283,6 +300,16 @@ class FigmaMcpClient:
         async with self.session(timeout=60.0) as sess:
             return await sess.use_figma(file_key, code, description)
 
+    async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Execute an arbitrary MCP ``tools/call`` request."""
+        async with self.session(timeout=60.0) as sess:
+            return await sess.call_tool(name, arguments or {})
+
+    async def list_tools(self) -> list[dict[str, Any]]:
+        """Return the MCP server tool list for the authenticated client."""
+        async with self.session(timeout=60.0) as sess:
+            return await sess.list_tools()
+
     async def _initialize(self, client: httpx.AsyncClient) -> str | None:
         """Send the MCP initialize request and return the optional session ID."""
         payload: dict[str, Any] = {
@@ -333,17 +360,32 @@ class FigmaMcpClient:
         description: str,
     ) -> dict[str, Any]:
         """Send the tools/call request for the use_figma tool."""
+        return await self._call_tool(
+            client,
+            session_id,
+            "use_figma",
+            {
+                "fileKey": file_key,
+                "code": code,
+                "description": description,
+            },
+        )
+
+    async def _call_tool(
+        self,
+        client: httpx.AsyncClient,
+        session_id: str | None,
+        name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Send a generic tools/call request."""
         payload: dict[str, Any] = {
             "jsonrpc": "2.0",
             "id": 2,
             "method": "tools/call",
             "params": {
-                "name": "use_figma",
-                "arguments": {
-                    "fileKey": file_key,
-                    "code": code,
-                    "description": description,
-                },
+                "name": name,
+                "arguments": arguments,
             },
         }
         headers = self._base_headers()
@@ -359,6 +401,35 @@ class FigmaMcpClient:
         _check_jsonrpc_error(body, "tools/call")
         result: dict[str, Any] = body.get("result", {})
         return result
+
+    async def _list_tools(
+        self,
+        client: httpx.AsyncClient,
+        session_id: str | None,
+    ) -> list[dict[str, Any]]:
+        """Send a tools/list request."""
+        payload: dict[str, Any] = {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {},
+        }
+        headers = self._base_headers()
+        if session_id:
+            headers["Mcp-Session-Id"] = session_id
+        resp = await client.post(
+            _MCP_URL,
+            json=payload,
+            headers=headers,
+        )
+        _check_http(resp, "tools/list")
+        body: dict[str, Any] = _parse_body(resp, "tools/list")
+        _check_jsonrpc_error(body, "tools/list")
+        result = body.get("result", {})
+        tools = result.get("tools", [])
+        if not isinstance(tools, list):
+            raise FigmaMcpError("MCP 'tools/list' returned an invalid tools payload")
+        return tools
 
     async def _terminate_session(
         self,

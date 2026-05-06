@@ -169,6 +169,25 @@ class TestCensusSkipBehavior:
         assert out.read_text() != content_before
 
     @pytest.mark.asyncio
+    async def test_census_rewrites_when_source_lifecycle_changes(self, tmp_path: Path):
+        """INVARIANT TC-12: source provenance changes are meaningful registry metadata."""
+        cs = [_make_component_set("Button", "aabb1122")]
+        await self._run_census(tmp_path, cs)
+
+        state = FigmaSyncState(tmp_path)
+        state.load()
+        state.manifest.files["key1"].source_project_id = "proj-archive"
+        state.manifest.files["key1"].source_project_name = "ARCHIVE"
+        state.manifest.files["key1"].source_lifecycle = "archived"
+        state.save()
+        await self._run_census(tmp_path, cs)
+
+        out = tmp_path / "figma" / file_slug_for_key("Web App", "key1") / "_census.md"
+        text = out.read_text()
+        assert "source_project_id: proj-archive" in text
+        assert "source_lifecycle: archived" in text
+
+    @pytest.mark.asyncio
     async def test_census_reports_empty_registry_for_explicit_file_key(
         self,
         tmp_path: Path,
@@ -201,6 +220,33 @@ class TestCensusSkipBehavior:
         assert "component_set_count: 0" in text
         assert "content_hash: 4f53cda18c2baa0c" in text
         assert "# Tap In Design System — Published Component Sets" in text
+
+    @pytest.mark.asyncio
+    async def test_census_frontmatter_records_source_lifecycle(self, tmp_path: Path):
+        """INVARIANT TC-12: component census preserves source-system lifecycle."""
+        state = FigmaSyncState(tmp_path)
+        state.load()
+        state.add_tracked_file("key1", "Legacy Components")
+        state.manifest.files["key1"].source_project_id = "proj-archive"
+        state.manifest.files["key1"].source_project_name = "ARCHIVE"
+        state.manifest.files["key1"].source_lifecycle = "archived"
+        state.save()
+
+        cs = [_make_component_set("Button", "aabb1122")]
+        mock_client = AsyncMock()
+        mock_client.get_component_sets = AsyncMock(return_value=cs)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client_class = MagicMock(return_value=mock_client)
+
+        with patch.object(census_module, "FigmaClient", mock_client_class):
+            await _run("fake-api-key", tmp_path, None, auto_commit=False, force=False)
+
+        out = tmp_path / "figma" / file_slug_for_key("Legacy Components", "key1") / "_census.md"
+        text = out.read_text()
+        assert "source_project_id: proj-archive" in text
+        assert "source_project_name: ARCHIVE" in text
+        assert "source_lifecycle: archived" in text
 
     @pytest.mark.asyncio
     async def test_census_uses_latest_file_name_slug_from_manifest(self, tmp_path: Path):

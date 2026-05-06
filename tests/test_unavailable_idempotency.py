@@ -113,6 +113,13 @@ def _track(repo_dir: Path) -> None:
     state.save()
 
 
+def _write_enterprise_config(repo_dir: Path) -> None:
+    (repo_dir / "pyproject.toml").write_text(
+        '[tool.figmaclaw]\nlicense_type = "enterprise"\n',
+        encoding="utf-8",
+    )
+
+
 class _Unavailable403Client:
     """FigmaClient stand-in: file_meta works, /variables/local returns 403."""
 
@@ -207,6 +214,7 @@ def test_variables_command_idempotent_under_unavailable(
     same-second collision.
     """
     _track(tmp_path)
+    _write_enterprise_config(tmp_path)
 
     client_a = _Unavailable403Client()
     first = _run_variables(tmp_path, monkeypatch, client_a)
@@ -236,6 +244,7 @@ def test_variables_upgrade_path_still_works(tmp_path: Path, monkeypatch) -> None
     """If the upstream answer changes from unavailable→authoritative, the
     catalog must rewrite — short-circuiting must not block real upgrades."""
     _track(tmp_path)
+    _write_enterprise_config(tmp_path)
 
     # First: unavailable response.
     client_403 = _Unavailable403Client()

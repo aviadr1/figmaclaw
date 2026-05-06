@@ -122,9 +122,13 @@ class CatalogLibrary(BaseModel):
 
     name: str = ""
     source_file_key: str | None = None
+    source_project_id: str | None = None
+    source_project_name: str | None = None
+    source_lifecycle: str = "unknown"
     fetched_at: str | None = None
     source_version: str | None = None
     source: str | None = None
+    unavailable_retry_after: str | None = None
     modes: dict[str, str] = Field(default_factory=dict)  # mode_id -> human name
     default_mode_id: str | None = None
     collections: dict[str, CatalogCollection] = Field(default_factory=dict)
@@ -215,9 +219,19 @@ def save_catalog(catalog: TokenCatalog, repo_root: Path) -> None:
 
     Canon W-1 / TC-8.
     """
+    data = catalog.model_dump()
+    for library in data.get("libraries", {}).values():
+        if library.get("unavailable_retry_after") is None:
+            library.pop("unavailable_retry_after", None)
+        if library.get("source_project_id") is None:
+            library.pop("source_project_id", None)
+        if library.get("source_project_name") is None:
+            library.pop("source_project_name", None)
+        if library.get("source_lifecycle") == "unknown":
+            library.pop("source_lifecycle", None)
     write_json_if_changed(
         catalog_path(repo_root),
-        catalog.model_dump(),
+        data,
         ignore_keys=frozenset({"updated_at", "fetched_at"}),
     )
 
@@ -372,6 +386,9 @@ def merge_local_variables(
     file_name: str,
     file_version: str,
     source: str = "figma_api",
+    source_project_id: str | None = None,
+    source_project_name: str | None = None,
+    source_lifecycle: str = "unknown",
 ) -> int:
     """Ingest local variable definitions into the catalog.
 
@@ -413,6 +430,9 @@ def merge_local_variables(
     catalog.libraries[lib_hash] = CatalogLibrary(
         name=file_name,
         source_file_key=file_key,
+        source_project_id=source_project_id,
+        source_project_name=source_project_name,
+        source_lifecycle=source_lifecycle,
         fetched_at=fetched_at,
         source_version=file_version,
         source=source,
@@ -453,6 +473,10 @@ def mark_local_variables_unavailable(
     file_key: str,
     file_name: str,
     file_version: str,
+    unavailable_retry_after: str | None = None,
+    source_project_id: str | None = None,
+    source_project_name: str | None = None,
+    source_lifecycle: str = "unknown",
 ) -> None:
     """Record that the variables endpoint was checked but unavailable.
 
@@ -479,15 +503,25 @@ def mark_local_variables_unavailable(
         and existing.source_version == file_version
         and existing.source == "unavailable"
     ):
+        if (
+            unavailable_retry_after is not None
+            and existing.unavailable_retry_after != unavailable_retry_after
+        ):
+            existing.unavailable_retry_after = unavailable_retry_after
+            catalog.updated_at = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         return
 
     fetched_at = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     catalog.libraries[library_key] = CatalogLibrary(
         name=file_name,
         source_file_key=file_key,
+        source_project_id=source_project_id,
+        source_project_name=source_project_name,
+        source_lifecycle=source_lifecycle,
         fetched_at=fetched_at,
         source_version=file_version,
         source="unavailable",
+        unavailable_retry_after=unavailable_retry_after,
     )
     catalog.updated_at = fetched_at
 

@@ -12,6 +12,19 @@ import yaml
 
 from figmaclaw.workflow_templates import bundled_template_text
 
+REPO_ROOT = Path(__file__).parents[1]
+
+
+def _reusable_workflow_text(name: str) -> str:
+    return (REPO_ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+
+
+def _reusable_push_script(workflow_name: str, job_name: str) -> str:
+    workflow = yaml.safe_load(_reusable_workflow_text(workflow_name))
+    return next(
+        step["run"] for step in workflow["jobs"][job_name]["steps"] if step.get("name") == "Push"
+    )
+
 
 def test_webhook_template_debounces_with_isolated_group() -> None:
     """INVARIANT: webhook debounce uses a dedicated concurrency group."""
@@ -43,9 +56,17 @@ def test_sync_template_threads_current_branch_to_stateful_jobs() -> None:
     """INVARIANT: workflow_dispatch on consumer PR branches must not pull main."""
     text = bundled_template_text("figmaclaw-sync.yaml")
 
-    assert text.count("target_ref: ${{ github.ref_name }}") == 2
+    assert text.count("target_ref: ${{ github.ref_name }}") == 3
     assert "uses: aviadr1/figmaclaw/.github/workflows/sync.yml@main" in text
+    assert "uses: aviadr1/figmaclaw/.github/workflows/census.yml@main" in text
     assert "uses: aviadr1/figmaclaw/.github/workflows/variables.yml@main" in text
+
+
+def test_variables_template_threads_current_branch_to_reusable_workflow() -> None:
+    """INVARIANT: standalone variables dispatch on PR branches must not pull main."""
+    text = bundled_template_text("figmaclaw-variables.yaml")
+
+    assert "target_ref: ${{ github.ref_name }}" in text
 
 
 def test_manage_webhooks_template_is_installed() -> None:
@@ -81,57 +102,45 @@ def test_concurrency_groups_are_isolated_by_workflow_role() -> None:
     assert sync_groups.isdisjoint(webhook_groups)
 
 
-def test_variables_reusable_workflow_replays_generated_catalog_on_push_conflict() -> None:
-    """INVARIANT WF-1: variables commits survive concurrent census/enrichment pushes.
+def test_reusable_registry_workflows_replay_generated_artifacts_on_push_conflict() -> None:
+    """INVARIANT WF-1: registry commits survive concurrent generated pushes.
 
-    The variables job can commit many file-scope catalog refreshes while census
-    or enrichment jobs also push. Recovery after a rejected push must replay the
-    deterministic variables refresh on the newest remote branch instead of
-    text-merging generated ``ds_catalog.json`` content, which can conflict.
+    Variables and census jobs both commit deterministic file-scope registries
+    while other jobs may also push. Recovery after a rejected push must replay
+    deterministic generation on the newest remote branch instead of text-merging
+    generated cache snapshots.
     """
 
-    text = (Path(__file__).parents[1] / ".github" / "workflows" / "variables.yml").read_text(
-        encoding="utf-8"
-    )
+    for workflow_name, command in (
+        ("variables.yml", "figmaclaw variables"),
+        ("census.yml", "figmaclaw census"),
+    ):
+        text = _reusable_workflow_text(workflow_name)
 
-    assert "PUSH_STATUS=$?" in text
-    assert 'if [ "$PUSH_STATUS" -eq 0 ]; then' in text
-    assert 'git reset --hard "origin/${{ inputs.target_ref }}"' in text
-    assert text.count("figmaclaw variables") >= 2
-    assert 'git pull --no-rebase origin "${{ inputs.target_ref }}" && git push' not in text
-    assert (
-        'git pull --no-rebase --ff-only origin "${{ inputs.target_ref }}" && git push' not in text
-    )
+        assert "PUSH_STATUS=$?" in text
+        assert 'if [ "$PUSH_STATUS" -eq 0 ]; then' in text
+        assert 'git reset --hard "origin/${{ inputs.target_ref }}"' in text
+        assert "This is safe only because this GitHub runner has no human edits" in text
+        assert text.count(command) >= 2
+        assert "git push ||" not in text
+        assert 'git pull --no-rebase origin "${{ inputs.target_ref }}" && git push' not in text
+        assert (
+            'git pull --no-rebase --ff-only origin "${{ inputs.target_ref }}" && git push'
+            not in text
+        )
 
 
-def test_variables_push_replay_branch_executes_under_bash_errexit(tmp_path: Path) -> None:
+def test_registry_push_replay_branch_executes_under_bash_errexit(tmp_path: Path) -> None:
     """INVARIANT WF-1: rejected-push replay is executable under GitHub's bash -e wrapper.
 
     The linear-git run 25098005988 proved that string-level workflow checks were
     not enough: the first rejected ``git push`` stopped the Push step before the
     generated-output replay branch ran. This test executes the actual Push step
-    body with fake ``git``/``figmaclaw`` binaries and requires the replay path.
+    bodies with fake ``git``/``figmaclaw`` binaries and requires the replay path.
     """
-
-    workflow = yaml.safe_load(
-        (Path(__file__).parents[1] / ".github" / "workflows" / "variables.yml").read_text(
-            encoding="utf-8"
-        )
-    )
-    push_script = next(
-        step["run"] for step in workflow["jobs"]["variables"]["steps"] if step.get("name") == "Push"
-    )
-    push_script = (
-        push_script.replace("${{ inputs.target_ref }}", "test/figmaclaw-pr-129-ci")
-        .replace("${{ inputs.require_authoritative }}", "false")
-        .replace("${{ inputs.file_key }}", "")
-        .replace("${{ inputs.variables_source }}", "auto")
-    )
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    trace = tmp_path / "trace.log"
-    push_state = tmp_path / "push-count"
 
     git_bin = bin_dir / "git"
     git_bin.write_text(
@@ -172,28 +181,58 @@ def test_variables_push_replay_branch_executes_under_bash_errexit(tmp_path: Path
     )
     figmaclaw_bin.chmod(0o755)
 
-    env = os.environ.copy()
-    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
-    env["TRACE_FILE"] = str(trace)
-    env["PUSH_STATE"] = str(push_state)
-
-    result = subprocess.run(
-        ["bash", "-e", "-c", push_script],
-        cwd=tmp_path,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
+    cases = (
+        (
+            "variables.yml",
+            "variables",
+            {
+                "${{ inputs.target_ref }}": "test/figmaclaw-pr-129-ci",
+                "${{ inputs.require_authoritative }}": "false",
+                "${{ inputs.file_key }}": "",
+                "${{ inputs.variables_source }}": "auto",
+            },
+            "figmaclaw variables --source auto --auto-commit",
+        ),
+        (
+            "census.yml",
+            "census",
+            {
+                "${{ inputs.target_ref }}": "test/figmaclaw-pr-129-ci",
+                "${{ inputs.file_key }}": "",
+            },
+            "figmaclaw census --auto-commit",
+        ),
     )
 
-    assert result.returncode == 0, result.stderr + result.stdout
-    assert trace.read_text(encoding="utf-8").splitlines() == [
-        "git push 1",
-        "git fetch origin test/figmaclaw-pr-129-ci",
-        "git reset --hard origin/test/figmaclaw-pr-129-ci",
-        "figmaclaw variables --source auto --auto-commit",
-        "git push 2",
-    ]
+    for workflow_name, job_name, replacements, expected_replay_command in cases:
+        push_script = _reusable_push_script(workflow_name, job_name)
+        for old, new in replacements.items():
+            push_script = push_script.replace(old, new)
+
+        trace = tmp_path / f"{workflow_name}.trace.log"
+        push_state = tmp_path / f"{workflow_name}.push-count"
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+        env["TRACE_FILE"] = str(trace)
+        env["PUSH_STATE"] = str(push_state)
+
+        result = subprocess.run(
+            ["bash", "-e", "-c", push_script],
+            cwd=tmp_path,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert trace.read_text(encoding="utf-8").splitlines() == [
+            "git push 1",
+            "git fetch origin test/figmaclaw-pr-129-ci",
+            "git reset --hard origin/test/figmaclaw-pr-129-ci",
+            expected_replay_command,
+            "git push 2",
+        ]
 
 
 def test_variables_workflows_can_require_authoritative_definitions() -> None:

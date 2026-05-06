@@ -200,6 +200,10 @@ def test_variables_refresh_upgrades_legacy_linear_git_catalog_without_touching_p
 ) -> None:
     """INVARIANT: variables refresh is file-scope, migratory, and non-destructive."""
     _track_tap_in_ds(tmp_path)
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.figmaclaw]\nlicense_type = "enterprise"\n',
+        encoding="utf-8",
+    )
     _write_legacy_linear_git_catalog(tmp_path)
     monkeypatch.setenv("FIGMA_API_KEY", "figd_test")
 

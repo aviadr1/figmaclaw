@@ -40,6 +40,9 @@ class FileEntry(BaseModel):
     version: str
     last_modified: str
     last_checked_at: str = ""
+    source_project_id: str | None = None
+    source_project_name: str | None = None
+    source_lifecycle: str = "unknown"
     library_hash: str | None = None
     # 0 = pre-versioning. Set to CURRENT_PULL_SCHEMA_VERSION after a successful pull
     # that wrote all pages at the current schema. Files below CURRENT_PULL_SCHEMA_VERSION

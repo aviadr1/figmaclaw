@@ -30,7 +30,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from figmaclaw.commands.pull import _listing_prefilter
-from figmaclaw.figma_api_models import FileMetaResponse, FileSummary, ProjectSummary
+from figmaclaw.figma_api_models import (
+    FileMetaResponse,
+    FileSummary,
+    LocalVariablesResponse,
+    ProjectSummary,
+)
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
 from figmaclaw.figma_models import FigmaFrame, FigmaPage, FigmaSection  # noqa: F401 — used in tests
@@ -1150,6 +1155,27 @@ async def test_listing_prefilter_tracks_new_files(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_listing_prefilter_records_source_project_lifecycle(tmp_path: Path):
+    """INVARIANT TC-12: team listing stamps source-system provenance."""
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    client = MagicMock(spec=FigmaClient)
+    client.list_team_projects = AsyncMock(return_value=[ProjectSummary(id="p1", name="ARCHIVE")])
+    client.list_project_files = AsyncMock(
+        return_value=[
+            FileSummary(key="fileA", name="Legacy DS", last_modified="2026-03-01T00:00:00Z"),
+        ]
+    )
+
+    await _listing_prefilter(client, "team123", state, "all")
+
+    entry = state.manifest.files["fileA"]
+    assert entry.source_project_id == "p1"
+    assert entry.source_project_name == "ARCHIVE"
+    assert entry.source_lifecycle == "archived"
+
+
+@pytest.mark.asyncio
 async def test_listing_prefilter_does_not_duplicate_existing_tracked_files(tmp_path: Path):
     """INVARIANT: _listing_prefilter is idempotent for already-tracked files."""
     state = _make_state_with_file(tmp_path, "fileA", "2026-03-01T00:00:00Z")
@@ -1759,6 +1785,40 @@ async def test_pull_file_calls_get_component_sets_once_per_changed_file(pull_env
     await pull_file(mock_client, "abc123", state, tmp_path, force=False)
 
     mock_client.get_component_sets.assert_called_once_with("abc123")
+
+
+@pytest.mark.asyncio
+async def test_pull_file_skips_enterprise_rest_variables_by_default(pull_env: PullEnv):
+    """INVARIANT: pull does not probe Enterprise-only variables REST by default."""
+    state, mock_client, tmp_path = pull_env.state, pull_env.client, pull_env.tmp_path
+    mock_client.get_local_variables = AsyncMock()
+
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    mock_client.get_local_variables.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pull_file_refreshes_rest_variables_when_enterprise_configured(pull_env: PullEnv):
+    """INVARIANT: Enterprise config opts pull into REST variables refresh."""
+    state, mock_client, tmp_path = pull_env.state, pull_env.client, pull_env.tmp_path
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.figmaclaw]\nlicense_type = "enterprise"\n',
+        encoding="utf-8",
+    )
+    mock_client.get_local_variables = AsyncMock(
+        return_value=LocalVariablesResponse.model_validate(
+            {
+                "status": 200,
+                "error": False,
+                "meta": {"variables": {}, "variableCollections": {}},
+            }
+        )
+    )
+
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    mock_client.get_local_variables.assert_awaited_once_with("abc123")
 
 
 @pytest.mark.asyncio
