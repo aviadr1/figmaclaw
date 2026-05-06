@@ -756,6 +756,40 @@ async def test_pull_file_per_page_timeout_marks_stuck_page_errored_and_continues
 
 
 @pytest.mark.asyncio
+async def test_pull_file_times_out_component_set_probe_and_still_processes_page(
+    pull_env: PullEnv,
+):
+    """INVARIANT ERR-2: a stuck file-scope component registry probe must not
+    consume the whole pull batch. It degrades to empty component_set_keys and
+    the page/component render continues."""
+    from figmaclaw.figma_parse import parse_frontmatter
+
+    state, mock_client, tmp_path = pull_env.state, pull_env.client, pull_env.tmp_path
+    mock_client.get_page = AsyncMock(return_value=fake_component_page_node())
+
+    async def _stuck_component_sets(_file_key: str):
+        await asyncio.sleep(10.0)
+        return []
+
+    mock_client.get_component_sets = AsyncMock(side_effect=_stuck_component_sets)
+
+    result = await pull_file(
+        mock_client,
+        "abc123",
+        state,
+        tmp_path,
+        force=False,
+        per_page_timeout_s=0.05,
+    )
+
+    assert result.component_sections_written == 1
+    comp_out = tmp_path / "figma" / "web-app-abc123" / "components" / "buttons-20-1.md"
+    fm = parse_frontmatter(comp_out.read_text())
+    assert fm is not None
+    assert fm.component_set_keys == {}
+
+
+@pytest.mark.asyncio
 async def test_pull_file_per_page_timeout_none_disables_wrapping(tmp_path: Path):
     """INVARIANT: per_page_timeout_s=None preserves original behavior (no
     asyncio.wait_for wrapping) — needed so callers that want to rely solely on
@@ -1529,6 +1563,49 @@ async def test_pull_cmd_emits_file_heartbeat_for_long_pull(
 
     out = capsys.readouterr().out
     assert "SYNC_OBS_PULL event=file_heartbeat file_key=fileA" in out
+
+
+@pytest.mark.asyncio
+async def test_pull_cmd_per_file_timeout_skips_stuck_file_and_finishes_batch(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """INVARIANT ERR-2: a file that exceeds the file wall-clock budget becomes
+    an observed file_timeout, not a process-level hang that prevents run_end and
+    downstream workflow jobs."""
+    from figmaclaw.commands.pull import _run
+
+    state = _make_state_with_file(tmp_path, "fileA", "")
+    state.save()
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    async def _stuck_pull_file(*_args, **_kwargs) -> PullResult:
+        await asyncio.sleep(10.0)
+        return PullResult(file_key="fileA", skipped_file=True)
+
+    with (
+        patch("figmaclaw.commands.pull.FigmaClient", return_value=mock_client),
+        patch("figmaclaw.commands.pull.pull_file", side_effect=_stuck_pull_file),
+    ):
+        await _run(
+            "key",
+            tmp_path,
+            None,
+            False,
+            None,
+            False,
+            10,
+            None,
+            "all",
+            per_file_timeout_s=0.05,
+        )
+
+    out = capsys.readouterr().out
+    assert "fileA: timed out after 0.05s (skipping)" in out
+    assert "SYNC_OBS_PULL event=file_end file_key=fileA outcome=file_timeout" in out
+    assert "SYNC_OBS_PULL event=run_end" in out
 
 
 # --- _compute_raw_frames ---

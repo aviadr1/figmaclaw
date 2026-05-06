@@ -86,42 +86,27 @@ jobs:
             figmaclaw variables --source "${{ inputs.variables_source }}" $REQUIRE_AUTHORITATIVE --auto-commit
           fi
 
+      - name: Checkout generated-registry publisher
+        uses: actions/checkout@v6
+        with:
+          repository: aviadr1/figmaclaw
+          ref: ${{ inputs.figmaclaw_ref }}
+          path: .figmaclaw-workflow
+          sparse-checkout: |
+            scripts/publish_generated_registry.sh
+
       - name: Push
         env:
           FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
           FIGMA_VARIABLES_TOKEN: ${{ secrets.FIGMA_VARIABLES_TOKEN }}
           FIGMA_MCP_TOKEN: ${{ secrets.FIGMA_MCP_TOKEN }}
+          TARGET_REF: ${{ inputs.target_ref || github.ref_name }}
+          PUBLISH_PROTECTED_PATH_RE: ^\.figma-sync/ds_catalog\.json$
+          REPLAY_COMMAND: >-
+            figmaclaw variables
+            ${{ inputs.file_key && format('--file-key "{0}"', inputs.file_key) || '' }}
+            --source "${{ inputs.variables_source }}"
+            ${{ inputs.require_authoritative && '--require-authoritative' || '' }}
+            --auto-commit
         run: |
-          set -euo pipefail
-
-          set +e
-          git push
-          PUSH_STATUS=$?
-          set -e
-
-          if [ "$PUSH_STATUS" -eq 0 ]; then
-            exit 0
-          fi
-
-          echo "Push rejected; replaying variables refresh on latest ${{ inputs.target_ref || github.ref_name }}"
-          git fetch origin "${{ inputs.target_ref || github.ref_name }}"
-          # Canon WF-1: reset to latest source state and replay deterministic
-          # generation instead of merging stale generated JSON.
-          # This is safe only because this GitHub runner has no human edits,
-          # this job writes only deterministic catalog artifacts, and the next
-          # command immediately recomputes those artifacts from Figma. Do not
-          # copy this reset pattern to LLM/human-authored body workflows.
-          git reset --hard "origin/${{ inputs.target_ref || github.ref_name }}"
-
-          REQUIRE_AUTHORITATIVE=""
-          if [ "${{ inputs.require_authoritative }}" = "true" ]; then
-            # Canon AUTH-1: preserve strict proof semantics on replay.
-            REQUIRE_AUTHORITATIVE="--require-authoritative"
-          fi
-          if [ -n "${{ inputs.file_key }}" ]; then
-            figmaclaw variables --file-key "${{ inputs.file_key }}" --source "${{ inputs.variables_source }}" $REQUIRE_AUTHORITATIVE --auto-commit
-          else
-            figmaclaw variables --source "${{ inputs.variables_source }}" $REQUIRE_AUTHORITATIVE --auto-commit
-          fi
-
-          git push
+          bash .figmaclaw-workflow/scripts/publish_generated_registry.sh

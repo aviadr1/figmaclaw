@@ -22,7 +22,7 @@ on:
         default: false
 
 concurrency:
-  group: figma-git-variables
+  group: figma-git-variables-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

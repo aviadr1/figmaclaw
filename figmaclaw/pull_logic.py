@@ -39,7 +39,7 @@ import asyncio
 import datetime
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import httpx
@@ -97,10 +97,11 @@ from figmaclaw.token_scan import PageTokenScan, scan_page
 log = logging.getLogger(__name__)
 TOKEN_SIDECAR_SCHEMA_VERSION = 2
 
-# Per-page API-call timeout. Applied around each concurrent get_page and the
-# sequential-mode get_nodes call so one stuck page can't hang an entire batch.
-# None disables per-page timeouts (falls back to the caller's wall-clock limit).
-DEFAULT_PER_PAGE_TIMEOUT_S: float = 240.0
+# Per-Figma-call timeout inside a file pull. Applied around file-scope registry
+# probes, concurrent get_page batches, and sequential-mode get_nodes calls so one
+# stuck Figma endpoint can't hang an entire batch. None disables these wrappers
+# (falls back to the caller's wall-clock limit).
+DEFAULT_PER_PAGE_TIMEOUT_S: float = 120.0
 
 # Concurrent page-node fetches per chunk. Sized to get most of the parallel-speedup
 # (a 30-page file completes in ~3 chunks, ~3× timeout_s wall-clock max) without
@@ -726,12 +727,17 @@ async def pull_file(
         if progress:
             progress(msg)
 
+    async def _with_api_timeout[T](awaitable: Awaitable[T]) -> T:
+        if per_page_timeout_s is None:
+            return await awaitable
+        return await asyncio.wait_for(awaitable, timeout=per_page_timeout_s)
+
     result = PullResult(file_key=file_key)
     catalog = load_catalog(repo_root)
 
     # Level 1: file-level version check
     try:
-        meta = await client.get_file_meta(file_key)
+        meta = await _with_api_timeout(client.get_file_meta(file_key))
     except Exception as exc:
         if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in {400, 404}:
             code = exc.response.status_code
@@ -821,7 +827,7 @@ async def pull_file(
     # entirely instead of writing unavailable markers from a hopeless 403.
     if is_enterprise_license(repo_root):
         try:
-            local_variables = await client.get_local_variables(file_key)
+            local_variables = await _with_api_timeout(client.get_local_variables(file_key))
             if local_variables is None:
                 mark_local_variables_unavailable(
                     catalog,
@@ -855,7 +861,7 @@ async def pull_file(
     # Fetch component sets once per changed file. Used to populate component_set_keys
     # in component section .md frontmatter so build skills can skip search_design_system().
     try:
-        component_sets = await client.get_component_sets(file_key)
+        component_sets = await _with_api_timeout(client.get_component_sets(file_key))
     except Exception as exc:
         log.warning(
             "Failed to fetch component sets (%s) — component_set_keys will be empty",
@@ -897,12 +903,7 @@ async def pull_file(
 
     async def _fetch_page(node_id: str) -> dict | Exception:
         try:
-            if per_page_timeout_s is not None:
-                return await asyncio.wait_for(
-                    client.get_page(file_key, node_id),
-                    timeout=per_page_timeout_s,
-                )
-            return await client.get_page(file_key, node_id)
+            return await _with_api_timeout(client.get_page(file_key, node_id))
         except Exception as exc:
             return exc
 
@@ -920,10 +921,7 @@ async def pull_file(
                 chunk_ids,
                 batch_size=max(1, len(chunk_ids)),
             )
-            if per_page_timeout_s is not None:
-                batch_result = await asyncio.wait_for(fetch_batch, timeout=per_page_timeout_s)
-            else:
-                batch_result = await fetch_batch
+            batch_result = await _with_api_timeout(fetch_batch)
             if not isinstance(batch_result, dict):
                 raise TypeError(f"get_pages returned {type(batch_result).__name__}, expected dict")
             for stub in chunk:
@@ -1182,13 +1180,9 @@ async def pull_file(
                 else:
                     # Sequential mode: must fetch per-page (we don't have all page nodes upfront).
                     try:
-                        if per_page_timeout_s is not None:
-                            frame_docs = await asyncio.wait_for(
-                                client.get_nodes(file_key, screen_frame_ids, depth=2),
-                                timeout=per_page_timeout_s,
-                            )
-                        else:
-                            frame_docs = await client.get_nodes(file_key, screen_frame_ids, depth=2)
+                        frame_docs = await _with_api_timeout(
+                            client.get_nodes(file_key, screen_frame_ids, depth=2)
+                        )
                         raw_frames, frame_sections = _compute_raw_frames(frame_docs)
                     except TimeoutError:
                         log.warning(
