@@ -97,6 +97,7 @@ jobs:
       max_frames: 80
       max_files: 0
       figmaclaw_ref: ${{ github.event.inputs.figmaclaw_ref || 'main' }}
+      target_ref: ${{ github.ref_name }}
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
@@ -123,6 +124,7 @@ jobs:
       max_files: 0
       section_mode: true
       figmaclaw_ref: ${{ github.event.inputs.figmaclaw_ref || 'main' }}
+      target_ref: ${{ github.ref_name }}
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}

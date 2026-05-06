@@ -1,6 +1,6 @@
 ---
 name: figmaclaw canon
-description: Use when working with figmaclaw-generated data (figma/*.md pages, _census.md, ds_catalog.json, token sidecars) or modifying figmaclaw itself. Covers the four-layer data contract (frontmatter / body / manifest / file-scope registries), invariant classes (BP/SC/FM/CL/W/CR/KS/TS/CW/LW/HE/TC/TS-S/REG/PP/NC/HSH/SI/MIG/AUTH/ERR/WF), design decisions D1-D15, refresh-trigger ladder, and the failure-mode catalog F1-F21. Authoritative for "is this change safe?" questions.
+description: Use when working with figmaclaw-generated data (figma/*.md pages, _census.md, ds_catalog.json, token sidecars) or modifying figmaclaw itself. Covers the four-layer data contract (frontmatter / body / manifest / file-scope registries), invariant classes (BP/SC/FM/CL/W/CR/KS/TS/CW/LW/HE/TC/TS-S/REG/PP/NC/HSH/SI/MIG/AUTH/ERR/WF), design decisions D1-D15, refresh-trigger ladder, and the failure-mode catalog F1-F22. Authoritative for "is this change safe?" questions.
 ---
 
 # figmaclaw canon — invariants and design decisions
@@ -386,6 +386,7 @@ Reusable workflows write generated cache artifacts in shared git branches. Their
 |---|---|---|---|---|
 | **WF-1** | Replay deterministic generated artifacts | When a workflow push is rejected for deterministic generated artifacts, recovery must recompute those artifacts from the latest remote source state instead of text-merging stale generated JSON/markdown. | Generated artifacts are cache snapshots. Text-merging two snapshots can create a state that was never generated from any Figma/Linear source. Reset-and-replay preserves determinism and avoids cache corruption. | Concurrent variables/census/enrichment pushes produced generated JSON conflicts. Evidence: [PR #129 replay note](https://github.com/aviadr1/figmaclaw/pull/129#issuecomment-4341938356), commit [`60bfbb4`](https://github.com/aviadr1/figmaclaw/commit/60bfbb4), commit [`f5bdc51`](https://github.com/aviadr1/figmaclaw/commit/f5bdc51), `tests/test_workflow_template_invariants.py`. |
 | **WF-2** | Prompts must not teach merge recovery | Agent prompts and skills that ask LLMs/humans to commit generated or enriched Figma data must not prescribe `git push || git pull && git push` or any equivalent merge-pull retry. If the work is deterministic generated cache, workflows reset and replay it under WF-1. If the work is LLM/human-authored body, the prompt stops on rejected push and lets a human or orchestrator choose the integration strategy. | Workflow fixes do not kill the category if bundled prompts keep teaching the same unsafe pattern. Body edits are not deterministic replayable; generated registries are. Keeping those recovery paths separate prevents agents from accidentally text-merging generated cache snapshots while trying to publish page prose. | `tests/test_prompt_git_add_rules.py`, `tests/test_workflow_template_invariants.py`. |
+| **WF-3** | Stateful jobs start from latest target ref | Any reusable workflow that selects, mutates, commits, or pushes repo state must fast-forward to the caller's target branch before doing that work. A scheduled or webhook-triggered run's checkout SHA is only the dispatch snapshot; it may already be stale by the time downstream jobs start. | Work selection from stale git state causes agents to process deleted/moved files, generators to backfill obsolete paths, or push recovery to reason from the wrong base. Refreshing the target ref before selection preserves the source-of-truth branch boundary without merging. | A scheduled `linear-git` enrichment job selected `figma/migrations/...` from a pre-merge checkout after the branch had moved migration receipts to `figma_migrations/`. `tests/test_workflow_template_invariants.py`. |
 
 ## 5. Design decisions
 
@@ -548,6 +549,7 @@ Each row records a failure mode that has actually occurred (or that we shipped a
 | **F19** | Transient failure poisoned later files. A per-file MCP export error was cached like missing credentials and suppressed authoritative fallback for unrelated later files. | PR #129 live `linear-git` run. | ERR-1 |
 | **F20** | Merged generated cache snapshot. Rejected workflow pushes attempted merge-pull recovery for generated JSON, allowing conflict states that were not the output of a deterministic generator over current source. | PR #129 variables workflow lane. | WF-1 |
 | **F21** | MCP read-only denial treated as transient. `use_figma` can run in contexts where Figma refuses file mutation, even if figmaclaw's JavaScript is intended to read variables. Retrying that error burns CI minutes and repeats the same unavailable marker. | `linear-git` PR #140 marination: FigJam files and an archived Figma file returned `Operation attempted to modify the file while in read-only mode`. | TC-11, ERR-1 |
+| **F22** | Stateful workflow selected work from a stale dispatch snapshot. Downstream enrichment checked out the scheduled run's old SHA and selected a file path that had already been moved on the branch. | `linear-git` scheduled run `25456720296`, after PR #23 moved migration receipts from `figma/migrations/` to `figma_migrations/`. | WF-3 |
 
 Each row was either repeated more than once or had a near-miss before being canonized. New rows are appended; nothing is renumbered.
 
@@ -596,6 +598,7 @@ Use this checklist when reviewing any PR that touches figmaclaw's data model, ca
 - [ ] Does this PR cache an API/MCP failure or suppress retries? If yes, is the cache scoped only to evidence that is persistent at that scope (ERR-1)?
 - [ ] Does this PR recover from rejected pushes of generated artifacts? If yes, does it reset/replay deterministic generation instead of text-merging generated cache snapshots (WF-1)?
 - [ ] Does this PR edit prompts or skills that tell agents to push commits? If yes, do they avoid merge-pull retry recipes and preserve the authored-vs-generated recovery split (WF-2)?
+- [ ] Does this PR add or edit a stateful reusable workflow? If yes, does it fast-forward to the caller's target branch before selecting or writing repo state (WF-3)?
 
 ### Token catalog and sidecar specifically
 
