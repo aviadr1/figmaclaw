@@ -26,7 +26,7 @@ If you only need updated tokens, run `figmaclaw variables --file-key <k>` — do
 
 | Command | What it does | Writes |
 |---|---|---|
-| `figmaclaw pull` | Bulk sync all tracked files. Skips at file-version layer; per-page hash gating beneath. Auto-fetches component_sets and (when implemented) variables for changed files. | `figma/{slug}/pages/*.md` (frontmatter), `figma/{slug}/components/*.md` (frontmatter), `*.tokens.json` sidecars, `.figma-sync/manifest.json`, `.figma-sync/ds_catalog.json` |
+| `figmaclaw pull` | Bulk sync all tracked files. Skips at file-version layer; per-page hash gating beneath. With `--team-id`, stamps source project/lifecycle provenance into the manifest. Auto-fetches component_sets and (when implemented) variables for changed files. | `figma/{slug}/pages/*.md` (frontmatter), `figma/{slug}/components/*.md` (frontmatter), `*.tokens.json` sidecars, `.figma-sync/manifest.json`, `.figma-sync/ds_catalog.json` |
 | `figmaclaw pull --file-key <k>` | Same, single file. | Same, scoped. |
 | `figmaclaw pull --force` | Bypasses page-hash skip; rewrites every page. **Slow.** Use only when schema bumps or for explicit re-render. | Same. |
 | `figmaclaw sync <md_file>` | Re-sync one page from REST, preserving body. | One `.md` (frontmatter only) + manifest. |
@@ -37,8 +37,8 @@ If you only need updated tokens, run `figmaclaw variables --file-key <k>` — do
 
 | Command | What it does | Writes |
 |---|---|---|
-| `figmaclaw census` | Snapshot published component sets to `_census.md` per tracked file. Hash-gated; no commit if registry unchanged. | `figma/{slug}/_census.md`. |
-| `figmaclaw variables` | Refresh DS variable catalog from Figma's variable registry. Default `--source auto` tries REST `/variables/local`, then Figma MCP plugin-runtime export when REST lacks `file_variables:read`. Per canon TC-1, these are authoritative sources for token names, modes, scopes. | `.figma-sync/ds_catalog.json`. |
+| `figmaclaw census` | Snapshot published component sets to `_census.md` per tracked file. Hash-gated; no commit if registry unchanged. Frontmatter includes source lifecycle when known, so archived component systems remain explicit migration evidence. | `figma/{slug}/_census.md`. |
+| `figmaclaw variables` | Refresh DS variable catalog from Figma's variable registry. Default `--source auto` uses Figma MCP plugin-runtime export for Figma Design files. REST `/variables/local` is Enterprise-only and is tried only when repo config sets `[tool.figmaclaw] license_type = "enterprise"`. FigJam files skip the MCP local-variable export path because Figma's variable-registry MCP readers are Design-file tools. Per canon TC-1/TC-11, successful REST/MCP exports are authoritative for token names, modes, scopes. Catalog libraries include source lifecycle when the manifest knows it. | `.figma-sync/ds_catalog.json`. |
 | `figmaclaw variables --file-key <k>` | Same, single file. Add `--source rest` to disable MCP fallback, or `--source mcp` to force plugin-runtime export. | Same, scoped. |
 
 ### Inspection (read-only)

@@ -9,6 +9,8 @@ INVARIANTS:
     1. initialize (no session header)
     2. notifications/initialized (with optional session header, no id)
     3. tools/call use_figma (with optional session header)
+- call_tool() can execute non-use_figma read tools over the same MCP session
+- list_tools() exposes the server's available tools
 - use_figma() uses Authorization: Bearer, not X-Figma-Token
 - use_figma() raises FigmaMcpError on HTTP >= 400
 - use_figma() raises FigmaMcpError on JSON-RPC error responses
@@ -96,6 +98,22 @@ def _tools_call_response() -> dict[str, Any]:
     }
 
 
+def _tools_list_response() -> dict[str, Any]:
+    return {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+            "tools": [
+                {
+                    "name": "get_variable_defs",
+                    "description": "Get variable definitions",
+                    "inputSchema": {"type": "object"},
+                }
+            ]
+        },
+    }
+
+
 class TestFromEnv:
     def test_reads_token_from_env(self) -> None:
         """INVARIANT: from_env() returns a client with the env var token."""
@@ -159,6 +177,19 @@ class TestFromClaudeCredentials:
             {
                 "mcpOAuth": {"plugin:slack:slack|xyz": {"accessToken": "slack-token"}},
                 "claudeAiOauthToken": {"accessToken": "claude-oauth-token"},
+            },
+        )
+        with patch.object(Path, "home", return_value=tmp_path):
+            client = FigmaMcpClient.from_claude_credentials()
+        assert client._token == "claude-oauth-token"
+
+    def test_falls_back_to_current_claude_ai_oauth_key(self, tmp_path: Path) -> None:
+        """INVARIANT: current Claude credentials may use claudeAiOauth."""
+        self._write_creds(
+            tmp_path,
+            {
+                "mcpOAuth": {"plugin:slack:slack|xyz": {"accessToken": "slack-token"}},
+                "claudeAiOauth": {"accessToken": "claude-oauth-token"},
             },
         )
         with patch.object(Path, "home", return_value=tmp_path):
@@ -291,6 +322,38 @@ class TestUseFigma:
             )
 
         assert result == _tools_call_response()["result"]
+
+    @pytest.mark.asyncio
+    async def test_call_tool_supports_read_only_mcp_tools(self) -> None:
+        """INVARIANT: generic tools/call is not hardcoded to use_figma."""
+        captured: list[httpx.Request] = []
+
+        with _mock_three_step(capture=captured):
+            client = FigmaMcpClient(_TOKEN)
+            await client.call_tool(
+                "get_variable_defs",
+                {"fileKey": FILE_KEY, "nodeId": "1:2"},
+            )
+
+        call_body = json.loads(captured[2].content)
+        assert call_body["method"] == "tools/call"
+        assert call_body["params"]["name"] == "get_variable_defs"
+        assert call_body["params"]["arguments"] == {"fileKey": FILE_KEY, "nodeId": "1:2"}
+
+    @pytest.mark.asyncio
+    async def test_list_tools_uses_mcp_tools_list_method(self) -> None:
+        """INVARIANT: client can discover tool schemas exposed by Figma MCP."""
+        captured: list[httpx.Request] = []
+
+        with _mock_three_step(
+            call_resp=httpx.Response(200, json=_tools_list_response()), capture=captured
+        ):
+            client = FigmaMcpClient(_TOKEN)
+            tools = await client.list_tools()
+
+        assert tools[0]["name"] == "get_variable_defs"
+        call_body = json.loads(captured[2].content)
+        assert call_body["method"] == "tools/list"
 
 
 class TestSessionLifecycle:

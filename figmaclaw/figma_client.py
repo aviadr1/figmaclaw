@@ -36,6 +36,21 @@ DEFAULT_RETRY_AFTER_S = 10
 MIN_429_RETRY_AFTER_S = 5
 
 
+def _figma_error_message(response: httpx.Response) -> str | None:
+    """Return Figma's structured error message when one is present."""
+    try:
+        payload = response.json()
+    except ValueError:
+        return response.text.strip() or None
+    if not isinstance(payload, dict):
+        return None
+    for key in ("message", "err", "error"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 class FigmaClient:
     """Async client for the Figma REST API.
 
@@ -483,17 +498,33 @@ class FigmaClient:
         or skip the file. We do NOT swallow non-403 errors silently — that
         would be the LW-1 "WARN-and-drop" anti-pattern.
         """
+        response, _reason = await self.get_local_variables_with_reason(file_key)
+        return response
+
+    async def get_local_variables_with_reason(
+        self, file_key: str
+    ) -> tuple[LocalVariablesResponse | None, str | None]:
+        """GET local variables and preserve Figma's 403 reason for callers.
+
+        Canon ERR-1: persistent configuration failures may be cached globally
+        for the current run, but callers need the concrete Figma error message
+        to distinguish missing ``file_variables:read`` from per-file access
+        failures.
+        """
         try:
             data = await self._get(f"/v1/files/{file_key}/variables/local", variables=True)
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 403:
-                return None
+                return None, _figma_error_message(e.response)
             raise
-        return _validate(
-            LocalVariablesResponse,
-            data,
-            endpoint="GET /v1/files/{key}/variables/local",
-            context=f"file_key={file_key}",
+        return (
+            _validate(
+                LocalVariablesResponse,
+                data,
+                endpoint="GET /v1/files/{key}/variables/local",
+                context=f"file_key={file_key}",
+            ),
+            None,
         )
 
     async def get_nodes(

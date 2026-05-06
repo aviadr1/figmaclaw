@@ -172,7 +172,8 @@ async def test_get_local_variables_via_mcp_runner_assembles_compact_chunks() -> 
 
 
 @pytest.mark.asyncio
-async def test_get_local_variables_via_mcp_runner_retries_read_only_transient() -> None:
+async def test_get_local_variables_via_mcp_runner_does_not_retry_read_only_denial() -> None:
+    """Read-only mode is a file/tool capability denial, not a transient flake."""
     attempts = 0
 
     async def use_figma(_file_key: str, _code: str, description: str) -> dict:
@@ -203,13 +204,13 @@ async def test_get_local_variables_via_mcp_runner_retries_read_only_transient() 
             ]
         }
 
-    response = await _get_local_variables_via_mcp_runner(
-        use_figma,
-        file_key="file123",
-        chunk_size=50,
-        retry_attempts=2,
-        retry_delay_seconds=0,
-    )
+    with pytest.raises(FigmaMcpError, match="read-only mode"):
+        await _get_local_variables_via_mcp_runner(
+            use_figma,
+            file_key="file123",
+            chunk_size=50,
+            retry_attempts=2,
+            retry_delay_seconds=0,
+        )
 
-    assert attempts == 2
-    assert response.meta.variables == {}
+    assert attempts == 1

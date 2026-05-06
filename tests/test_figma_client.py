@@ -624,6 +624,26 @@ async def test_get_local_variables_returns_none_on_403():
 
 
 @pytest.mark.asyncio
+async def test_get_local_variables_with_reason_preserves_403_message():
+    """INVARIANT ERR-1: callers can cache persistent REST scope failures."""
+    message = (
+        "Invalid scope(s): file_content:read, projects:read. "
+        "This endpoint requires the file_variables:read scope"
+    )
+    with respx.mock:
+        respx.get(f"https://api.figma.com/v1/files/{FILE_KEY}/variables/local").mock(
+            return_value=httpx.Response(
+                403, json={"status": 403, "error": True, "message": message}
+            )
+        )
+        async with FigmaClient(api_key="figd_test") as client:
+            response, reason = await client.get_local_variables_with_reason(FILE_KEY)
+
+    assert response is None
+    assert reason == message
+
+
+@pytest.mark.asyncio
 async def test_get_local_variables_propagates_non_403_errors():
     """INVARIANT (LW-1): non-403 errors must NOT be silently swallowed (warn-and-drop).
     They propagate to the caller, which decides whether to retry or skip the file."""

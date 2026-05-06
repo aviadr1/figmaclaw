@@ -49,6 +49,7 @@ from figmaclaw.commands._shared import load_state, require_figma_api_key, requir
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_paths import census_path, file_slug_for_key
 from figmaclaw.git_utils import git_commit
+from figmaclaw.source_context import SourceContext, source_context_from_manifest_entry
 from figmaclaw.status_markers import COMMIT_MSG_PREFIX
 
 # ── Hash ─────────────────────────────────────────────────────────────────────
@@ -79,9 +80,11 @@ def _render(
     component_sets: list[dict[str, Any]],
     content_hash: str,
     generated_at: str,
+    source_context: SourceContext | None = None,
 ) -> str:
     """Render the census markdown content."""
     sorted_sets = sorted(component_sets, key=lambda cs: cs.get("name", "").lower())
+    source_context = source_context or SourceContext()
 
     fm: dict[str, Any] = {
         "file_key": file_key,
@@ -89,6 +92,12 @@ def _render(
         "content_hash": content_hash,
         "component_set_count": len(sorted_sets),
     }
+    if source_context.project_id:
+        fm["source_project_id"] = source_context.project_id
+    if source_context.project_name:
+        fm["source_project_name"] = source_context.project_name
+    if source_context.lifecycle != "unknown":
+        fm["source_lifecycle"] = source_context.lifecycle
     # Sort keys for stable diffs; use block style (no flow) since values are all scalars.
     fm_yaml = yaml.dump(fm, default_flow_style=False, allow_unicode=True, sort_keys=True).strip()
 
@@ -124,6 +133,24 @@ def _existing_hash(path: Path) -> str | None:
     except OSError:
         pass
     return None
+
+
+def _existing_source_context_matches(path: Path, source_context: SourceContext) -> bool:
+    if not path.exists():
+        return False
+    try:
+        text = path.read_text(encoding="utf-8")
+        if not text.startswith("---\n"):
+            return False
+        _start, fm_text, _rest = text.split("---", 2)
+        data = yaml.safe_load(fm_text) or {}
+    except (OSError, ValueError, yaml.YAMLError):
+        return False
+    return (
+        data.get("source_project_id") == source_context.project_id
+        and data.get("source_project_name") == source_context.project_name
+        and (data.get("source_lifecycle") or "unknown") == source_context.lifecycle
+    )
 
 
 # ── Command ───────────────────────────────────────────────────────────────────
@@ -188,6 +215,7 @@ async def _run(
             file_entry = state.manifest.files.get(key)
             file_name = file_entry.file_name if file_entry else key
             file_slug = file_slug_for_key(file_name, key)
+            source_context = source_context_from_manifest_entry(file_entry)
 
             try:
                 component_sets = await client.get_component_sets(key)
@@ -207,12 +235,23 @@ async def _run(
             content_hash = _compute_hash(component_sets)
             out_path = repo_dir / census_path(file_slug)
 
-            if not force and _existing_hash(out_path) == content_hash:
+            if (
+                not force
+                and _existing_hash(out_path) == content_hash
+                and _existing_source_context_matches(out_path, source_context)
+            ):
                 click.echo(f"{file_name}: census unchanged (hash {content_hash})")
                 continue
 
             generated_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-            content = _render(key, file_name, component_sets, content_hash, generated_at)
+            content = _render(
+                key,
+                file_name,
+                component_sets,
+                content_hash,
+                generated_at,
+                source_context,
+            )
 
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_text(content, encoding="utf-8")

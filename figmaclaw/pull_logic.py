@@ -46,6 +46,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 from figmaclaw.body_validation import iter_body_frame_rows
+from figmaclaw.config import is_enterprise_license
 from figmaclaw.figma_api_models import LocalVariablesResponse
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_frontmatter import (
@@ -815,38 +816,41 @@ async def pull_file(
     )
 
     # Tier 1.5 file-scope registry refresh: variables are file-level data and
-    # must not be gated by per-page hashes (canon TC-5 / D11).
-    try:
-        local_variables = await client.get_local_variables(file_key)
-        if local_variables is None:
-            mark_local_variables_unavailable(
-                catalog,
-                file_key=file_key,
-                file_name=file_name,
-                file_version=api_version,
-            )
-        elif not isinstance(local_variables, LocalVariablesResponse):
+    # must not be gated by per-page hashes (canon TC-5 / D11). The REST variables
+    # endpoint is Enterprise-only, so non-Enterprise installs skip this probe
+    # entirely instead of writing unavailable markers from a hopeless 403.
+    if is_enterprise_license(repo_root):
+        try:
+            local_variables = await client.get_local_variables(file_key)
+            if local_variables is None:
+                mark_local_variables_unavailable(
+                    catalog,
+                    file_key=file_key,
+                    file_name=file_name,
+                    file_version=api_version,
+                )
+            elif not isinstance(local_variables, LocalVariablesResponse):
+                log.warning(
+                    "Unexpected variables response type (%s) — continuing with existing catalog",
+                    type(local_variables).__name__,
+                )
+            else:
+                merge_local_variables(
+                    catalog,
+                    local_variables,
+                    file_key=file_key,
+                    file_name=file_name,
+                    file_version=api_version,
+                )
+            save_catalog(catalog, repo_root)
+            hashes = library_hashes_for_file(catalog, file_key)
+            if hashes:
+                state.manifest.files[file_key].library_hash = hashes[0]
+        except Exception as exc:
             log.warning(
-                "Unexpected variables response type (%s) — continuing with existing catalog",
-                type(local_variables).__name__,
+                "Failed to refresh variables catalog (%s) — continuing with existing catalog",
+                type(exc).__name__,
             )
-        else:
-            merge_local_variables(
-                catalog,
-                local_variables,
-                file_key=file_key,
-                file_name=file_name,
-                file_version=api_version,
-            )
-        save_catalog(catalog, repo_root)
-        hashes = library_hashes_for_file(catalog, file_key)
-        if hashes:
-            state.manifest.files[file_key].library_hash = hashes[0]
-    except Exception as exc:
-        log.warning(
-            "Failed to refresh variables catalog (%s) — continuing with existing catalog",
-            type(exc).__name__,
-        )
 
     # Fetch component sets once per changed file. Used to populate component_set_keys
     # in component section .md frontmatter so build skills can skip search_design_system().
