@@ -521,6 +521,38 @@ async def test_list_project_files_returns_empty_list_when_none():
     assert files == []
 
 
+@pytest.mark.asyncio
+async def test_list_team_component_sets_paginates():
+    """ERR-2: census can use one paginated team-library scan instead of per-file reads."""
+    team_id = "team1"
+    first_payload = {
+        "meta": {
+            "component_sets": [{"key": "cs1", "file_key": "file1", "name": "Button"}],
+            "cursor": {"after": 30},
+        }
+    }
+    second_payload = {
+        "meta": {
+            "component_sets": [{"key": "cs2", "file_key": "file2", "name": "Input"}],
+            "cursor": {},
+        }
+    }
+    with respx.mock:
+        route = respx.get(f"https://api.figma.com/v1/teams/{team_id}/component_sets").mock(
+            side_effect=[
+                httpx.Response(200, json=first_payload),
+                httpx.Response(200, json=second_payload),
+            ]
+        )
+        async with FigmaClient(api_key="figd_test") as client:
+            component_sets = await client.list_team_component_sets(team_id)
+
+    assert [cs["key"] for cs in component_sets] == ["cs1", "cs2"]
+    assert len(route.calls) == 2
+    assert route.calls[0].request.url.params["page_size"] == "100"
+    assert route.calls[1].request.url.params["after"] == "30"
+
+
 # ---------------------------------------------------------------------------
 # get_local_variables — canon §4 TC-1, §5 D14
 # ---------------------------------------------------------------------------

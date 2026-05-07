@@ -3,7 +3,7 @@
 #
 # Snapshots all published component sets for tracked files into _census.md.
 # Hash-gated: only writes and commits when the component registry actually changes.
-# One REST call per tracked file — runs in seconds.
+# Uses a team-level component-set scan when the host passes figma_team_id.
 
 on:
   workflow_call:
@@ -18,6 +18,11 @@ on:
         type: string
         default: main
       target_ref:
+        required: false
+        type: string
+        default: ''
+      figma_team_id:
+        description: 'Figma team ID; enables one team-level component-set scan'
         required: false
         type: string
         default: ''
@@ -52,6 +57,8 @@ jobs:
         run: |
           if [ -n "${{ inputs.file_key }}" ]; then
             figmaclaw census --file-key "${{ inputs.file_key }}" --auto-commit
+          elif [ -n "${{ inputs.figma_team_id }}" ]; then
+            figmaclaw census --team-id "${{ inputs.figma_team_id }}" --auto-commit
           else
             figmaclaw census --auto-commit
           fi
@@ -73,6 +80,7 @@ jobs:
           REPLAY_COMMAND: >-
             figmaclaw census
             ${{ inputs.file_key && format('--file-key "{0}"', inputs.file_key) || '' }}
+            ${{ inputs.figma_team_id && inputs.file_key == '' && format('--team-id "{0}"', inputs.figma_team_id) || '' }}
             --auto-commit
         run: |
           bash .figmaclaw-workflow/scripts/publish_generated_registry.sh

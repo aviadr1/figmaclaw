@@ -23,7 +23,7 @@ on:
 
 concurrency:
   group: figma-git-variables-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   variables:
@@ -32,6 +32,7 @@ jobs:
       file_key: ${{ github.event.inputs.file_key || '' }}
       variables_source: ${{ github.event.inputs.variables_source || 'auto' }}
       require_authoritative: ${{ github.event.inputs.require_authoritative || false }}
+      figma_team_id: ${{ vars.FIGMA_TEAM_ID }}
     secrets:
       FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
       FIGMA_VARIABLES_TOKEN: ${{ secrets.FIGMA_VARIABLES_TOKEN }}

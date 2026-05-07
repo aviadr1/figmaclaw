@@ -31,6 +31,11 @@ on:
         required: false
         type: boolean
         default: false
+      figma_team_id:
+        description: 'Figma team ID; enables listing-gated skips'
+        required: false
+        type: string
+        default: ''
     secrets:
       FIGMA_API_KEY:
         required: true
@@ -82,6 +87,8 @@ jobs:
           fi
           if [ -n "${{ inputs.file_key }}" ]; then
             figmaclaw variables --file-key "${{ inputs.file_key }}" --source "${{ inputs.variables_source }}" $REQUIRE_AUTHORITATIVE --auto-commit
+          elif [ -n "${{ inputs.figma_team_id }}" ]; then
+            figmaclaw variables --team-id "${{ inputs.figma_team_id }}" --source "${{ inputs.variables_source }}" $REQUIRE_AUTHORITATIVE --auto-commit
           else
             figmaclaw variables --source "${{ inputs.variables_source }}" $REQUIRE_AUTHORITATIVE --auto-commit
           fi
@@ -105,6 +112,7 @@ jobs:
           REPLAY_COMMAND: >-
             figmaclaw variables
             ${{ inputs.file_key && format('--file-key "{0}"', inputs.file_key) || '' }}
+            ${{ inputs.figma_team_id && inputs.file_key == '' && format('--team-id "{0}"', inputs.figma_team_id) || '' }}
             --source "${{ inputs.variables_source }}"
             ${{ inputs.require_authoritative && '--require-authoritative' || '' }}
             --auto-commit

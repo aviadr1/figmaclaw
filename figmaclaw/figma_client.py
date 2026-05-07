@@ -485,6 +485,25 @@ class FigmaClient:
         result: list[dict[str, Any]] = data.get("meta", {}).get("component_sets", [])
         return result
 
+    async def list_team_component_sets(self, team_id: str) -> list[dict[str, Any]]:
+        """GET /v1/teams/{team_id}/component_sets — published component sets by team.
+
+        This is the fast census path for CI: one paginated team-library scan can
+        replace one file-level component-set request per tracked file. Returned
+        entries include ``file_key`` so callers can group them by source file.
+        """
+        component_sets: list[dict[str, Any]] = []
+        params: dict[str, str] = {"page_size": "100"}
+        while True:
+            data = await self._get(f"/v1/teams/{team_id}/component_sets", params=params)
+            meta: dict[str, Any] = data.get("meta", {})
+            component_sets.extend(meta.get("component_sets", []))
+            after = (meta.get("cursor") or {}).get("after")
+            if after is None:
+                break
+            params["after"] = str(after)
+        return component_sets
+
     async def get_local_variables(self, file_key: str) -> LocalVariablesResponse | None:
         """GET /v1/files/{file_key}/variables/local — Figma local-variables registry.
 

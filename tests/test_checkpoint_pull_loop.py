@@ -34,6 +34,10 @@ printf '%s\n' "$*" >> "$ARGS_FILE"
 echo "COMMIT_MSG:sync: figmaclaw — checkpoint batch $count"
 case "${SCENARIO:?}" in
   has_more_forever) echo "HAS_MORE:true" ;;
+  auto_commit_then_has_more)
+    echo "  ✓ committed: page"
+    echo "HAS_MORE:true"
+    ;;
   single_done) echo "HAS_MORE:false" ;;
   two_then_done)
     if [ "$count" -lt 2 ]; then echo "HAS_MORE:true"; else echo "HAS_MORE:false"; fi
@@ -301,6 +305,37 @@ def test_non_force_includes_team_prefilter_args_when_present(tmp_path: Path) -> 
     assert args == "pull --max-pages 7 --team-id 12345 --since 7d"
 
 
+def test_default_per_file_timeout_fires_before_batch_timeout(tmp_path: Path) -> None:
+    """INVARIANT ERR-2/F24: one slow file must not consume the whole batch.
+
+    The shell timeout is still the hard outer guard, but the Python command
+    should receive a smaller per-file timeout so it can emit a scoped
+    file_timeout event and continue to unrelated files.
+    """
+    _run_loop(
+        tmp_path,
+        scenario="single_done",
+        git_dirty="1",
+        timeout_mode="pass",
+        BATCH_TIMEOUT_SECONDS="240",
+        TIMEOUT_KILL_AFTER_SECONDS="30",
+    )
+    args = (tmp_path / "pull-args.txt").read_text().strip()
+    assert args == "pull --max-pages 5 --per-file-timeout-s 180"
+
+
+def test_configured_per_file_timeout_is_threaded_to_pull(tmp_path: Path) -> None:
+    _run_loop(
+        tmp_path,
+        scenario="single_done",
+        git_dirty="1",
+        timeout_mode="pass",
+        PER_FILE_TIMEOUT_SECONDS="90",
+    )
+    args = (tmp_path / "pull-args.txt").read_text().strip()
+    assert args == "pull --max-pages 5 --per-file-timeout-s 90"
+
+
 def test_timeout_retries_with_smaller_batch_then_succeeds(tmp_path: Path) -> None:
     out = _run_loop(
         tmp_path,
@@ -334,13 +369,19 @@ def test_emits_sync_observability_logs_and_files(tmp_path: Path) -> None:
         scenario="single_done",
         git_dirty="1",
         timeout_mode="pass",
+        BATCH_TIMEOUT_SECONDS="240",
+        TIMEOUT_KILL_AFTER_SECONDS="30",
         FIGMACLAW_SYNC_OBS_DIR=str(obs_dir),
     )
 
     events = obs_dir / "checkpoint_events.csv"
     summary = obs_dir / "checkpoint_summary.txt"
+    invocations = obs_dir / "pull_invocations.txt"
+    batch_log = obs_dir / "pull_batch_1.log"
     assert events.exists()
     assert summary.exists()
+    assert invocations.exists()
+    assert batch_log.exists()
 
     events_text = events.read_text()
     assert "event" in events_text.splitlines()[0]
@@ -350,6 +391,15 @@ def test_emits_sync_observability_logs_and_files(tmp_path: Path) -> None:
     summary_text = summary.read_text()
     assert "batches_started=" in summary_text
     assert "total_commits=1" in summary_text
+
+    invocations_text = invocations.read_text()
+    assert "batch=1" in invocations_text
+    assert "figmaclaw pull" in invocations_text
+    assert "--per-file-timeout-s" in invocations_text
+
+    batch_log_text = batch_log.read_text()
+    assert "COMMIT_MSG:sync: figmaclaw" in batch_log_text
+    assert "HAS_MORE:false" in batch_log_text
 
     assert "SYNC_OBS event=batch_start" in out
     assert "SYNC_OBS summary_file=" in out
@@ -443,6 +493,31 @@ def test_auto_commit_also_flushes_unpushed_commits_on_timeout(tmp_path: Path) ->
     # even a no-op local tree shouldn't suppress it, since --auto-commit
     # may have committed pages that aren't pushed yet.
     assert "git push" in trace
+
+
+def test_timeout_treats_flushed_auto_commit_as_progress(tmp_path: Path) -> None:
+    """A timeout after figmaclaw's page commit but before process completion is progress.
+
+    The shell safety-net dirty check sees a clean tree in this shape, because the
+    page was already committed by Python. It must not classify that as wasted
+    work and stop the loop.
+    """
+    obs_dir = tmp_path / "obs"
+    out = _run_loop(
+        tmp_path,
+        scenario="auto_commit_then_has_more",
+        git_dirty="0",
+        timeout_mode="first_only",
+        MAX_PAGES_PER_BATCH="8",
+        FIGMACLAW_SYNC_OBS_DIR=str(obs_dir),
+        AUTO_COMMIT_ENABLED="true",
+        PUSH_EVERY="1",
+    )
+
+    events_text = (obs_dir / "checkpoint_events.csv").read_text()
+    assert "partial_commit_on_timeout" in events_text
+    assert "timeout auto-commit saved work" in events_text
+    assert "retrying with --max-pages 4" in out
 
 
 def test_exit_trap_flushes_any_unpushed_commits_on_normal_exit(tmp_path: Path) -> None:

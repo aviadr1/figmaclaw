@@ -1121,6 +1121,61 @@ class TestClaudeRunExecutionBranches:
         assert "CRASH in dispatch loop: RuntimeError: boom" in result.output
         assert result.exit_code == 2
 
+    def test_claude_run_emits_layered_observability(self, tmp_path: Path, monkeypatch) -> None:
+        """ERR-2: enrichment logs distinguish selection, git, and Claude time."""
+        md = tmp_path / "page.md"
+        self._write_placeholder_page(md)
+
+        monkeypatch.setattr(claude_run_mod, "enrichment_info", lambda _p, **_kw: (True, 1))
+        monkeypatch.setattr(
+            claude_run_mod,
+            "decide_next_batch",
+            lambda **_: self._budget_decision(True, "[budget] go"),
+        )
+        run_mock = Mock(
+            return_value=claude_run_mod.ClaudeResult(
+                exit_code=0,
+                turns=2,
+                cost_usd=0.01,
+                duration_ms=1200,
+                stop_reason="end_turn",
+            )
+        )
+        monkeypatch.setattr(claude_run_mod, "_run_claude", run_mock)
+        monkeypatch.setattr(claude_run_mod, "count_commits_since", lambda *_args, **_kwargs: 1)
+        monkeypatch.setattr(
+            claude_run_mod.subprocess,
+            "run",
+            lambda *args, **kwargs: Mock(stdout="", returncode=0),
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "claude-run",
+                str(md),
+                "--prompt",
+                "noop {file_path}",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "SYNC_OBS_CLAUDE_RUN event=collect_start" in result.output
+        assert "SYNC_OBS_CLAUDE_RUN event=collect_end" in result.output
+        assert "SYNC_OBS_CLAUDE_RUN event=run_start" in result.output
+        assert "SYNC_OBS_CLAUDE_RUN event=git_pull_start" in result.output
+        assert "SYNC_OBS_CLAUDE_RUN event=git_pull_end" in result.output
+        assert "SYNC_OBS_CLAUDE_RUN event=selector_start" in result.output
+        assert "SYNC_OBS_CLAUDE_RUN event=selector_end" in result.output
+        assert "SYNC_OBS_CLAUDE_RUN event=claude_start" in result.output
+        assert "mode=whole-page frames=1 invocation=whole-page" in result.output
+        assert "SYNC_OBS_CLAUDE_RUN event=claude_end" in result.output
+        assert "exit_code=0 turns=2" in result.output
+        assert "SYNC_OBS_CLAUDE_RUN event=run_end" in result.output
+
 
 def test_collect_files_matches_inspect_enrich_must_schema_upgrade(tmp_path: Path) -> None:
     """Selector and inspect must agree when schema requires re-enrichment.
