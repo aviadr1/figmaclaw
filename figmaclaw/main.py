@@ -89,9 +89,6 @@ def _installed_source_info(fallback: BuildInfo) -> BuildInfo:
     except (StopIteration, FileNotFoundError, json.JSONDecodeError, metadata.PackageNotFoundError):
         return fallback
 
-    if direct_url.get("dir_info", {}).get("editable"):
-        return fallback
-
     vcs_info = direct_url.get("vcs_info") or {}
     vcs_commit = vcs_info.get("commit_id")
     if isinstance(vcs_commit, str) and vcs_commit:

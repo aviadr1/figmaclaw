@@ -14,11 +14,20 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
 from click.testing import CliRunner
 
 import figmaclaw._build_info as _build_info
 import figmaclaw.main as main_mod
 from figmaclaw.main import cli
+
+
+@pytest.fixture(autouse=True)
+def _disable_installed_source_lookup(monkeypatch) -> None:
+    def raise_not_installed(_name):
+        raise main_mod.metadata.PackageNotFoundError(_name)
+
+    monkeypatch.setattr(main_mod.metadata, "distribution", raise_not_installed)
 
 
 def test_version_shows_version_and_short_sha() -> None:
@@ -151,4 +160,44 @@ def test_version_prefers_non_editable_local_install_source(tmp_path, monkeypatch
     assert result.exit_code == 0
     assert "figmaclaw 0.1.0 (feedface · PR #130)" in result.output
     assert "feat: current local install" in result.output
+    assert "stale commit" not in result.output
+
+
+def test_version_prefers_editable_local_install_source(tmp_path, monkeypatch) -> None:
+    """INVARIANT: editable installs report the live checkout commit, not stale build info."""
+
+    direct_url = tmp_path / "direct_url.json"
+    direct_url.write_text(
+        '{"url":"file:///repo/figmaclaw","dir_info":{"editable":true}}',
+        encoding="utf-8",
+    )
+
+    class FakeDist:
+        files = ["figmaclaw-0.1.0.dist-info/direct_url.json"]
+
+        def locate_file(self, _file):
+            return direct_url
+
+    def fake_git_output(_repo, *args):
+        if args == ("rev-parse", "HEAD"):
+            return "0123456789abcdef"
+        if args == ("log", "-1", "--pretty=%B"):
+            return "fix: live editable source (#131)"
+        return ""
+
+    monkeypatch.setattr(main_mod.metadata, "distribution", lambda _name: FakeDist())
+    monkeypatch.setattr(main_mod, "_git_output", fake_git_output)
+
+    runner = CliRunner()
+    with (
+        patch.object(_build_info, "__version__", "0.1.0"),
+        patch.object(_build_info, "__commit__", "stale1234567890"),
+        patch.object(_build_info, "__commit_message__", "stale commit"),
+        patch.object(_build_info, "__pr__", None),
+    ):
+        result = runner.invoke(cli, ["--version"])
+
+    assert result.exit_code == 0
+    assert "figmaclaw 0.1.0 (01234567 · PR #131)" in result.output
+    assert "fix: live editable source" in result.output
     assert "stale commit" not in result.output
