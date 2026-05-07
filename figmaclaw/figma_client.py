@@ -612,7 +612,7 @@ class FigmaClient:
             endpoint="GET /v1/files/{key}/nodes",
             context=f"file_key={file_key} ids={','.join(node_ids)}",
         )
-        return data
+        return validation_data
 
     async def download_url(self, url: str) -> bytes:
         """Download an arbitrary URL (e.g. Figma S3 image export). Not a Figma API endpoint."""

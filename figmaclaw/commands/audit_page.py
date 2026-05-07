@@ -25,11 +25,17 @@ from figmaclaw.audit_page_primitives import (
     default_clone_title,
     iter_node_records,
     load_jsonl_records,
-    records_to_jsonl,
+    record_to_jsonl_line,
     render_clone_script,
 )
 from figmaclaw.commands._shared import require_figma_api_key
-from figmaclaw.commands.reporting import emit_json_report, resolve_output_path, resolve_repo_path
+from figmaclaw.commands.reporting import (
+    emit_json_report,
+    is_stdout_path,
+    resolve_output_path,
+    resolve_repo_path,
+    write_json_output,
+)
 from figmaclaw.figma_client import FigmaClient, normalize_node_id
 from figmaclaw.figma_utils import write_json_if_changed
 
@@ -93,7 +99,7 @@ async def _fetch_node_for_jsonl(
     "--out",
     "out_path",
     type=click.Path(dir_okay=False, path_type=Path),
-    help="Optional JSONL output path. By default, records are written to stdout.",
+    help="Optional JSONL output path. Use '-' for stdout. By default, records are written to stdout.",
 )
 @click.option(
     "--geometry",
@@ -127,16 +133,21 @@ def audit_page_fetch_nodes_cmd(
             geometry=geometry or None,
         )
     )
-    records = list(iter_node_records(node, root_node_id=normalize_node_id(node_id)))
-    payload = records_to_jsonl(records)
+    records = iter_node_records(node, root_node_id=normalize_node_id(node_id))
+    record_count = 0
 
-    if out_path is None:
-        click.echo(payload, nl=False)
+    if out_path is None or is_stdout_path(out_path):
+        for record in records:
+            click.echo(record_to_jsonl_line(record), nl=False)
+            record_count += 1
     else:
         resolved_out = resolve_output_path(repo_dir, out_path)
         resolved_out.parent.mkdir(parents=True, exist_ok=True)
-        resolved_out.write_text(payload, encoding="utf-8")
-    click.echo(f"emitted {len(records)} node records", err=True)
+        with resolved_out.open("w", encoding="utf-8") as handle:
+            for record in records:
+                handle.write(record_to_jsonl_line(record))
+                record_count += 1
+    click.echo(f"emitted {record_count} node records", err=True)
 
 
 @audit_page_group.command("build-idmap")
@@ -159,18 +170,18 @@ def audit_page_fetch_nodes_cmd(
     "out_path",
     type=click.Path(dir_okay=False, path_type=Path),
     required=True,
-    help="Output idmap JSON path.",
+    help="Output idmap JSON path. Use '-' for stdout.",
 )
 @click.option(
     "--report-out",
     "report_out_path",
     type=click.Path(dir_okay=False, path_type=Path),
-    help="Optional JSON report path for counts and divergences.",
+    help="Optional JSON report path for counts and divergences. Use '-' for stdout.",
 )
 @click.option(
     "--strict",
     is_flag=True,
-    help="Exit non-zero on divergence, including with --allow-divergent.",
+    help="Write the idmap, but exit non-zero when structural divergences are reported.",
 )
 @click.option(
     "--allow-divergent",
@@ -191,6 +202,12 @@ def audit_page_build_idmap_cmd(
 ) -> None:
     """Build src-to-clone idmap JSON by DFS-zipping two fetch-nodes JSONL files."""
     repo_dir = Path(ctx.obj["repo_dir"])
+    idmap_to_stdout = is_stdout_path(out_path)
+    report_to_stdout = is_stdout_path(report_out_path)
+    if idmap_to_stdout and (json_output or ctx.obj.get("json")):
+        raise click.UsageError("--out - cannot be combined with --json; both need stdout.")
+    if idmap_to_stdout and report_to_stdout:
+        raise click.UsageError("--out - cannot be combined with --report-out -.")
     resolved_src = resolve_repo_path(repo_dir, src_path)
     resolved_dst = resolve_repo_path(repo_dir, dst_path)
     if not resolved_src.exists():
@@ -205,16 +222,21 @@ def audit_page_build_idmap_cmd(
         raise click.UsageError(str(exc)) from exc
 
     idmap, report = build_idmap_report(src_records, dst_records)
-    should_write_idmap = bool(report["ok"] or allow_divergent)
+    should_write_idmap = bool(report["ok"] or strict or allow_divergent)
     report["idmap_written"] = should_write_idmap
     if should_write_idmap:
-        report["idmap_write_reason"] = "clean" if report["ok"] else "allow_divergent"
-        write_json_if_changed(resolve_output_path(repo_dir, out_path), idmap)
+        if report["ok"]:
+            report["idmap_write_reason"] = "clean"
+        elif strict:
+            report["idmap_write_reason"] = "strict_divergent"
+        else:
+            report["idmap_write_reason"] = "allow_divergent"
+        write_json_output(repo_dir, out_path, idmap)
     else:
         report["idmap_write_reason"] = "divergence_refused"
 
     if report_out_path is not None:
-        write_json_if_changed(resolve_output_path(repo_dir, report_out_path), report)
+        write_json_output(repo_dir, report_out_path, report)
 
     emitted_json = emit_json_report(
         ctx,
@@ -224,15 +246,32 @@ def audit_page_build_idmap_cmd(
         json_output=json_output,
     )
     if not emitted_json:
-        click.echo(f"src records: {report['src_records']}")
-        click.echo(f"dst records: {report['dst_records']}")
-        click.echo(f"idmap entries: {report['idmap_entries']}")
-        click.echo(f"divergences: {report['divergence_count']}")
-        click.echo(f"idmap written: {str(report['idmap_written']).lower()}")
+        click.echo(f"src records: {report['src_records']}", err=idmap_to_stdout)
+        click.echo(f"dst records: {report['dst_records']}", err=idmap_to_stdout)
+        click.echo(f"idmap entries: {report['idmap_entries']}", err=idmap_to_stdout)
+        click.echo(f"divergences: {report['divergence_count']}", err=idmap_to_stdout)
+        click.echo(f"idmap written: {str(report['idmap_written']).lower()}", err=idmap_to_stdout)
         for divergence in report["divergences"][:5]:
-            click.echo(f"  {divergence}")
+            click.echo(f"  {divergence}", err=idmap_to_stdout)
         if len(report["divergences"]) > 5:
-            click.echo(f"  ... and {len(report['divergences']) - 5} more")
+            click.echo(
+                f"  ... and {len(report['divergences']) - 5} more",
+                err=idmap_to_stdout,
+            )
+
+    if not report["ok"] and not should_write_idmap:
+        click.echo(
+            "refusing to write idmap: "
+            f"{report['divergence_count']} divergence(s); pass --allow-divergent "
+            "to write the partial map and exit 0, or --strict to write it and exit 1.",
+            err=True,
+        )
+    elif not report["ok"] and strict:
+        click.echo(
+            "wrote partial idmap: "
+            f"{report['divergence_count']} divergence(s); --strict exits non-zero.",
+            err=True,
+        )
 
     if not report["ok"] and (strict or not allow_divergent):
         ctx.exit(1)
@@ -252,7 +291,7 @@ def audit_page_build_idmap_cmd(
     "--out",
     "out_path",
     type=click.Path(dir_okay=False, path_type=Path),
-    help="Optional generated Plugin API JS path. By default, JS is written to stdout.",
+    help="Optional generated Plugin API JS path. Use '-' for stdout. By default, JS is written to stdout.",
 )
 @click.option(
     "--receipt",
@@ -271,7 +310,7 @@ def audit_page_emit_clone_script_cmd(
     out_path: Path | None,
     receipt_path: Path | None,
 ) -> None:
-    """Emit Plugin API JS that clones a page, frame, or section for audit work."""
+    """Emit use_figma-clean JS that clones a page, frame, or section and returns a result."""
     repo_dir = Path(ctx.obj["repo_dir"])
     api_key = require_figma_api_key()
     source_node, destination_page = asyncio.run(
@@ -301,7 +340,7 @@ def audit_page_emit_clone_script_cmd(
     )
 
     resolved_out: Path | None = None
-    if out_path is None:
+    if out_path is None or is_stdout_path(out_path):
         click.echo(js, nl=False)
     else:
         resolved_out = resolve_output_path(repo_dir, out_path)
@@ -353,14 +392,14 @@ async def _fetch_clone_metadata(
 @click.option(
     "--manifest",
     "manifest_path",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    type=click.Path(dir_okay=False, path_type=Path),
     required=True,
     help="Binding intent manifest JSON, e.g. bindings_for_figma.json.",
 )
 @click.option(
     "--idmap",
     "idmap_path",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    type=click.Path(dir_okay=False, path_type=Path),
     required=True,
     help="Source-to-audit clone node id map JSON.",
 )
@@ -368,7 +407,7 @@ async def _fetch_clone_metadata(
     "--out",
     "out_path",
     type=click.Path(dir_okay=False, path_type=Path),
-    help="Optional JSON report path. By default, no file is written.",
+    help="Optional JSON report path. Use '-' for stdout. By default, no file is written.",
 )
 @click.option(
     "--remaining-out",
@@ -392,7 +431,13 @@ def audit_page_check_cmd(
     repo_dir = Path(ctx.obj["repo_dir"])
     api_key = require_figma_api_key()
     report, remaining = asyncio.run(
-        _run_check(api_key, file_key, audit_page_id, manifest_path, idmap_path)
+        _run_check(
+            api_key,
+            file_key,
+            audit_page_id,
+            resolve_repo_path(repo_dir, manifest_path),
+            resolve_repo_path(repo_dir, idmap_path),
+        )
     )
     report_data = report.model_dump(mode="json")
 
@@ -450,7 +495,7 @@ async def _run_check(
 @click.option(
     "--old-palette",
     "old_palette_path",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    type=click.Path(dir_okay=False, path_type=Path),
     help="Optional JSON object mapping old-system hex values to labels.",
 )
 @click.option(
@@ -464,7 +509,7 @@ async def _run_check(
 @click.option(
     "--new-palette",
     "new_palette_path",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    type=click.Path(dir_okay=False, path_type=Path),
     help="Optional JSON object mapping new-system hex values to labels.",
 )
 @click.option(
@@ -485,7 +530,7 @@ async def _run_check(
     "--out",
     "out_path",
     type=click.Path(dir_okay=False, path_type=Path),
-    help="Optional JSON report path. By default, no file is written.",
+    help="Optional JSON report path. Use '-' for stdout. By default, no file is written.",
 )
 @click.option("--json", "json_output", is_flag=True, help="Output structured JSON.")
 @click.pass_context
@@ -506,7 +551,9 @@ def audit_page_diagnose_cmd(
     api_key = require_figma_api_key()
     try:
         old_palette = {
-            **load_palette(old_palette_path),
+            **load_palette(
+                resolve_repo_path(repo_dir, old_palette_path) if old_palette_path else None
+            ),
             **parse_palette_entries(old_palette_entries),
         }
         catalog_palette = (
@@ -516,7 +563,9 @@ def audit_page_diagnose_cmd(
         )
         new_palette = {
             **catalog_palette,
-            **load_palette(new_palette_path),
+            **load_palette(
+                resolve_repo_path(repo_dir, new_palette_path) if new_palette_path else None
+            ),
             **parse_palette_entries(new_palette_entries),
         }
     except ValueError as exc:

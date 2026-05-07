@@ -59,6 +59,36 @@ def _fake_nodes_client(nodes: dict) -> MagicMock:
     return client
 
 
+def _write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+
+def _write_divergent_idmap_inputs(tmp_path: Path) -> None:
+    _write_jsonl(
+        tmp_path / "src.jsonl",
+        [
+            {"node_id": "1:1", "name": "Root", "type": "FRAME"},
+            {"node_id": "1:2", "name": "Label", "type": "TEXT"},
+        ],
+    )
+    _write_jsonl(
+        tmp_path / "dst.jsonl",
+        [
+            {"node_id": "2:1", "name": "Root", "type": "FRAME"},
+            {"node_id": "2:2", "name": "Renamed", "type": "TEXT"},
+        ],
+    )
+
+
+def _loads_first_json(output: str) -> dict:
+    value, _end = json.JSONDecoder().raw_decode(output)
+    assert isinstance(value, dict)
+    return value
+
+
 def test_audit_page_fetch_nodes_writes_migration_jsonl(tmp_path: Path, monkeypatch) -> None:
     """INVARIANT: fetch-nodes owns the JSONL shape previously copied in scripts."""
     node = {
@@ -118,28 +148,7 @@ def test_audit_page_build_idmap_refuses_partial_output_on_divergence(
     tmp_path: Path,
 ) -> None:
     """INVARIANT: divergent structures do not produce unsafe partial idmaps by default."""
-    src = tmp_path / "src.jsonl"
-    dst = tmp_path / "dst.jsonl"
-    src.write_text(
-        "\n".join(
-            [
-                json.dumps({"node_id": "1:1", "name": "Root", "type": "FRAME"}),
-                json.dumps({"node_id": "1:2", "name": "Label", "type": "TEXT"}),
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    dst.write_text(
-        "\n".join(
-            [
-                json.dumps({"node_id": "2:1", "name": "Root", "type": "FRAME"}),
-                json.dumps({"node_id": "2:2", "name": "Renamed", "type": "TEXT"}),
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    _write_divergent_idmap_inputs(tmp_path)
 
     result = CliRunner().invoke(
         cli,
@@ -161,40 +170,20 @@ def test_audit_page_build_idmap_refuses_partial_output_on_divergence(
 
     assert result.exit_code == 1
     assert not (tmp_path / "idmap.json").exists()
-    data = json.loads(result.output)
+    data = _loads_first_json(result.output)
     assert data["ok"] is False
     assert data["divergence_count"] == 1
     assert data["idmap_written"] is False
     assert data["idmap_write_reason"] == "divergence_refused"
     assert data["divergences"][0]["src_name"] == "Label"
+    assert "refusing to write idmap: 1 divergence(s)" in result.output
 
 
 def test_audit_page_build_idmap_can_explicitly_write_divergent_partial_output(
     tmp_path: Path,
 ) -> None:
     """INVARIANT: unsafe compatibility mode is opt-in and visible in the report."""
-    src = tmp_path / "src.jsonl"
-    dst = tmp_path / "dst.jsonl"
-    src.write_text(
-        "\n".join(
-            [
-                json.dumps({"node_id": "1:1", "name": "Root", "type": "FRAME"}),
-                json.dumps({"node_id": "1:2", "name": "Label", "type": "TEXT"}),
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    dst.write_text(
-        "\n".join(
-            [
-                json.dumps({"node_id": "2:1", "name": "Root", "type": "FRAME"}),
-                json.dumps({"node_id": "2:2", "name": "Renamed", "type": "TEXT"}),
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    _write_divergent_idmap_inputs(tmp_path)
 
     result = CliRunner().invoke(
         cli,
@@ -224,6 +213,76 @@ def test_audit_page_build_idmap_can_explicitly_write_divergent_partial_output(
     assert data["ok"] is False
     assert data["idmap_written"] is True
     assert data["idmap_write_reason"] == "allow_divergent"
+
+
+def test_audit_page_build_idmap_strict_writes_partial_output_but_fails(
+    tmp_path: Path,
+) -> None:
+    """INVARIANT: --strict preserves legacy shim semantics: write output, exit 1."""
+    _write_divergent_idmap_inputs(tmp_path)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "audit-page",
+            "build-idmap",
+            "--src",
+            "src.jsonl",
+            "--dst",
+            "dst.jsonl",
+            "--out",
+            "idmap.json",
+            "--strict",
+            "--json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert json.loads((tmp_path / "idmap.json").read_text(encoding="utf-8")) == {
+        "1:1": "2:1",
+        "1:2": "2:2",
+    }
+    data = _loads_first_json(result.output)
+    assert data["idmap_written"] is True
+    assert data["idmap_write_reason"] == "strict_divergent"
+    assert "wrote partial idmap: 1 divergence(s)" in result.output
+
+
+def test_audit_page_build_idmap_out_dash_writes_idmap_to_stdout(tmp_path: Path) -> None:
+    """INVARIANT: --out - is the stdout spelling for the generated idmap."""
+    _write_jsonl(
+        tmp_path / "src.jsonl",
+        [{"node_id": "1:1", "name": "Root", "type": "FRAME"}],
+    )
+    _write_jsonl(
+        tmp_path / "dst.jsonl",
+        [{"node_id": "2:1", "name": "Root", "type": "FRAME"}],
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "audit-page",
+            "build-idmap",
+            "--src",
+            "src.jsonl",
+            "--dst",
+            "dst.jsonl",
+            "--out",
+            "-",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    assert _loads_first_json(result.output) == {"1:1": "2:1"}
+    assert "idmap written: true" in result.output
+    assert not (tmp_path / "-").exists()
 
 
 def test_audit_page_emit_clone_script_supports_frame_into_existing_page(
@@ -271,7 +330,11 @@ def test_audit_page_emit_clone_script_supports_frame_into_existing_page(
     assert "idMapEntriesAdded" in js
     receipt = json.loads((tmp_path / "generated/clone.request.json").read_text(encoding="utf-8"))
     assert receipt["source_node_type"] == "FRAME"
+    assert receipt["source_page_id"] == "10:1"
+    assert receipt["source_page_name"] == "Source frame"
+    assert receipt["source_top_level_children"] == 0
     assert receipt["destination_page_id"] == "200:1"
+    assert receipt["created_new_page"] is False
 
 
 def test_audit_page_check_reports_business_status_without_failing_exit(
@@ -361,6 +424,63 @@ def test_audit_page_check_writes_reports_only_when_requested(tmp_path: Path, mon
     assert json.loads(remaining.read_text())["rows"] == [
         {"n": "10:2", "p": "fill", "t": "fg/brand"}
     ]
+
+
+def test_audit_page_check_out_dash_writes_report_to_stdout(tmp_path: Path, monkeypatch) -> None:
+    """INVARIANT: report-producing audit-page commands accept --out - for stdout."""
+    manifest = tmp_path / "bindings_for_figma.json"
+    manifest.write_text(json.dumps([{"n": "10:2", "p": "fill", "t": "fg/brand"}]), encoding="utf-8")
+    idmap = tmp_path / "idmap.json"
+    idmap.write_text(json.dumps({"10:2": "300:2"}), encoding="utf-8")
+    monkeypatch.setenv("FIGMA_API_KEY", "figd_test")
+
+    with patch(
+        "figmaclaw.commands.audit_page.FigmaClient", return_value=_fake_client(_audit_page_node())
+    ):
+        result = CliRunner().invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "audit-page",
+                "check",
+                "file123",
+                "200:1",
+                "--manifest",
+                str(manifest),
+                "--idmap",
+                str(idmap),
+                "--out",
+                "-",
+            ],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0
+    assert json.loads(result.output)["counts"]["missing_or_literal"] == 1
+    assert not (tmp_path / "-").exists()
+
+
+def test_figmaclaw_repo_dir_env_var_sets_default_repo(tmp_path: Path) -> None:
+    """INVARIANT: scripts can avoid repeating --repo-dir by setting FIGMACLAW_REPO_DIR."""
+    component_map = tmp_path / "component_migration_map.v3.json"
+    component_map.write_text(json.dumps({"schema_version": 3, "rules": []}), encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "audit-pipeline",
+            "lint",
+            "--component-map",
+            "component_migration_map.v3.json",
+            "--json",
+        ],
+        env={"FIGMACLAW_REPO_DIR": str(tmp_path)},
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(result.output)["ok"] is True
 
 
 def test_audit_page_diagnose_uses_explicit_palettes(tmp_path: Path, monkeypatch) -> None:

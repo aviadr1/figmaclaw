@@ -19,14 +19,14 @@ def audit_pipeline_group() -> None:
 @click.option(
     "--component-map",
     "component_map_path",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    type=click.Path(dir_okay=False, path_type=Path),
     required=True,
     help="component_migration_map.v3.json to validate.",
 )
 @click.option(
     "--census",
     "census_paths",
-    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    type=click.Path(dir_okay=False, path_type=Path),
     multiple=True,
     help="Optional figmaclaw _census.md target registry. Repeat for multiple files.",
 )
@@ -34,7 +34,7 @@ def audit_pipeline_group() -> None:
     "--out",
     "out_path",
     type=click.Path(dir_okay=False, path_type=Path),
-    help="Optional JSON report path. By default, no file is written.",
+    help="Optional JSON report path. Use '-' for stdout. By default, no file is written.",
 )
 @click.option("--json", "json_output", is_flag=True, help="Output structured JSON.")
 @click.pass_context

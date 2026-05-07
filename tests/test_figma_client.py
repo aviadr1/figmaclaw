@@ -225,6 +225,32 @@ async def test_get_nodes_response_preserves_component_metadata():
 
 
 @pytest.mark.asyncio
+async def test_get_nodes_response_returns_sanitized_nodes_envelope():
+    """INVARIANT: the raw nodes envelope matches the payload validated by the client."""
+    with respx.mock:
+        respx.get(f"https://api.figma.com/v1/files/{FILE_KEY}/nodes").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "nodes": {
+                        PAGE_NODE_ID: {
+                            "document": {"id": PAGE_NODE_ID, "name": "Frame", "type": "FRAME"}
+                        },
+                        "missing:node": None,
+                    },
+                    "components": {},
+                },
+            )
+        )
+        async with FigmaClient(api_key="figd_test") as client:
+            payload = await client.get_nodes_response(FILE_KEY, [PAGE_NODE_ID, "missing:node"])
+
+    assert payload["nodes"] == {
+        PAGE_NODE_ID: {"document": {"id": PAGE_NODE_ID, "name": "Frame", "type": "FRAME"}}
+    }
+
+
+@pytest.mark.asyncio
 async def test_retries_on_429():
     """INVARIANT: Client retries on 429 and eventually succeeds."""
     call_count = 0

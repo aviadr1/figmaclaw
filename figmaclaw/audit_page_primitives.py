@@ -83,9 +83,9 @@ def iter_node_records(
         yield record
 
 
-def records_to_jsonl(records: Iterable[dict[str, Any]]) -> str:
-    """Serialize records as JSONL, escaping line-separator codepoints for splitline readers."""
-    return "".join(json.dumps(record, ensure_ascii=True) + "\n" for record in records)
+def record_to_jsonl_line(record: dict[str, Any]) -> str:
+    """Serialize one record as JSONL, escaping line-separator codepoints for splitline readers."""
+    return json.dumps(record, ensure_ascii=True) + "\n"
 
 
 def load_jsonl_records(path: Path) -> list[dict[str, Any]]:
@@ -170,15 +170,21 @@ def clone_request_receipt(
     generated_js: str | None,
     destination_page: dict[str, Any] | None,
 ) -> dict[str, Any]:
+    source_child_count = len(source_node.get("children") or [])
+    created_new_page = destination_page is None
     return {
         "file_key": file_key,
         "source_node_id": source_node.get("id"),
         "source_node_name": source_node.get("name"),
         "source_node_type": source_node.get("type"),
-        "source_child_count": len(source_node.get("children") or []),
+        "source_child_count": source_child_count,
         "target_page_name": title,
         "destination_page_id": destination_page.get("id") if destination_page else None,
         "destination_page_name": destination_page.get("name") if destination_page else None,
+        "created_new_page": created_new_page,
+        "source_page_id": source_node.get("id"),
+        "source_page_name": source_node.get("name"),
+        "source_top_level_children": source_child_count,
         "namespace": namespace,
         "generated_js": generated_js,
     }
