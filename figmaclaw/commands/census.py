@@ -160,6 +160,31 @@ def _existing_source_context_matches(path: Path, source_context: SourceContext) 
     )
 
 
+def load_census_registry(path: Path) -> dict[str, str]:
+    """Read component-set key/name pairs from a figmaclaw ``_census.md`` file."""
+    result: dict[str, str] = {}
+    if not path.exists():
+        return result
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.startswith("| `"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        name = _strip_code_cell(cells[0])
+        key = _strip_code_cell(cells[1])
+        if name and key:
+            result[key] = name
+    return result
+
+
+def _strip_code_cell(value: str) -> str:
+    value = value.strip()
+    if value.startswith("`") and value.endswith("`"):
+        return value[1:-1]
+    return value
+
+
 # ── Command ───────────────────────────────────────────────────────────────────
 
 

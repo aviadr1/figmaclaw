@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from figmaclaw.token_scan import (
     classify_variable_id,
+    paint_bound_variable_id,
     scan_frame,
     scan_page,
 )
@@ -191,6 +192,32 @@ def test_scan_frame_valid_fill_not_in_issues():
     assert result.raw == 0
     assert result.valid == 1
     assert result.issues == []
+
+
+def test_scan_frame_partial_multi_fill_binding_counts_literal_slot():
+    """INVARIANT: node-level fill bindings are matched by paint index."""
+    bound_fill, bound_bv = _solid_fill(RED_COLOR, var_id=DS_VAR_ID)
+    literal_fill, _ = _solid_fill(DARK_COLOR)
+    frame = _frame(children=[_rect(fills=[bound_fill, literal_fill], fills_bv=[bound_bv, None])])
+
+    result = scan_frame(frame, libraries=LIBRARIES)
+
+    assert result.valid == 1
+    assert result.raw == 1
+    assert len(result.issues) == 1
+    assert result.issues[0].index == 1
+    assert result.issues[0].hex == "#14141F"
+
+
+def test_paint_bound_variable_id_reads_paint_level_binding():
+    """INVARIANT: paint-level boundVariables.color is a first-class binding source."""
+    fill = {
+        "type": "SOLID",
+        "color": RED_COLOR,
+        "boundVariables": {"color": {"id": DS_VAR_ID}},
+    }
+
+    assert paint_bound_variable_id({"fills": [fill]}, "fill", 0, fill) == DS_VAR_ID
 
 
 def test_scan_frame_unknown_library_fill_is_counted():

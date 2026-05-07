@@ -88,11 +88,62 @@ def _get_bv_id(bv_entry: Any) -> str:
     return ""
 
 
+def bound_variable_id(bv_entry: Any) -> str:
+    """Extract a variable ID string from a boundVariables entry."""
+    return _get_bv_id(bv_entry)
+
+
+def paint_bound_variable_id(
+    node: dict[str, Any],
+    prop: str,
+    index: int,
+    paint: dict[str, Any],
+) -> str:
+    """Return the variable ID bound to one paint slot, if present.
+
+    Figma can expose paint bindings either on ``node.boundVariables.fills[i]`` /
+    ``strokes[i]`` or directly on ``paint.boundVariables.color``. The caller
+    passes the paint index so partial multi-paint bindings are not treated as
+    all-or-nothing.
+    """
+    paint_bv = paint.get("boundVariables") or {}
+    var_id = bound_variable_id(paint_bv.get("color"))
+    if var_id:
+        return var_id
+
+    node_bv = node.get("boundVariables") or {}
+    node_key = "fills" if prop == "fill" else "strokes"
+    entries = node_bv.get(node_key)
+    if isinstance(entries, list) and index < len(entries):
+        return bound_variable_id(entries[index])
+    if isinstance(entries, dict):
+        return bound_variable_id(entries)
+    return ""
+
+
+def paint_is_variable_bound(
+    node: dict[str, Any],
+    prop: str,
+    index: int,
+    paint: dict[str, Any],
+) -> bool:
+    """Return whether one paint slot is variable-bound."""
+    if paint_bound_variable_id(node, prop, index, paint):
+        return True
+    node_bv = node.get("boundVariables") or {}
+    return prop == "fill" and node.get("type") == "TEXT" and bool(node_bv.get("textRangeFills"))
+
+
 def _rgb_to_hex(color: dict[str, float]) -> str:
     r = round(color.get("r", 0) * 255)
     g = round(color.get("g", 0) * 255)
     b = round(color.get("b", 0) * 255)
     return f"#{r:02X}{g:02X}{b:02X}"
+
+
+def rgb_to_hex(color: dict[str, float]) -> str:
+    """Return #RRGGBB for a Figma RGB dict."""
+    return _rgb_to_hex(color)
 
 
 class TokenIssue(BaseModel):
@@ -193,7 +244,6 @@ def _scan_node(
 
     # fills
     fills: list[dict] = node.get("fills") or []
-    fills_bv: list[Any] = bv.get("fills") or []
     has_fill_style = bool(node.get("fillStyleId"))
     for i, fill in enumerate(fills):
         if fill.get("type") != "SOLID" or fill.get("visible") is False:
@@ -201,8 +251,7 @@ def _scan_node(
         if has_fill_style:
             counters["valid"] = counters.get("valid", 0) + 1
             continue
-        cbv = fills_bv[i] if isinstance(fills_bv, list) and i < len(fills_bv) else None
-        var_id = _get_bv_id(cbv)
+        var_id = paint_bound_variable_id(node, "fill", i, fill)
         cls = classify_variable_id(var_id, libraries=libraries)
         record(
             "fill",
@@ -214,12 +263,10 @@ def _scan_node(
 
     # strokes
     strokes: list[dict] = node.get("strokes") or []
-    strokes_bv: list[Any] = bv.get("strokes") or []
     for i, stroke in enumerate(strokes):
         if stroke.get("type") != "SOLID" or stroke.get("visible") is False:
             continue
-        cbv = strokes_bv[i] if isinstance(strokes_bv, list) and i < len(strokes_bv) else None
-        var_id = _get_bv_id(cbv)
+        var_id = paint_bound_variable_id(node, "stroke", i, stroke)
         cls = classify_variable_id(var_id, libraries=libraries)
         record(
             "stroke",
