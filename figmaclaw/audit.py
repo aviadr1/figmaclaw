@@ -361,7 +361,12 @@ def _normalize_hex(value: str) -> str:
 
 def load_json_file(path: Path) -> Any:
     """Load JSON from a file with a clear exception boundary for commands."""
-    return json.loads(path.read_text(encoding="utf-8"))
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ValueError(f"{path}: could not read JSON file: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{path}: invalid JSON: {exc}") from exc
 
 
 def load_palette(path: Path | None) -> dict[str, str]:

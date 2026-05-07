@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import click
@@ -47,10 +48,13 @@ def audit_pipeline_lint_cmd(
 ) -> None:
     """Lint migration inputs before a human/agent applies them."""
     repo_dir = Path(ctx.obj["repo_dir"])
-    report = build_pipeline_lint_report(
-        resolve_output_path(repo_dir, component_map_path),
-        census_paths=[resolve_output_path(repo_dir, path) for path in census_paths],
-    )
+    try:
+        report = build_pipeline_lint_report(
+            resolve_output_path(repo_dir, component_map_path),
+            census_paths=[resolve_output_path(repo_dir, path) for path in census_paths],
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise click.UsageError(str(exc)) from exc
     report_data = report.model_dump(mode="json")
 
     if emit_json_report(

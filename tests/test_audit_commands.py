@@ -461,6 +461,35 @@ def test_audit_page_check_out_dash_writes_report_to_stdout(tmp_path: Path, monke
     assert not (tmp_path / "-").exists()
 
 
+def test_audit_page_check_reports_missing_manifest_as_usage_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """INVARIANT: repo-relative input files have Click errors, not tracebacks."""
+    idmap = tmp_path / "idmap.json"
+    idmap.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("FIGMA_API_KEY", "figd_test")
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "audit-page",
+            "check",
+            "file123",
+            "200:1",
+            "--manifest",
+            "missing.json",
+            "--idmap",
+            "idmap.json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 2
+    assert "missing.json: could not read JSON file" in result.output
+
+
 def test_figmaclaw_repo_dir_env_var_sets_default_repo(tmp_path: Path) -> None:
     """INVARIANT: scripts can avoid repeating --repo-dir by setting FIGMACLAW_REPO_DIR."""
     component_map = tmp_path / "component_migration_map.v3.json"
@@ -514,6 +543,31 @@ def test_audit_page_diagnose_uses_explicit_palettes(tmp_path: Path, monkeypatch)
     assert data["unbound_paints"] == 1
     assert data["counts"]["old_palette_literal"] == 1
     assert data["old_palette"] == {"#E90062": "old brand"}
+
+
+def test_audit_page_diagnose_reports_missing_palette_as_usage_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """INVARIANT: missing palette paths report clean Click usage errors."""
+    monkeypatch.setenv("FIGMA_API_KEY", "figd_test")
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "audit-page",
+            "diagnose",
+            "file123",
+            "200:1",
+            "--old-palette",
+            "missing-old-palette.json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 2
+    assert "missing-old-palette.json: could not read JSON file" in result.output
 
 
 def test_audit_page_diagnose_accepts_repeatable_palette_entries(
@@ -737,6 +791,27 @@ def test_audit_pipeline_lint_warns_when_target_registry_not_probed(tmp_path: Pat
     assert data["ok"] is True
     assert data["target_registry_state"] == "not_probed"
     assert data["counts"]["warning"] == 1
+
+
+def test_audit_pipeline_lint_reports_missing_component_map_as_usage_error(
+    tmp_path: Path,
+) -> None:
+    """INVARIANT: repo-relative lint inputs have Click errors, not tracebacks."""
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "audit-pipeline",
+            "lint",
+            "--component-map",
+            "missing-component-map.json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 2
+    assert "missing-component-map.json: could not read JSON file" in result.output
 
 
 def test_audit_pipeline_lint_checks_targets_against_census(tmp_path: Path) -> None:

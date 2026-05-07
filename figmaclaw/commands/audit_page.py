@@ -430,15 +430,18 @@ def audit_page_check_cmd(
     """Check whether intended clone properties are variable-bound."""
     repo_dir = Path(ctx.obj["repo_dir"])
     api_key = require_figma_api_key()
-    report, remaining = asyncio.run(
-        _run_check(
-            api_key,
-            file_key,
-            audit_page_id,
-            resolve_repo_path(repo_dir, manifest_path),
-            resolve_repo_path(repo_dir, idmap_path),
+    try:
+        report, remaining = asyncio.run(
+            _run_check(
+                api_key,
+                file_key,
+                audit_page_id,
+                resolve_repo_path(repo_dir, manifest_path),
+                resolve_repo_path(repo_dir, idmap_path),
+            )
         )
-    )
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
     report_data = report.model_dump(mode="json")
 
     if remaining_out_path is not None:
