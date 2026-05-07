@@ -142,6 +142,7 @@ def _version_callback(ctx: click.Context, _param: click.Parameter, value: bool) 
     "--repo-dir",
     type=click.Path(file_okay=False, path_type=str),
     default=".",
+    envvar="FIGMACLAW_REPO_DIR",
     show_default=True,
     help="Path to the target git repository.",
 )

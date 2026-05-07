@@ -36,6 +36,11 @@ DEFAULT_RETRY_AFTER_S = 10
 MIN_429_RETRY_AFTER_S = 5
 
 
+def normalize_node_id(node_id: str) -> str:
+    """Normalize Figma REST node ids to colon form."""
+    return node_id.replace("-", ":")
+
+
 def _figma_error_message(response: httpx.Response) -> str | None:
     """Return Figma's structured error message when one is present."""
     try:
@@ -551,9 +556,10 @@ class FigmaClient:
         file_key: str,
         node_ids: list[str],
         *,
-        depth: int = 1,
+        depth: int | None = 1,
+        geometry: str | None = None,
     ) -> dict[str, Any]:
-        """GET /v1/files/{file_key}/nodes?ids=...&depth=N — batch fetch node documents.
+        """GET /v1/files/{file_key}/nodes?ids=... — batch fetch node documents.
 
         Returns {node_id: document_node} where document_node is the raw Figma node dict
         (with "id", "type", "children", etc.). Node IDs with "-" are normalised to ":".
@@ -561,18 +567,52 @@ class FigmaClient:
         Callers should batch to avoid excessively long query strings; Figma's practical
         limit is a few hundred IDs per request.
         """
-        data = await self._get(
-            f"/v1/files/{file_key}/nodes",
-            params={"ids": ",".join(node_ids), "depth": str(depth)},
+        data = await self.get_nodes_response(
+            file_key,
+            node_ids,
+            depth=depth,
+            geometry=geometry,
         )
         nodes: dict[str, Any] = data.get("nodes", {})
         # Each entry is {"document": node_dict, ...} — unwrap to just the document node.
         # Normalise Figma's occasional "-" separators back to ":".
         return {
-            k.replace("-", ":"): v.get("document", {})
+            normalize_node_id(k): v.get("document", {})
             for k, v in nodes.items()
             if isinstance(v, dict)
         }
+
+    async def get_nodes_response(
+        self,
+        file_key: str,
+        node_ids: list[str],
+        *,
+        depth: int | None = 1,
+        geometry: str | None = None,
+    ) -> dict[str, Any]:
+        """GET /v1/files/{file_key}/nodes?ids=... and return the validated raw envelope."""
+        params = {"ids": ",".join(node_ids)}
+        if depth is not None:
+            params["depth"] = str(depth)
+        if geometry is not None:
+            params["geometry"] = geometry
+        data = await self._get(
+            f"/v1/files/{file_key}/nodes",
+            params=params,
+        )
+        validation_data = dict(data)
+        raw_nodes = validation_data.get("nodes")
+        if isinstance(raw_nodes, dict):
+            validation_data["nodes"] = {
+                key: value for key, value in raw_nodes.items() if isinstance(value, dict)
+            }
+        _validate(
+            NodesResponse,
+            validation_data,
+            endpoint="GET /v1/files/{key}/nodes",
+            context=f"file_key={file_key} ids={','.join(node_ids)}",
+        )
+        return validation_data
 
     async def download_url(self, url: str) -> bytes:
         """Download an arbitrary URL (e.g. Figma S3 image export). Not a Figma API endpoint."""
