@@ -568,7 +568,11 @@ class FigmaClient:
         nodes: dict[str, Any] = data.get("nodes", {})
         # Each entry is {"document": node_dict, ...} — unwrap to just the document node.
         # Normalise Figma's occasional "-" separators back to ":".
-        return {k.replace("-", ":"): v.get("document", {}) for k, v in nodes.items()}
+        return {
+            k.replace("-", ":"): v.get("document", {})
+            for k, v in nodes.items()
+            if isinstance(v, dict)
+        }
 
     async def download_url(self, url: str) -> bytes:
         """Download an arbitrary URL (e.g. Figma S3 image export). Not a Figma API endpoint."""

@@ -151,6 +151,19 @@ async def test_get_page_passes_node_id_as_ids_param():
 
 
 @pytest.mark.asyncio
+async def test_get_nodes_skips_null_entries():
+    """INVARIANT: Figma may return null for missing node ids; callers get an empty map."""
+    with respx.mock:
+        respx.get(f"https://api.figma.com/v1/files/{FILE_KEY}/nodes").mock(
+            return_value=httpx.Response(200, json={"nodes": {PAGE_NODE_ID: None}})
+        )
+        async with FigmaClient(api_key="figd_test") as client:
+            nodes = await client.get_nodes(FILE_KEY, [PAGE_NODE_ID], depth=100)
+
+    assert nodes == {}
+
+
+@pytest.mark.asyncio
 async def test_retries_on_429():
     """INVARIANT: Client retries on 429 and eventually succeeds."""
     call_count = 0

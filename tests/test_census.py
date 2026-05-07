@@ -17,7 +17,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import figmaclaw.commands.census as census_module
-from figmaclaw.commands.census import _compute_hash, _existing_hash, _render, _run
+from figmaclaw.commands.census import (
+    _compute_hash,
+    _existing_hash,
+    _render,
+    _run,
+    load_census_registry,
+)
 from figmaclaw.figma_paths import file_slug_for_key
 from figmaclaw.figma_sync_state import FigmaSyncState
 
@@ -96,6 +102,27 @@ class TestHashRoundTrip:
             "Round-trip broken: _existing_hash cannot read back the hash written by _render. "
             "This means the skip check will always fire and census will write on every run."
         )
+
+    def test_load_census_registry_reads_render_output(self, tmp_path: Path):
+        """INVARIANT: audit consumers read the same _census.md table census writes."""
+        cs = [
+            _make_component_set("Button", "aabb1122"),
+            _make_component_set("Input", "ccdd3344"),
+        ]
+        rendered = _render(
+            "key1",
+            "Web App",
+            cs,
+            _compute_hash(cs),
+            "2026-01-01T00:00:00Z",
+        )
+        path = tmp_path / "_census.md"
+        path.write_text(rendered, encoding="utf-8")
+
+        assert load_census_registry(path) == {
+            "aabb1122": "Button",
+            "ccdd3344": "Input",
+        }
 
     def test_existing_hash_returns_none_for_missing_file(self, tmp_path: Path):
         """INVARIANT: _existing_hash returns None (not an error) when file does not exist."""

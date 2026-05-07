@@ -12,6 +12,8 @@ from urllib.parse import unquote, urlparse
 import click
 
 from figmaclaw.commands.apply_webhook import apply_webhook_cmd
+from figmaclaw.commands.audit_page import audit_page_group
+from figmaclaw.commands.audit_pipeline import audit_pipeline_group
 from figmaclaw.commands.build_context import build_context_cmd
 from figmaclaw.commands.census import census_cmd
 from figmaclaw.commands.claude_run import claude_run_cmd
@@ -154,6 +156,8 @@ def cli(ctx: click.Context, json_mode: bool, verbose: int, quiet: int, repo_dir:
 
 
 cli.add_command(apply_webhook_cmd)
+cli.add_command(audit_page_group)
+cli.add_command(audit_pipeline_group)
 cli.add_command(build_context_cmd)
 cli.add_command(census_cmd)
 cli.add_command(claude_run_cmd)
