@@ -8,17 +8,17 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
+import yaml
 
 from figmaclaw.commands.build_context import _run as build_context_run
 from figmaclaw.figma_client import FigmaClient
 from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION, FigmaPageFrontmatter
 from figmaclaw.figma_models import FigmaPage, FigmaSection, from_page_node
-from figmaclaw.figma_parse import parse_frontmatter
+from figmaclaw.figma_parse import parse_frontmatter, split_frontmatter
 from figmaclaw.figma_render import scaffold_page
 from figmaclaw.figma_schema import UNGROUPED_COMPONENTS_SECTION, is_component, is_visible
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
@@ -112,6 +112,70 @@ async def _pull_smoke_file(
         max_pages=max_pages,
         per_page_timeout_s=SMOKE_PULL_PAGE_TIMEOUT_S,
     )
+
+
+def _body_from_rendered_markdown(md_text: str) -> str:
+    parts = split_frontmatter(md_text)
+    if parts is None:
+        raise AssertionError("rendered page markdown has no valid frontmatter block")
+    return parts[1]
+
+
+def _has_populated_instance_component_ids(md_text: str) -> bool:
+    fm = parse_frontmatter(md_text)
+    if fm is None:
+        return False
+    return any(
+        section.instance_component_ids
+        for sections in fm.frame_sections.values()
+        for section in sections
+    )
+
+
+def _find_schema_upgrade_target(repo_root: Path, md_paths: list[str]) -> Path | None:
+    for rel in md_paths:
+        path = repo_root / rel
+        if _has_populated_instance_component_ids(path.read_text()):
+            return path
+    return None
+
+
+def _page_entry_for_md_path(
+    state: FigmaSyncState, file_key: str, repo_root: Path, md_path: Path
+) -> PageEntry:
+    rel = md_path.relative_to(repo_root).as_posix()
+    for entry in state.manifest.files[file_key].pages.values():
+        if entry.md_path == rel:
+            return entry
+    raise AssertionError(f"manifest has no page entry for {rel}")
+
+
+def _drop_instance_component_ids_from_frontmatter(md_text: str) -> str:
+    parts = split_frontmatter(md_text)
+    if parts is None:
+        raise AssertionError("rendered page markdown has no valid frontmatter block")
+
+    fm_block, body = parts
+    data = yaml.safe_load(fm_block)
+    if not isinstance(data, dict):
+        raise AssertionError("rendered page frontmatter is not a mapping")
+
+    removed = 0
+    frame_sections = data.get("frame_sections")
+    if isinstance(frame_sections, dict):
+        for sections in frame_sections.values():
+            if not isinstance(sections, list):
+                continue
+            for section in sections:
+                if isinstance(section, dict) and "instance_component_ids" in section:
+                    del section["instance_component_ids"]
+                    removed += 1
+
+    if removed == 0:
+        raise AssertionError("schema-upgrade target had no instance_component_ids keys to drop")
+
+    mutated_fm = yaml.safe_dump(data, sort_keys=False, allow_unicode=True, width=2**20).rstrip()
+    return f"---\n{mutated_fm}\n---\n{body}"
 
 
 @pytest.mark.smoke_api
@@ -498,47 +562,80 @@ async def test_schema_upgrade_backfills_instance_component_ids_without_body_rewr
     tmp_path,
     client: FigmaClient,  # type: ignore[no-untyped-def]
 ) -> None:
-    """Smoke: schema-stale pull restores missing inventory keys while preserving markdown body."""
+    """Smoke: schema-stale pull restores missing inventory keys while preserving markdown body.
+
+    INVARIANT: on a page whose Figma content hasn't drifted, a schema-stale pull
+    triggers the schema-only path — frontmatter is re-rendered to backfill new
+    keys, but the markdown body is byte-identical to before. Verified on the
+    *specific* page we mutate, not on aggregate counts (other pages may
+    legitimately change in Figma between the two pulls — Bartosz is actively
+    editing this file — so absolute write-count assertions flake).
+    """
     state = FigmaSyncState(tmp_path)
     state.load()
     state.add_tracked_file(TEST_FILE_KEY, "Web App")
     state.manifest.files[TEST_FILE_KEY].version = "v0"
 
-    first = await _pull_smoke_file(client, TEST_FILE_KEY, state, tmp_path, max_pages=1)
+    first = await _pull_smoke_file(client, TEST_FILE_KEY, state, tmp_path, max_pages=5)
     if first.pages_errored and first.pages_written + first.pages_schema_upgraded == 0:
         pytest.skip(
             "Figma API returned a page error during live schema-upgrade smoke setup; "
             "body-preservation invariant is inconclusive"
         )
-    assert first.pages_written + first.pages_schema_upgraded > 0
-    pages = state.manifest.files[TEST_FILE_KEY].pages
-    assert pages
-    entry = next(iter(pages.values()))
-    assert entry.md_path is not None
-    page_md = tmp_path / entry.md_path
-    text_before = page_md.read_text()
-    body_before = text_before.split("---\n", 2)[-1]
+    if not first.md_paths:
+        pytest.skip("first pull wrote no pages; schema-upgrade target unavailable")
 
-    # Simulate old frontmatter payload by dropping the new stable-ID key lines.
-    mutated = re.sub(r"^\s*instance_component_ids:.*\n", "", text_before, flags=re.MULTILINE)
+    page_md = _find_schema_upgrade_target(tmp_path, first.md_paths)
+    if page_md is None:
+        pytest.skip(
+            "no pulled page in this batch has populated instance_component_ids; "
+            "schema-upgrade backfill invariant is inconclusive"
+        )
+    page_hash_before = _page_entry_for_md_path(state, TEST_FILE_KEY, tmp_path, page_md).page_hash
+
+    text_before = page_md.read_text()
+    body_before = _body_from_rendered_markdown(text_before)
+    assert _has_populated_instance_component_ids(text_before)
+
+    # Simulate old frontmatter payload by dropping the v6 stable-ID keys.
+    mutated = _drop_instance_component_ids_from_frontmatter(text_before)
+    assert _body_from_rendered_markdown(mutated) == body_before
+    assert not _has_populated_instance_component_ids(mutated)
     page_md.write_text(mutated)
 
     # Mark manifest as pre-v6 so pull runs schema-upgrade path.
     state.manifest.files[TEST_FILE_KEY].pull_schema_version = 5
     state.save()
 
-    upgraded = await _pull_smoke_file(client, TEST_FILE_KEY, state, tmp_path, max_pages=1)
-    if upgraded.pages_errored:
+    # The target came from the first pull's write order, so the same bounded
+    # budget is enough to revisit it even if earlier pages drift and consume
+    # write budget. Avoid max_pages=None here: the live Web App file is large
+    # enough that pulling every page can make CI smoke runs unboundedly slow.
+    second_pull_budget = len(first.md_paths)
+    upgraded = await _pull_smoke_file(
+        client, TEST_FILE_KEY, state, tmp_path, max_pages=second_pull_budget
+    )
+    if upgraded.pages_errored and upgraded.pages_schema_upgraded == 0:
         pytest.skip(
-            "Figma API returned a page error during live schema-upgrade smoke; "
+            "Figma API returned page errors during live schema-upgrade smoke and no "
+            "schema upgrade ran; body-preservation invariant is inconclusive"
+        )
+    assert upgraded.pages_schema_upgraded >= 1, (
+        f"expected schema-upgrade pass to fire; got {upgraded}"
+    )
+
+    # The page-specific invariant: body byte-identical, restored frontmatter key.
+    page_hash_after = _page_entry_for_md_path(state, TEST_FILE_KEY, tmp_path, page_md).page_hash
+    if page_hash_before != page_hash_after:
+        pytest.skip(
+            "target page content changed in live Figma between pulls; "
             "body-preservation invariant is inconclusive"
         )
-    assert upgraded.pages_schema_upgraded >= 1
 
     text_after = page_md.read_text()
-    body_after = text_after.split("---\n", 2)[-1]
+    body_after = _body_from_rendered_markdown(text_after)
     assert body_after == body_before
-    assert "instance_component_ids:" in text_after
+    assert _has_populated_instance_component_ids(text_after)
 
 
 @pytest.mark.smoke_api
