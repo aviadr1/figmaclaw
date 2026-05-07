@@ -29,7 +29,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from figmaclaw.commands.pull import _listing_prefilter
+from figmaclaw.commands.listing_prefilter import listing_prefilter
 from figmaclaw.figma_api_models import (
     FileMetaResponse,
     FileSummary,
@@ -1162,9 +1162,9 @@ async def test_listing_prefilter_returns_last_modified_for_each_file(tmp_path: P
         ]
     )
 
-    result = await _listing_prefilter(client, "team123", state, "all")
+    result = await listing_prefilter(client, "team123", state, "all")
 
-    assert result == {
+    assert result.last_modified_by_key == {
         "fileA": "2026-03-01T00:00:00Z",
         "fileB": "2026-02-01T00:00:00Z",
     }
@@ -1183,7 +1183,7 @@ async def test_listing_prefilter_tracks_new_files(tmp_path: Path):
         ]
     )
 
-    await _listing_prefilter(client, "team123", state, "all")
+    await listing_prefilter(client, "team123", state, "all")
 
     assert "fileA" in state.manifest.tracked_files
 
@@ -1201,7 +1201,7 @@ async def test_listing_prefilter_records_source_project_lifecycle(tmp_path: Path
         ]
     )
 
-    await _listing_prefilter(client, "team123", state, "all")
+    await listing_prefilter(client, "team123", state, "all")
 
     entry = state.manifest.files["fileA"]
     assert entry.source_project_id == "p1"
@@ -1221,7 +1221,7 @@ async def test_listing_prefilter_does_not_duplicate_existing_tracked_files(tmp_p
         ]
     )
 
-    await _listing_prefilter(client, "team123", state, "all")
+    await listing_prefilter(client, "team123", state, "all")
 
     assert state.manifest.tracked_files.count("fileA") == 1
 
@@ -1240,12 +1240,12 @@ async def test_listing_prefilter_applies_since_filter_to_new_files(tmp_path: Pat
         ]
     )
 
-    result = await _listing_prefilter(client, "team123", state, "3m")
+    result = await listing_prefilter(client, "team123", state, "3m")
 
     assert "old_file" not in state.manifest.tracked_files
     assert "new_file" in state.manifest.tracked_files
     # old_file still in the returned dict (its last_modified may be useful for pull filtering)
-    assert "new_file" in result
+    assert "new_file" in result.last_modified_by_key
 
 
 @pytest.mark.asyncio
@@ -1480,6 +1480,7 @@ async def test_pull_cmd_emits_observability_lines(
 
     out = capsys.readouterr().out
     assert "SYNC_OBS_PULL event=run_start" in out
+    assert "SYNC_OBS_PULL event=file_start file_key=fileA file_name=My_File" in out
     assert "SYNC_OBS_PULL event=file_end file_key=fileA outcome=pull_skipped" in out
     assert "SYNC_OBS_PULL event=run_end" in out
 
@@ -1562,6 +1563,7 @@ async def test_pull_cmd_emits_file_heartbeat_for_long_pull(
         await _run("key", tmp_path, None, False, None, False, 10, None, "all")
 
     out = capsys.readouterr().out
+    assert "SYNC_OBS_PULL event=file_start file_key=fileA file_name=My_File" in out
     assert "SYNC_OBS_PULL event=file_heartbeat file_key=fileA" in out
 
 

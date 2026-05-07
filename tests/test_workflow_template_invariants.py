@@ -189,6 +189,21 @@ def test_concurrency_groups_are_branch_scoped() -> None:
             assert "${{ github.ref }}" in group
 
 
+def test_registry_jobs_queue_instead_of_canceling_marination() -> None:
+    """WF-7/WF-8: scheduled registry jobs must not kill in-flight PR marination."""
+
+    sync_text = bundled_template_text("figmaclaw-sync.yaml")
+    variables_text = bundled_template_text("figmaclaw-variables.yaml")
+
+    for job_name in ("census", "variables"):
+        block = re.search(rf"(?ms)^  {job_name}:\n.*?(?=^  [a-zA-Z_-]+:|\Z)", sync_text)
+        assert block is not None
+        assert "cancel-in-progress: false" in block.group(0)
+
+    assert "group: figma-git-variables-${{ github.ref }}" in variables_text
+    assert "cancel-in-progress: false" in variables_text
+
+
 def test_claude_publishers_are_serialized_and_not_cancelled() -> None:
     """INVARIANT WF-5: expensive authored enrichment must not race itself."""
 
@@ -467,6 +482,22 @@ def test_variables_workflows_can_require_authoritative_definitions() -> None:
     assert "require_authoritative: ${{ github.event.inputs.require_authoritative || false }}" in (
         installed
     )
+
+
+def test_registry_workflows_receive_team_id_for_fast_noop_paths() -> None:
+    """ERR-2: host skeletons pass team context to reusable registry jobs."""
+
+    sync_text = bundled_template_text("figmaclaw-sync.yaml")
+    variables_text = bundled_template_text("figmaclaw-variables.yaml")
+    census_reusable = _reusable_workflow_text("census.yml")
+    variables_reusable = _reusable_workflow_text("variables.yml")
+
+    assert sync_text.count("figma_team_id: ${{ vars.FIGMA_TEAM_ID }}") == 3
+    assert "figma_team_id: ${{ vars.FIGMA_TEAM_ID }}" in variables_text
+    assert "--team-id" in census_reusable
+    assert "figmaclaw census --team-id" in census_reusable
+    assert "--team-id" in variables_reusable
+    assert "figmaclaw variables --team-id" in variables_reusable
 
 
 def test_version_bump_is_not_a_post_merge_main_mutation() -> None:

@@ -9,6 +9,7 @@ MAX_BATCHES="${MAX_BATCHES:-180}"
 MAX_IDLE_HAS_MORE_BATCHES="${MAX_IDLE_HAS_MORE_BATCHES:-3}"
 BATCH_TIMEOUT_SECONDS="${BATCH_TIMEOUT_SECONDS:-240}"
 TIMEOUT_KILL_AFTER_SECONDS="${TIMEOUT_KILL_AFTER_SECONDS:-30}"
+PER_FILE_TIMEOUT_SECONDS="${PER_FILE_TIMEOUT_SECONDS:-}"
 MAX_PAGES_PER_BATCH="${MAX_PAGES_PER_BATCH:-5}"
 FIGMACLAW_OUT_PATH="${FIGMACLAW_OUT_PATH:-/tmp/figmaclaw-out.txt}"
 FIGMA_TEAM_ID="${FIGMA_TEAM_ID:-}"
@@ -27,6 +28,7 @@ CURRENT_MAX_PAGES_PER_BATCH="$MAX_PAGES_PER_BATCH"
 SCRIPT_START_EPOCH="$(date +%s)"
 OBS_EVENTS_FILE=""
 OBS_SUMMARY_FILE=""
+OBS_PULL_INVOCATIONS_FILE=""
 BATCHES_STARTED=0
 TOTAL_TIMEOUTS=0
 TOTAL_BACKOFFS=0
@@ -72,12 +74,15 @@ init_observability() {
   mkdir -p "$FIGMACLAW_SYNC_OBS_DIR"
   OBS_EVENTS_FILE="${FIGMACLAW_SYNC_OBS_DIR}/checkpoint_events.csv"
   OBS_SUMMARY_FILE="${FIGMACLAW_SYNC_OBS_DIR}/checkpoint_summary.txt"
+  OBS_PULL_INVOCATIONS_FILE="${FIGMACLAW_SYNC_OBS_DIR}/pull_invocations.txt"
   cat > "$OBS_EVENTS_FILE" <<EOF
 ts_utc,elapsed_s,batch,event,input_force,max_pages,pull_status,pull_duration_s,git_pull_s,git_add_s,git_diff_s,git_commit_s,git_push_s,committed,has_more,idle_has_more,reason
 EOF
+  : > "$OBS_PULL_INVOCATIONS_FILE"
 }
 
 set_pull_args() {
+  local resolved_per_file_timeout
   if [ "$INPUT_FORCE" = "true" ]; then
     PULL_ARGS=(--force)
   else
@@ -85,6 +90,16 @@ set_pull_args() {
   fi
   if [ -n "$FIGMA_TEAM_ID" ]; then
     PULL_ARGS+=(--team-id "$FIGMA_TEAM_ID" --since "$SINCE")
+  fi
+  if [ -z "$PER_FILE_TIMEOUT_SECONDS" ]; then
+    # Canon ERR-2/F24: Python must get a chance to mark one slow file as a
+    # scoped timeout and continue before the outer batch timeout kills the run.
+    resolved_per_file_timeout="$(( BATCH_TIMEOUT_SECONDS > TIMEOUT_KILL_AFTER_SECONDS + 30 ? BATCH_TIMEOUT_SECONDS - TIMEOUT_KILL_AFTER_SECONDS - 30 : 0 ))"
+  else
+    resolved_per_file_timeout="$PER_FILE_TIMEOUT_SECONDS"
+  fi
+  if [ "$resolved_per_file_timeout" -gt 0 ]; then
+    PULL_ARGS+=(--per-file-timeout-s "$resolved_per_file_timeout")
   fi
   # Page-level commit+push keeps partial progress in origin even if the Python
   # process is SIGKILL'd mid-batch — the next CI run's fresh checkout picks it up.
@@ -95,6 +110,13 @@ set_pull_args() {
 
 run_pull_batch() {
   local t0 t1
+  if [ -n "$OBS_PULL_INVOCATIONS_FILE" ]; then
+    {
+      printf 'batch=%s timeout_s=%s kill_after_s=%s command=' "$BATCH" "$BATCH_TIMEOUT_SECONDS" "$TIMEOUT_KILL_AFTER_SECONDS"
+      printf '%q ' figmaclaw pull "${PULL_ARGS[@]}"
+      printf '\n'
+    } >> "$OBS_PULL_INVOCATIONS_FILE"
+  fi
   t0="$(date +%s)"
   set +e
   timeout --kill-after="${TIMEOUT_KILL_AFTER_SECONDS}s" "$BATCH_TIMEOUT_SECONDS" figmaclaw pull "${PULL_ARGS[@]}" | tee "$FIGMACLAW_OUT_PATH"
@@ -102,6 +124,9 @@ run_pull_batch() {
   set -e
   t1="$(date +%s)"
   PULL_DURATION_S="$((t1 - t0))"
+  if [ -n "$FIGMACLAW_SYNC_OBS_DIR" ] && [ -f "$FIGMACLAW_OUT_PATH" ]; then
+    cp "$FIGMACLAW_OUT_PATH" "${FIGMACLAW_SYNC_OBS_DIR}/pull_batch_${BATCH}.log" || true
+  fi
 }
 
 commit_if_changed() {
@@ -200,7 +225,14 @@ while true; do
     # Without these, the next CI run's fresh `actions/checkout@v6` throws all
     # mid-batch work away — causing the loop to re-do the same schema upgrades
     # forever without ever landing a commit upstream.
-    git push >&2 || true
+    flushed_auto_commit="false"
+    if grep -q '✓ committed' "$FIGMACLAW_OUT_PATH"; then
+      if git push >&2; then
+        flushed_auto_commit="true"
+      fi
+    else
+      git push >&2 || true
+    fi
     committed="$(commit_if_changed "sync: figmaclaw — partial progress (batch $BATCH timeout)")"
     if [ "$committed" = "true" ]; then
       TOTAL_COMMITS=$((TOTAL_COMMITS + 1))
@@ -208,6 +240,10 @@ while true; do
       # timed-out batch made forward progress or was completely wasted.
       echo "figmaclaw pull timed out but partial progress committed (batch $BATCH)."
       emit_obs "partial_commit_on_timeout" "timeout commit saved work"
+    elif [ "$flushed_auto_commit" = "true" ]; then
+      TOTAL_COMMITS=$((TOTAL_COMMITS + 1))
+      echo "figmaclaw pull timed out but auto-committed progress was flushed (batch $BATCH)."
+      emit_obs "partial_commit_on_timeout" "timeout auto-commit saved work"
     else
       echo "figmaclaw pull timed out after ${BATCH_TIMEOUT_SECONDS}s with no dirty progress; stopping checkpoint loop early."
       FINAL_REASON="timeout_no_progress_stop"

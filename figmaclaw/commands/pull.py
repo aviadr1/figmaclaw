@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import os
 import time
 from pathlib import Path
 from typing import Any
@@ -17,15 +15,17 @@ from figmaclaw.commands._shared import (
     require_figma_api_key,
     require_tracked_files,
 )
-from figmaclaw.figma_api_models import FileSummary, ProjectSummary
+from figmaclaw.commands.listing_prefilter import listing_prefilter
+from figmaclaw.commands.observability import (
+    StructuredObs,
+    async_heartbeat_loop,
+    env_interval_seconds,
+)
 from figmaclaw.figma_client import FigmaClient
-from figmaclaw.figma_sync_state import FigmaSyncState
-from figmaclaw.figma_utils import parse_since
 from figmaclaw.git_utils import git_commit, git_push
 from figmaclaw.prune_utils import prune_file_artifacts_from_manifest
 from figmaclaw.pull_logic import DEFAULT_PER_PAGE_TIMEOUT_S, PullResult, pull_file
 from figmaclaw.schema_status import is_pull_schema_stale
-from figmaclaw.source_context import classify_source_lifecycle
 from figmaclaw.status_markers import COMMIT_MSG_PREFIX, HAS_MORE_TRUE
 
 DEFAULT_PER_FILE_TIMEOUT_S: float = 300.0
@@ -148,17 +148,6 @@ def _git_push(repo_dir: Path) -> None:
     git_push(repo_dir)
 
 
-def _obs_s(value: object) -> str:
-    return str(value).replace("\n", " ").replace("\r", " ").replace(" ", "_")
-
-
-def _emit_pull_obs(event: str, **fields: object) -> None:
-    parts = [f"event={_obs_s(event)}"]
-    for key, value in fields.items():
-        parts.append(f"{key}={_obs_s(value)}")
-    click.echo("SYNC_OBS_PULL " + " ".join(parts))
-
-
 class _PullObs:
     """Structured pull observability emitter + counters."""
 
@@ -171,7 +160,7 @@ class _PullObs:
         since: str,
         prune: bool,
     ) -> None:
-        self.run_start = time.monotonic()
+        self.structured = StructuredObs("SYNC_OBS_PULL")
         self.files_seen = 0
         self.files_attempted_pull = 0
         self.files_skipped_prefilter = 0
@@ -189,10 +178,10 @@ class _PullObs:
         )
 
     def emit(self, event: str, **fields: Any) -> None:
-        _emit_pull_obs(event, **fields)
+        self.structured.emit(event, **fields)
 
     def duration(self) -> float:
-        return round(time.monotonic() - self.run_start, 3)
+        return self.structured.duration()
 
     def set_files_seen(self, n: int) -> None:
         self.files_seen = n
@@ -224,102 +213,20 @@ class _PullObs:
 
 
 def _pull_heartbeat_seconds() -> int:
-    raw = os.getenv("FIGMACLAW_PULL_HEARTBEAT_SECONDS", "30").strip()
-    with contextlib.suppress(ValueError):
-        val = int(raw)
-        return max(val, 0)
-    return 30
+    return env_interval_seconds("FIGMACLAW_PULL_HEARTBEAT_SECONDS", 30)
 
 
 async def _file_heartbeat_loop(
     obs: _PullObs, *, file_key: str, file_start: float, stop_event: asyncio.Event, interval_s: int
 ) -> None:
-    if interval_s <= 0:
-        return
-    while not stop_event.is_set():
-        try:
-            await asyncio.wait_for(stop_event.wait(), timeout=interval_s)
-            return
-        except TimeoutError:
-            obs.emit(
-                "file_heartbeat",
-                file_key=file_key,
-                elapsed_s=round(time.monotonic() - file_start, 3),
-                interval_s=interval_s,
-                note="still_processing",
-            )
-
-
-async def _listing_prefilter(
-    client: FigmaClient,
-    team_id: str,
-    state: FigmaSyncState,
-    since: str,
-) -> dict[str, str]:
-    """List all team files in parallel, track new ones, return {file_key: last_modified}.
-
-    Files whose last_modified matches the stored value can be skipped without
-    calling get_file_meta — the cheap listing replaces 63 individual meta calls
-    in the no-op case.
-    """
-    from datetime import datetime
-
-    since_dt: datetime | None = None
-    if since:
-        with contextlib.suppress(ValueError):
-            since_dt = parse_since(since)
-
-    projects = await client.list_team_projects(team_id)
-
-    # Fetch all project file listings concurrently
-    async def _list_project(project: ProjectSummary) -> tuple[ProjectSummary, list[FileSummary]]:
-        try:
-            return project, await client.list_project_files(str(project.id))
-        except Exception:
-            return project, []
-
-    all_project_file_lists = await asyncio.gather(*[_list_project(p) for p in projects])
-
-    listing_last_modified: dict[str, str] = {}
-    newly_tracked = 0
-    tracked = set(state.manifest.tracked_files)
-
-    for project, files in all_project_file_lists:
-        project_id = str(project.id)
-        project_name = project.name
-        for file_info in files:
-            file_key = file_info.key
-            file_name = file_info.name
-            last_modified = file_info.last_modified
-            if not file_key:
-                continue
-
-            # Date filter for auto-discovery only
-            if since_dt and last_modified and file_key not in tracked:
-                try:
-                    modified_dt = datetime.fromisoformat(last_modified.replace("Z", "+00:00"))
-                    if modified_dt < since_dt:
-                        continue
-                except ValueError:
-                    pass
-
-            listing_last_modified[file_key] = last_modified
-
-            if file_key not in tracked and file_key not in state.manifest.skipped_files:
-                state.add_tracked_file(file_key, file_name)
-                click.echo(f"  → now tracking {file_name!r}")
-                tracked.add(file_key)
-                newly_tracked += 1
-            entry = state.manifest.files.get(file_key)
-            if entry is not None:
-                entry.source_project_id = project_id
-                entry.source_project_name = project_name
-                entry.source_lifecycle = classify_source_lifecycle(file_name, project_name)
-
-    if newly_tracked:
-        click.echo(f"NEWLY_TRACKED:{newly_tracked}")
-
-    return listing_last_modified
+    await async_heartbeat_loop(
+        obs.structured,
+        event="file_heartbeat",
+        start=file_start,
+        stop_event=stop_event,
+        interval_s=interval_s,
+        fields={"file_key": file_key},
+    )
 
 
 async def _run(
@@ -372,17 +279,16 @@ async def _run(
         listing_last_modified: dict[str, str] | None = None
         if team_id and not file_key:
             listing_t0 = time.monotonic()
-            tracked_before = len(state.manifest.tracked_files)
-            listing_last_modified = await _listing_prefilter(client, team_id, state, since)
+            listing = await listing_prefilter(client, team_id, state, since)
+            listing_last_modified = listing.last_modified_by_key
             state.save()  # persist any newly tracked files before pulling
             listing_duration_s = round(time.monotonic() - listing_t0, 3)
-            tracked_after = len(state.manifest.tracked_files)
-            _emit_pull_obs(
+            obs.emit(
                 "listing_prefilter",
                 duration_s=listing_duration_s,
                 listed_files=len(listing_last_modified),
-                tracked_before=tracked_before,
-                tracked_after=tracked_after,
+                tracked_before=listing.tracked_before,
+                tracked_after=listing.tracked_after,
             )
 
         if not require_tracked_files(state):
@@ -412,6 +318,10 @@ async def _run(
                 obs.file_end(key, "budget_exhausted", file_start)
                 break
 
+            stored_entry = state.manifest.files.get(key)
+            file_name = getattr(stored_entry, "file_name", "") or "unknown"
+            obs.emit("file_start", file_key=key, file_name=file_name)
+
             # Listing pre-filter: skip get_file_meta entirely when the listing tells us
             # the file hasn't changed (or isn't reachable at all).
             #   - listing_lm is None  → file not in team listing (e.g. FigJam boards);
@@ -427,7 +337,6 @@ async def _run(
             # a listing-match skip forever and the v7 refresh never fired.
             if not force and listing_last_modified is not None:
                 listing_lm = listing_last_modified.get(key)
-                stored_entry = state.manifest.files.get(key)
                 stored_lm = stored_entry.last_modified if stored_entry else ""
                 stored_schema = stored_entry.pull_schema_version if stored_entry else 0
                 schema_needs_refresh = is_pull_schema_stale(stored_schema)

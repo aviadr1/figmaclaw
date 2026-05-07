@@ -37,6 +37,11 @@ import click
 import pydantic
 
 from figmaclaw.budget import BudgetDecision, decide_next_batch, load_per_frame_history
+from figmaclaw.commands.observability import (
+    StructuredObs,
+    env_interval_seconds,
+    sync_heartbeat,
+)
 from figmaclaw.figma_md_parse import frame_row_count, section_line_ranges
 from figmaclaw.figma_parse import parse_frontmatter, split_frontmatter
 from figmaclaw.figma_render import rebuild_frontmatter_from_parsed
@@ -1047,6 +1052,66 @@ def _run_claude(
     return result
 
 
+def _claude_heartbeat_seconds() -> int:
+    return env_interval_seconds("FIGMACLAW_CLAUDE_RUN_HEARTBEAT_SECONDS", 30)
+
+
+def _invoke_claude_observed(
+    *,
+    obs: StructuredObs,
+    prompt: str,
+    model: str,
+    max_turns: int,
+    skip_permissions: bool,
+    stream_log_path: Path,
+    file_path: Path,
+    repo_dir: Path,
+    mode: str,
+    frames: int,
+    invocation: str,
+    heartbeat_interval_s: int,
+) -> tuple[ClaudeResult, float]:
+    rel = _enrichment_rel_path(repo_dir, file_path)
+    start = time.monotonic()
+    fields: dict[str, object] = {
+        "file": rel,
+        "mode": mode,
+        "frames": frames,
+        "invocation": invocation,
+        "model": model,
+        "max_turns": max_turns,
+    }
+    obs.emit("claude_start", **fields)
+    with sync_heartbeat(
+        obs,
+        event="claude_heartbeat",
+        start=start,
+        interval_s=heartbeat_interval_s,
+        fields=fields,
+    ):
+        rc = _run_claude(
+            prompt=prompt,
+            model=model,
+            max_turns=max_turns,
+            skip_permissions=skip_permissions,
+            extra_flags=[],
+            stream_log_path=stream_log_path,
+        )
+    dur = time.monotonic() - start
+    obs.emit(
+        "claude_end",
+        **fields,
+        duration_s=round(dur, 3),
+        exit_code=rc.exit_code,
+        turns=rc.turns,
+        cost_usd=f"{rc.cost_usd:.4f}",
+        claude_duration_ms=rc.duration_ms,
+        stop_reason=rc.stop_reason or "none",
+        is_error=rc.is_error,
+    )
+    return rc, dur
+
+
 # ---------------------------------------------------------------------------
 # Click command
 # ---------------------------------------------------------------------------
@@ -1155,6 +1220,8 @@ def claude_run_cmd(
 
     # Stream-json log: persistent, flushed per line, resilient to timeout
     stream_log = repo_dir / STREAM_JSON_LOG
+    obs = StructuredObs("SYNC_OBS_CLAUDE_RUN", err=True)
+    heartbeat_interval_s = _claude_heartbeat_seconds()
 
     # Resolve prompt template
     if prompt_text:
@@ -1164,6 +1231,15 @@ def claude_run_cmd(
     else:
         template = default_prompt_path().read_text()
 
+    collect_start = time.monotonic()
+    obs.emit(
+        "collect_start",
+        target=_enrichment_rel_path(repo_dir, target),
+        changed_only=changed_only,
+        needs_enrichment=needs_enrichment,
+        min_frames=min_frames,
+        max_frames=max_frames,
+    )
     files = collect_files(
         target,
         glob_pattern,
@@ -1172,6 +1248,11 @@ def claude_run_cmd(
         min_frames=min_frames,
         max_frames=max_frames,
         repo_dir=repo_dir,
+    )
+    obs.emit(
+        "collect_end",
+        duration_s=round(time.monotonic() - collect_start, 3),
+        files_found=len(files),
     )
     if max_files > 0 and len(files) > max_files:
         click.echo(f"[claude-run] limiting to {max_files}/{len(files)} files", err=True)
@@ -1221,6 +1302,15 @@ def claude_run_cmd(
     start_sha = head_sha(repo_dir)
     run_start = time.monotonic()
     run_id = datetime.now(UTC).isoformat()
+    obs.emit(
+        "run_start",
+        files_selected=len(files),
+        target=_enrichment_rel_path(repo_dir, target),
+        section_mode=section_mode,
+        model=model,
+        max_turns=max_turns,
+        heartbeat_interval_s=heartbeat_interval_s,
+    )
 
     # Load per-mode rolling histories from the enrichment log. These are
     # "prior knowledge" from past runs; within this run we append to them
@@ -1259,6 +1349,22 @@ def claude_run_cmd(
         else:
             history_finalize.append(per_frame)
 
+    def _pull_latest(phase: str, file_path: Path) -> None:
+        pull_start = time.monotonic()
+        obs.emit(
+            "git_pull_start",
+            phase=phase,
+            file=_enrichment_rel_path(repo_dir, file_path),
+        )
+        result = subprocess.run(["git", "pull", "--no-rebase"], capture_output=True)
+        obs.emit(
+            "git_pull_end",
+            phase=phase,
+            file=_enrichment_rel_path(repo_dir, file_path),
+            duration_s=round(time.monotonic() - pull_start, 3),
+            returncode=result.returncode,
+        )
+
     try:
         for i, file_path in enumerate(files, 1):
             if budget_exhausted:
@@ -1267,10 +1373,26 @@ def claude_run_cmd(
             # Pull latest to avoid re-enriching files another run already handled.
             # Each Claude invocation pushes after commit, so concurrent/sequential
             # runs may have enriched files since our initial checkout.
-            subprocess.run(["git", "pull", "--no-rebase"], capture_output=True)
+            _pull_latest("before_file_selection", file_path)
 
             # Re-check after pull — file may now have enriched_hash
+            selector_start = time.monotonic()
+            obs.emit(
+                "selector_start",
+                index=i,
+                total=total,
+                file=_enrichment_rel_path(repo_dir, file_path),
+            )
             needs_it, frame_count = enrichment_info(file_path, repo_dir=repo_dir)
+            obs.emit(
+                "selector_end",
+                index=i,
+                total=total,
+                file=_enrichment_rel_path(repo_dir, file_path),
+                needs_enrichment=needs_it,
+                frame_count=frame_count,
+                duration_s=round(time.monotonic() - selector_start, 3),
+            )
             if not needs_it:
                 click.echo(
                     f"[claude-run] [{i}/{total}] skip (already enriched): {file_path}",
@@ -1282,8 +1404,22 @@ def claude_run_cmd(
                 # Batch mode: describe up to 80 pending frames per Claude invocation
                 # using write-descriptions (cross-section, mechanical row updates).
                 batch_template = _prompt_path("figma-sections-batch.md").read_text()
+                scan_start = time.monotonic()
+                obs.emit(
+                    "section_scan_start",
+                    file=_enrichment_rel_path(repo_dir, file_path),
+                    phase="initial",
+                )
                 sections = pending_sections(file_path, repo_dir=repo_dir)
                 fin_needed = needs_finalization(file_path, repo_dir=repo_dir)
+                obs.emit(
+                    "section_scan_end",
+                    file=_enrichment_rel_path(repo_dir, file_path),
+                    phase="initial",
+                    pending_sections=len(sections),
+                    finalization_needed=fin_needed,
+                    duration_s=round(time.monotonic() - scan_start, 3),
+                )
 
                 if not sections and not fin_needed:
                     candidate = _classify_no_work_candidate(file_path, repo_dir=repo_dir)
@@ -1368,22 +1504,26 @@ def claude_run_cmd(
                         f"({total_pending} pending): {section_names}",
                         err=True,
                     )
-                    t0 = time.monotonic()
                     prompt = build_prompt(
                         batch_template,
                         file_path,
                         [file_path],
                         section_list=section_names,
                     )
-                    rc = _run_claude(
+                    rc, dur = _invoke_claude_observed(
+                        obs=obs,
                         prompt=prompt,
                         model=model,
                         max_turns=max_turns,
                         skip_permissions=skip_permissions,
-                        extra_flags=[],
                         stream_log_path=stream_log,
+                        file_path=file_path,
+                        repo_dir=repo_dir,
+                        mode="batch",
+                        frames=total_pending,
+                        invocation=f"batch-{chunk_num}",
+                        heartbeat_interval_s=heartbeat_interval_s,
                     )
-                    dur = time.monotonic() - t0
                     ok = rc.exit_code == 0
                     _log_enrichment(
                         repo_dir,
@@ -1413,9 +1553,23 @@ def claude_run_cmd(
                     # Re-check pending after commit.
                     # If unresolved frame IDs didn't change, this run made no
                     # progress on this file; stop immediately to avoid loops.
-                    subprocess.run(["git", "pull", "--no-rebase"], capture_output=True)
+                    _pull_latest("after_batch", file_path)
+                    scan_start = time.monotonic()
+                    obs.emit(
+                        "section_scan_start",
+                        file=_enrichment_rel_path(repo_dir, file_path),
+                        phase="after_batch",
+                    )
                     sections = pending_sections(file_path, repo_dir=repo_dir)
                     after_pending_ids = pending_frame_node_ids(file_path, repo_dir=repo_dir)
+                    obs.emit(
+                        "section_scan_end",
+                        file=_enrichment_rel_path(repo_dir, file_path),
+                        phase="after_batch",
+                        pending_sections=len(sections),
+                        pending_frames=len(after_pending_ids),
+                        duration_s=round(time.monotonic() - scan_start, 3),
+                    )
                     if after_pending_ids and after_pending_ids == before_pending_ids:
                         click.echo(
                             f"[claude-run] [{i}/{total}] NO-PROGRESS: unresolved frame set "
@@ -1466,18 +1620,22 @@ def claude_run_cmd(
                         f"[claude-run] [{i}/{total}] finalizing: {file_path}",
                         err=True,
                     )
-                    t0 = time.monotonic()
                     fin_template = finalize_prompt_path().read_text()
                     prompt = build_prompt(fin_template, file_path, [file_path])
-                    rc = _run_claude(
+                    rc, dur = _invoke_claude_observed(
+                        obs=obs,
                         prompt=prompt,
                         model=model,
                         max_turns=max_turns,
                         skip_permissions=skip_permissions,
-                        extra_flags=[],
                         stream_log_path=stream_log,
+                        file_path=file_path,
+                        repo_dir=repo_dir,
+                        mode="finalize",
+                        frames=frame_count,
+                        invocation="finalize",
+                        heartbeat_interval_s=heartbeat_interval_s,
                     )
-                    dur = time.monotonic() - t0
                     ok = rc.exit_code == 0
                     _log_enrichment(
                         repo_dir,
@@ -1521,17 +1679,21 @@ def claude_run_cmd(
                     f"[claude-run] [{i}/{total}] enriching: {file_path} ({frame_count} frames)",
                     err=True,
                 )
-                t0 = time.monotonic()
                 prompt = build_prompt(template, file_path, [file_path])
-                rc = _run_claude(
+                rc, dur = _invoke_claude_observed(
+                    obs=obs,
                     prompt=prompt,
                     model=model,
                     max_turns=max_turns,
                     skip_permissions=skip_permissions,
-                    extra_flags=[],
                     stream_log_path=stream_log,
+                    file_path=file_path,
+                    repo_dir=repo_dir,
+                    mode="whole-page",
+                    frames=frame_count,
+                    invocation="whole-page",
+                    heartbeat_interval_s=heartbeat_interval_s,
                 )
-                dur = time.monotonic() - t0
                 ok = rc.exit_code == 0
                 _log_enrichment(
                     repo_dir,
@@ -1598,6 +1760,19 @@ def claude_run_cmd(
         err=True,
     )
     click.echo(f"[claude-run] Verdict ({verdict.row}): {verdict.label}", err=True)
+    obs.emit(
+        "run_end",
+        duration_s=round(time.monotonic() - run_start, 3),
+        files_selected=files_selected,
+        work_attempted=work_attempted,
+        commits_made=commits_made,
+        errors=errors,
+        budget_exhausted=budget_exhausted,
+        skipped_no_work=skipped_no_work,
+        stuck=stuck,
+        verdict=verdict.label,
+        verdict_row=verdict.row,
+    )
 
     summary = format_step_summary(
         verdict=verdict,

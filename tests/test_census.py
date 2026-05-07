@@ -169,6 +169,59 @@ class TestCensusSkipBehavior:
         assert out.read_text() != content_before
 
     @pytest.mark.asyncio
+    async def test_census_emits_rest_observability(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ):
+        """ERR-2: census exposes per-file REST component-set timing."""
+        cs = [_make_component_set("Button", "aabb1122")]
+        await self._run_census(tmp_path, cs)
+
+        out = capsys.readouterr().out
+        assert "SYNC_OBS_CENSUS event=run_start" in out
+        assert "SYNC_OBS_CENSUS event=file_start file_key=key1" in out
+        assert "SYNC_OBS_CENSUS event=reader_start" in out
+        assert "reader=rest_component_sets" in out
+        assert "SYNC_OBS_CENSUS event=reader_end" in out
+        assert "outcome=success component_sets=1" in out
+        assert "SYNC_OBS_CENSUS event=file_end" in out
+        assert "SYNC_OBS_CENSUS event=run_end" in out
+
+    @pytest.mark.asyncio
+    async def test_census_team_scan_replaces_per_file_rest_loop(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ):
+        """ERR-2: team-level component-set listing prevents N serial file REST calls."""
+        state = FigmaSyncState(tmp_path)
+        state.load()
+        state.add_tracked_file("key1", "Web App")
+        state.add_tracked_file("key2", "Product File")
+        state.save()
+
+        cs = _make_component_set("Button", "aabb1122")
+        cs["file_key"] = "key1"
+        mock_client = AsyncMock()
+        mock_client.list_team_component_sets = AsyncMock(return_value=[cs])
+        mock_client.get_component_sets = AsyncMock(return_value=[])
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client_class = MagicMock(return_value=mock_client)
+
+        with patch.object(census_module, "FigmaClient", mock_client_class):
+            await _run("fake-api-key", tmp_path, None, auto_commit=False, force=False, team_id="t1")
+
+        mock_client.list_team_component_sets.assert_awaited_once_with("t1")
+        mock_client.get_component_sets.assert_not_awaited()
+        out = capsys.readouterr().out
+        assert "reader=rest_team_component_sets outcome=success component_sets=1" in out
+        assert "reader=rest_team_component_sets_cache outcome=success component_sets=1" in out
+        assert "reader=rest_team_component_sets_cache outcome=success component_sets=0" in out
+
+        assert (tmp_path / "figma" / file_slug_for_key("Web App", "key1") / "_census.md").exists()
+        assert not (
+            tmp_path / "figma" / file_slug_for_key("Product File", "key2") / "_census.md"
+        ).exists()
+
+    @pytest.mark.asyncio
     async def test_census_rewrites_when_source_lifecycle_changes(self, tmp_path: Path):
         """INVARIANT TC-12: source provenance changes are meaningful registry metadata."""
         cs = [_make_component_set("Button", "aabb1122")]

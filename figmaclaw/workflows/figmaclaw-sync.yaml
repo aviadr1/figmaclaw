@@ -51,13 +51,15 @@ jobs:
   census:
     needs: sync
     if: success()
-    # Only the latest census run matters; cancel stale in-flight runs.
+    # Same target branch means same generated registry path. Queue instead of
+    # canceling so an explicit marination run is not killed by hourly schedule.
     concurrency:
       group: figma-git-census-${{ github.ref }}
-      cancel-in-progress: true
+      cancel-in-progress: false
     uses: aviadr1/figmaclaw/.github/workflows/census.yml@main
     with:
       figmaclaw_ref: ${{ github.event.inputs.figmaclaw_ref || 'main' }}
+      figma_team_id: ${{ vars.FIGMA_TEAM_ID }}
     secrets:
       FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
 
@@ -68,10 +70,11 @@ jobs:
     if: success()
     concurrency:
       group: figma-git-variables-${{ github.ref }}
-      cancel-in-progress: true
+      cancel-in-progress: false
     uses: aviadr1/figmaclaw/.github/workflows/variables.yml@main
     with:
       figmaclaw_ref: ${{ github.event.inputs.figmaclaw_ref || 'main' }}
+      figma_team_id: ${{ vars.FIGMA_TEAM_ID }}
     secrets:
       FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
       FIGMA_VARIABLES_TOKEN: ${{ secrets.FIGMA_VARIABLES_TOKEN }}
