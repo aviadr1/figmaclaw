@@ -220,6 +220,7 @@ class NodesResponse(pydantic.BaseModel):
     lastModified: str = ""  # noqa: N815
     version: str = ""
     nodes: dict[str, NodeEntry] = pydantic.Field(default_factory=dict)
+    components: dict[str, Any] = pydantic.Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

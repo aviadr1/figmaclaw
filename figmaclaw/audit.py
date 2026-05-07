@@ -16,6 +16,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from figmaclaw.commands.census import load_census_registry
+from figmaclaw.token_catalog import AUTHORITATIVE_DEFINITION_SOURCES, TokenCatalog
 from figmaclaw.token_scan import bound_variable_id, paint_is_variable_bound, rgb_to_hex
 
 
@@ -278,7 +279,7 @@ def build_audit_diagnose_report(
                         hex=hex_value,
                         in_instance=inside_instance,
                         path=[str(a.get("name", "")) for a in ancestors],
-                        message=old_palette.get(hex_value) or new_palette.get(hex_value),
+                        message=palette_message(hex_value, old_palette, new_palette),
                     )
                 )
 
@@ -293,9 +294,10 @@ def build_audit_diagnose_report(
         for finding in findings
     )
     frozen_new = any(finding.status == "new_palette_literal" for finding in findings)
+    shared_literal = any(finding.status == "shared_palette_literal" for finding in findings)
     return AuditDiagnoseReport(
         audit_page_id=audit_page_id,
-        ok=not old_standalone and not frozen_new,
+        ok=not old_standalone and not frozen_new and not shared_literal,
         bound_paints=bound_count,
         unbound_paints=unbound,
         unique_unbound_hex=len(by_hex),
@@ -314,11 +316,29 @@ def classify_hex(
 ) -> str:
     """Classify an unbound literal hex using explicit palettes."""
     normalized = hex_value.upper()
-    if normalized in old_palette:
+    in_old = normalized in old_palette
+    in_new = normalized in new_palette
+    if in_old and in_new:
+        return "shared_palette_literal"
+    if in_old:
         return "old_palette_literal"
-    if normalized in new_palette:
+    if in_new:
         return "new_palette_literal"
     return "unclassified_literal"
+
+
+def palette_message(
+    hex_value: str,
+    old_palette: dict[str, str],
+    new_palette: dict[str, str],
+) -> str | None:
+    """Return a label for one palette classification finding."""
+    normalized = hex_value.upper()
+    old_label = old_palette.get(normalized)
+    new_label = new_palette.get(normalized)
+    if old_label and new_label:
+        return f"old: {old_label}; new: {new_label}"
+    return old_label or new_label
 
 
 def normalize_palette(palette: dict[str, str]) -> dict[str, str]:
@@ -352,6 +372,43 @@ def load_palette(path: Path | None) -> dict[str, str]:
     if not isinstance(payload, dict):
         raise ValueError(f"{path}: palette must be a JSON object mapping hex to label")
     return {str(key): str(value) for key, value in payload.items()}
+
+
+def parse_palette_entries(entries: Iterable[str]) -> dict[str, str]:
+    """Parse repeatable ``HEX=label`` palette entries from command options."""
+    palette: dict[str, str] = {}
+    for raw in entries:
+        if "=" not in raw:
+            raise ValueError(f"palette entry must be HEX=label, got {raw!r}")
+        hex_value, label = raw.split("=", 1)
+        normalized_hex = _normalize_hex(hex_value)
+        label = label.strip()
+        if not normalized_hex:
+            raise ValueError(f"palette entry has empty hex value: {raw!r}")
+        if not label:
+            raise ValueError(f"palette entry has empty label: {raw!r}")
+        palette[normalized_hex] = label
+    return palette
+
+
+def load_palette_from_ds_catalog(path: Path) -> dict[str, str]:
+    """Build a color palette from authoritative color variable definitions."""
+    try:
+        payload = load_json_file(path)
+        catalog = TokenCatalog.model_validate(payload)
+    except Exception as exc:
+        raise ValueError(f"{path}: could not load ds_catalog.json palette: {exc}") from exc
+    palette: dict[str, str] = {}
+    for variable_id, variable in catalog.variables.items():
+        if variable.source not in AUTHORITATIVE_DEFINITION_SOURCES:
+            continue
+        if variable.resolved_type != "COLOR":
+            continue
+        label = variable.name or variable_id
+        for value in variable.values_by_mode.values():
+            if value.hex:
+                palette[value.hex] = label
+    return normalize_palette(palette)
 
 
 def build_pipeline_lint_report(

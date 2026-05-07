@@ -11,9 +11,14 @@ import click
 from figmaclaw.figma_utils import write_json_if_changed
 
 
+def resolve_repo_path(repo_dir: Path, path: Path) -> Path:
+    """Resolve a command path relative to the target repo."""
+    return path if path.is_absolute() else repo_dir / path
+
+
 def resolve_output_path(repo_dir: Path, path: Path) -> Path:
     """Resolve a command output path relative to the target repo."""
-    return path if path.is_absolute() else repo_dir / path
+    return resolve_repo_path(repo_dir, path)
 
 
 def emit_json_report(

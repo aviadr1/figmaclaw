@@ -164,6 +164,67 @@ async def test_get_nodes_skips_null_entries():
 
 
 @pytest.mark.asyncio
+async def test_get_nodes_can_request_full_geometry_subtree():
+    """INVARIANT: audit fetchers can omit depth and request geometry=paths."""
+    with respx.mock:
+        route = respx.get(f"https://api.figma.com/v1/files/{FILE_KEY}/nodes").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "nodes": {
+                        PAGE_NODE_ID: {
+                            "document": {"id": PAGE_NODE_ID, "name": "Frame", "type": "FRAME"}
+                        }
+                    }
+                },
+            )
+        )
+        async with FigmaClient(api_key="figd_test") as client:
+            nodes = await client.get_nodes(FILE_KEY, [PAGE_NODE_ID], depth=None, geometry="paths")
+
+    assert nodes[PAGE_NODE_ID]["type"] == "FRAME"
+    params = dict(route.calls[0].request.url.params)
+    assert params["ids"] == PAGE_NODE_ID
+    assert params["geometry"] == "paths"
+    assert "depth" not in params
+
+
+@pytest.mark.asyncio
+async def test_get_nodes_response_preserves_component_metadata():
+    """INVARIANT: fetch-nodes can enrich instances with publishable component keys."""
+    with respx.mock:
+        respx.get(f"https://api.figma.com/v1/files/{FILE_KEY}/nodes").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "nodes": {
+                        PAGE_NODE_ID: {
+                            "document": {
+                                "id": PAGE_NODE_ID,
+                                "name": "Frame",
+                                "type": "FRAME",
+                                "children": [
+                                    {
+                                        "id": "1:2",
+                                        "name": "Button",
+                                        "type": "INSTANCE",
+                                        "componentId": "99:1",
+                                    }
+                                ],
+                            }
+                        }
+                    },
+                    "components": {"99:1": {"key": "component-key"}},
+                },
+            )
+        )
+        async with FigmaClient(api_key="figd_test") as client:
+            payload = await client.get_nodes_response(FILE_KEY, [PAGE_NODE_ID])
+
+    assert payload["components"]["99:1"]["key"] == "component-key"
+
+
+@pytest.mark.asyncio
 async def test_retries_on_429():
     """INVARIANT: Client retries on 429 and eventually succeeds."""
     call_count = 0
