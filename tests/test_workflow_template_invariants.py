@@ -500,7 +500,24 @@ def test_registry_workflows_receive_team_id_for_fast_noop_paths() -> None:
     assert "figmaclaw variables --team-id" in variables_reusable
 
 
-def test_version_bump_is_not_a_post_merge_main_mutation() -> None:
+def test_ci_requires_source_controlled_version_bump_in_pr() -> None:
     """INVARIANT: version bumps are PR contents, not bot pushes to protected main."""
 
     assert not (Path(__file__).parents[1] / ".github" / "workflows" / "bump-version.yml").exists()
+
+    ci_text = _reusable_workflow_text("ci.yml")
+    workflow = yaml.safe_load(ci_text)
+    test_steps = workflow["jobs"]["test"]["steps"]
+    steps = {step["name"]: step for step in test_steps}
+
+    assert "bump-version" not in workflow["jobs"]
+    assert workflow["permissions"]["contents"] == "read"
+    assert steps["Checkout"]["with"]["fetch-depth"] == 0
+    assert steps["Enforce PR version bump"]["if"] == "github.event_name == 'pull_request'"
+    assert steps["Enforce PR version bump"]["env"] == {
+        "BASE_SHA": "${{ github.event.pull_request.base.sha }}"
+    }
+    assert (
+        steps["Enforce PR version bump"]["run"]
+        == 'python3 scripts/check_version_bump.py --base-ref "$BASE_SHA"'
+    )
