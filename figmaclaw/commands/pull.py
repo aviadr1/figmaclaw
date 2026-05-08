@@ -264,6 +264,13 @@ async def _run(
         if committed:
             commit_count += 1
             click.echo(f"  ✓ committed: {page_label}")
+            obs.emit(
+                "page_auto_commit",
+                page_label=page_label,
+                commit_count=commit_count,
+                paths=len(paths),
+                push_due=bool(push_every and commit_count % push_every == 0),
+            )
             if push_every and commit_count % push_every == 0:
                 click.echo(f"  ↑ pushing ({commit_count} commits)...")
                 _git_push(repo_dir)
@@ -358,6 +365,7 @@ async def _run(
                 if listing_lm is None:
                     obs.emit("listing_prefilter_probe", file_key=key, reason="missing_from_listing")
 
+            file_commit_count_start = commit_count
             try:
                 obs.files_attempted_pull += 1
                 stop_heartbeat = asyncio.Event()
@@ -400,6 +408,7 @@ async def _run(
                     "file_timeout",
                     file_start,
                     timeout_s=per_file_timeout_s if per_file_timeout_s is not None else "none",
+                    auto_commits=commit_count - file_commit_count_start,
                 )
                 continue
             except Exception as exc:
@@ -408,6 +417,7 @@ async def _run(
                 obs.file_end(key, "error", file_start)
                 continue
             all_results.append(result)
+            file_auto_commits = commit_count - file_commit_count_start
 
             if max_pages is not None and pages_budget is not None:
                 # Schema-only upgrades don't count toward the budget — they can't cause
@@ -444,7 +454,7 @@ async def _run(
                     if listing_lm and stored_entry and not stored_entry.last_modified:
                         stored_entry.last_modified = listing_lm
                 click.echo(f"{key}: unchanged (skipped)")
-                obs.file_end(key, "pull_skipped", file_start)
+                obs.file_end(key, "pull_skipped", file_start, auto_commits=file_auto_commits)
             else:
                 wrote_any = bool(
                     result.pages_written
@@ -480,6 +490,7 @@ async def _run(
                     pages_errors=result.pages_errored,
                     schema_upgraded=result.pages_schema_upgraded,
                     has_more=result.has_more,
+                    auto_commits=file_auto_commits,
                 )
 
     state.save()

@@ -1666,6 +1666,51 @@ async def test_pull_cmd_per_file_timeout_skips_stuck_file_and_finishes_batch(
     assert "SYNC_OBS_PULL event=run_end" in out
 
 
+@pytest.mark.asyncio
+async def test_pull_cmd_file_timeout_observes_auto_commits(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """INVARIANT: file_timeout observability reports page commits made before timeout."""
+    from figmaclaw.commands.pull import _run
+
+    state = _make_state_with_file(tmp_path, "fileA", "")
+    state.save()
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    async def _partially_committed_pull_file(*_args, **kwargs) -> PullResult:
+        kwargs["on_page_written"]("My File / Slow Page", ["figma/my-file/pages/slow.md"])
+        await asyncio.sleep(10.0)
+        return PullResult(file_key="fileA", skipped_file=True)
+
+    with (
+        patch("figmaclaw.commands.pull.FigmaClient", return_value=mock_client),
+        patch("figmaclaw.commands.pull.pull_file", side_effect=_partially_committed_pull_file),
+        patch("figmaclaw.commands.pull._git_commit_page", return_value=True),
+        patch("figmaclaw.commands.pull._git_push"),
+    ):
+        await _run(
+            "key",
+            tmp_path,
+            None,
+            False,
+            None,
+            True,
+            1,
+            None,
+            "all",
+            per_file_timeout_s=0.05,
+        )
+
+    out = capsys.readouterr().out
+    assert "SYNC_OBS_PULL event=page_auto_commit" in out
+    assert "page_label=My_File_/_Slow_Page" in out
+    assert "SYNC_OBS_PULL event=file_end file_key=fileA outcome=file_timeout" in out
+    assert "auto_commits=1" in out
+
+
 # --- _compute_raw_frames ---
 
 
