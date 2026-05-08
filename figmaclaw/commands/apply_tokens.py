@@ -14,6 +14,7 @@ from figmaclaw.apply_tokens import (
     DEFAULT_NAMESPACE,
     DEFAULT_SIGNATURE_ABORT_THRESHOLD,
     EXIT_OPERATOR_ACTION_REQUIRED,
+    OperatorAction,
     apply_plan_report,
     load_apply_token_input,
     operator_action_for_signature,
@@ -28,6 +29,7 @@ from figmaclaw.commands.reporting import (
     resolve_repo_path,
     write_json_output,
 )
+from figmaclaw.figma_variables_mcp import _candidate_payloads, _parse_candidate
 from figmaclaw.token_catalog import (
     TokenCatalog,
     catalog_staleness_errors,
@@ -236,6 +238,7 @@ def apply_tokens_cmd(
         namespace=namespace,
         node_map=node_map,  # type: ignore[arg-type]
         catalog=catalog,
+        library_hashes=library_hashes,
         signature_abort_threshold=threshold,
     )
     report["batch_manifest"] = batch_result["manifest"]
@@ -257,45 +260,68 @@ def apply_tokens_cmd(
     # F48: if any batch's runtime aborted on a class-level signature,
     # promote ONE F36 block to the human path and exit with the
     # operator-action code so wrappers can route the failure to a human.
-    abort = _first_signature_abort(execution)
-    if abort is not None:
-        report["operator_action"] = {
-            "signature": abort["signature"],
-            "count": abort["count"],
-            "sample_rows": abort.get("sample_rows") or [],
-            "instruction": operator_action_for_signature(abort["signature"]),
-        }
+    aborts = _collect_signature_aborts(execution)
+    if aborts:
+        # Sort by count desc, signature asc — surface the dominant
+        # signature first so the operator sees the most-frequent failure
+        # at the top, with any additional aborts listed beneath.
+        aborts.sort(key=lambda a: (-int(a.get("count") or 0), str(a.get("signature") or "")))
+        primary = aborts[0]
+        action = OperatorAction(
+            signature=str(primary.get("signature") or ""),
+            count=int(primary.get("count") or 0),
+            sample_rows=[str(r) for r in (primary.get("sample_rows") or [])],
+            instruction=operator_action_for_signature(str(primary.get("signature") or "")),
+            additional_signatures=[
+                {
+                    "signature": str(a.get("signature") or ""),
+                    "count": int(a.get("count") or 0),
+                }
+                for a in aborts[1:]
+            ],
+        )
+        report["operator_action"] = action.model_dump(mode="json")
         emit_json_value(report)
-        action = report["operator_action"]
         click.echo(
-            f"⚠️  ACTION REQUIRED — {action['signature']} hit "
-            f"{action['count']} times; aborting. {action['instruction']}",
+            f"⚠️  ACTION REQUIRED — {action.signature} hit "
+            f"{action.count} time(s); aborting. {action.instruction}",
             err=True,
         )
+        for extra in action.additional_signatures:
+            click.echo(f"   also seen: {extra['signature']} ×{extra['count']}", err=True)
         ctx.exit(EXIT_OPERATOR_ACTION_REQUIRED)
     emit_json_value(report)
 
 
-def _first_signature_abort(execution: Any) -> dict | None:
-    """Walk an execution result for the first signatureAbort returned by a batch.
+def _collect_signature_aborts(execution: Any) -> list[dict[str, Any]]:
+    """Return every per-batch ``signatureAbort`` payload in execution order.
 
-    The use_figma executor returns a list-of-batch-results; each batch's
-    return value (the JS template's ``summary``) carries a
-    ``signatureAbort`` field when the per-row loop bailed early. Returning
-    the first occurrence is enough to drive the F36 surface — the
-    threshold guarantees we are confident this signature dominates.
+    The use_figma executor returns ``{"calls": [{"index", "result", ...}]}``
+    where ``result`` is the MCP ``tools/call`` result — the JS template's
+    return value lives inside ``result["structuredContent"]`` (preferred)
+    or as a JSON-stringified ``result["content"][0]["text"]``. We reuse
+    the existing :func:`_candidate_payloads` / :func:`_parse_candidate`
+    extractor so the same parsing logic the variables MCP path uses
+    drives the abort discovery here.
     """
+    aborts: list[dict[str, Any]] = []
     if not isinstance(execution, dict):
-        return None
-    for batch_result in execution.get("batches") or []:
-        if not isinstance(batch_result, dict):
+        return aborts
+    for call_record in execution.get("calls") or []:
+        if not isinstance(call_record, dict):
             continue
-        result = batch_result.get("result")
-        if isinstance(result, dict):
-            abort = result.get("signatureAbort")
+        result = call_record.get("result")
+        if not isinstance(result, dict):
+            continue
+        for candidate in _candidate_payloads(result):
+            parsed = _parse_candidate(candidate)
+            if not isinstance(parsed, dict):
+                continue
+            abort = parsed.get("signatureAbort")
             if isinstance(abort, dict) and abort.get("signature"):
-                return abort
-    return None
+                aborts.append(abort)
+                break  # one abort per call is the contract
+    return aborts
 
 
 def _resolve_library_filter(catalog: TokenCatalog, libraries: tuple[str, ...]) -> set[str] | None:

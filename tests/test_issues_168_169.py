@@ -270,19 +270,31 @@ def test_issue_169_cli_exit_code_on_signature_abort(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
+    # Match the real shape returned by `execute_use_figma_calls`:
+    # `{"calls": [{"index", "result": <MCP tools/call result>, ...}]}`
+    # The JS summary lives inside the MCP `result.structuredContent` —
+    # the shape `_call_use_figma` returns from MCP `tools/call`.
     fake_execution = {
-        "ok": False,
-        "batches": [
+        "mode": "execute",
+        "total": 1,
+        "executed": 1,
+        "failures": 1,
+        "calls": [
             {
+                "index": 1,
+                "description": "apply design token bindings batch 0001",
+                "isError": False,
                 "result": {
-                    "ok": False,
-                    "stats": {"applied": 0, "errors": 5},
-                    "signatureAbort": {
-                        "signature": "unloadable_font:Boldonse Bold",
-                        "count": 5,
-                        "sample_rows": ["1:2", "1:3", "1:4"],
-                    },
-                }
+                    "structuredContent": {
+                        "ok": False,
+                        "stats": {"applied": 0, "errors": 5},
+                        "signatureAbort": {
+                            "signature": "unloadable_font:Boldonse Bold",
+                            "count": 5,
+                            "sample_rows": ["1:2", "1:3", "1:4"],
+                        },
+                    }
+                },
             }
         ],
     }
