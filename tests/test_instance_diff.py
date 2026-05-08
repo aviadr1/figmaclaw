@@ -308,6 +308,43 @@ async def test_diff_instance_against_master_resolves_from_component_metadata() -
 
 
 @pytest.mark.asyncio
+async def test_diff_instance_against_master_fetches_normalized_node_id() -> None:
+    instance = _matching_instance()
+    instance["id"] = "10:2"
+    client = MagicMock()
+    client.get_nodes_response = AsyncMock(
+        side_effect=[
+            {
+                "nodes": {"10:2": {"document": instance}},
+                "components": {
+                    "99:1": {
+                        "key": COMPONENT_KEY,
+                        "file_key": "ds-file",
+                        "node_id": "99:1",
+                        "library_hash": CURRENT_HASH,
+                    }
+                },
+            },
+            {
+                "nodes": {"99:1": {"document": _master_node()}},
+            },
+        ]
+    )
+    client.get_nodes = AsyncMock(return_value={"99:1": _master_node()})
+    client.get_component_set = AsyncMock(return_value={})
+
+    diff = await diff_instance_against_master(
+        client,
+        "file123",
+        "10-2",
+        current_ds_library_hashes={CURRENT_HASH},
+    )
+
+    assert diff.instance.node_id == "10:2"
+    assert client.get_nodes_response.await_args_list[0].args == ("file123", ["10:2"])
+
+
+@pytest.mark.asyncio
 async def test_diff_instance_against_master_marks_fetch_failure_unresolvable() -> None:
     instance = _matching_instance()
     client = MagicMock()

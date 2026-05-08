@@ -115,7 +115,7 @@ async def diff_instance_against_master(
 ) -> InstanceDiff:
     """Fetch an instance and compare supported properties against its master."""
     normalized_instance_id = normalize_node_id(instance_node_id)
-    instance_payload = await client.get_nodes_response(file_key, [instance_node_id], depth=1)
+    instance_payload = await client.get_nodes_response(file_key, [normalized_instance_id], depth=1)
     instance_node = _node_from_response(instance_payload, normalized_instance_id)
     if instance_node.get("type") != "INSTANCE":
         raise ValueError(f"{instance_node_id}: expected INSTANCE, got {instance_node.get('type')}")
@@ -212,7 +212,7 @@ async def diff_instances_against_masters(
     instance_payload = await _fetch_nodes_response_chunks(
         client,
         file_key,
-        instance_node_ids,
+        normalized_ids,
     )
     component_cache: dict[str, dict[str, Any]] = {}
     component_set_cache: dict[str, dict[str, Any]] = {}
