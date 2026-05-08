@@ -1,0 +1,99 @@
+name: Auto-bump version on PR
+
+# Eliminates the spurious "version must increase" red on PR creation /
+# subsequent pushes. When `check_version_bump.py` would fail, this workflow
+# runs `bump_version.py` + `uv lock`, then commits + pushes the bump back
+# to the PR branch as `github-actions[bot]`.
+#
+# Avoids loops:
+#   * Skips on fork PRs (no write permission to fork branches).
+#   * Skips when the bot itself made the latest commit (defensive).
+#   * The bot's own push triggers `pull_request: synchronize` again, but
+#     `check_version_bump.py` then exits 0 (already bumped) and this job
+#     no-ops on the second run.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  # Per PR: don't run two auto-bumps in parallel and produce a conflict.
+  group: auto-bump-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  auto-bump:
+    runs-on: ubuntu-latest
+    # Same-repo PRs only. Fork PRs run with read-only token; can't push back.
+    if: |
+      github.event.pull_request.head.repo.full_name == github.repository
+      && github.actor != 'github-actions[bot]'
+    steps:
+      - name: Checkout PR branch with full history
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: python -m pip install --upgrade uv
+
+      - name: Detect whether the version bump is missing
+        id: check
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if python3 scripts/check_version_bump.py --base-ref "$BASE_SHA"; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            echo "Version already bumped; nothing to do."
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+            echo "Version bump missing; will auto-bump."
+          fi
+        # check_version_bump.py exits non-zero when bump is missing. We want to
+        # interpret that as "yes, bump is needed" rather than fail the workflow.
+        continue-on-error: true
+
+      - name: Bump version + relock
+        if: steps.check.outputs.needed == 'true'
+        env:
+          TRIGGER_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          python3 scripts/bump_version.py \
+            --trigger-sha "$TRIGGER_SHA" \
+            --trigger-msg "PR #$PR_NUMBER: $PR_TITLE"
+          uv lock
+
+      - name: Commit + push the bump back to the PR branch
+        if: steps.check.outputs.needed == 'true'
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            .claude-plugin/marketplace.json \
+            .claude-plugin/plugin.json \
+            figmaclaw/_build_info.py \
+            pyproject.toml \
+            uv.lock
+          # Defensive: only commit if we actually have changes staged.
+          if git diff --cached --quiet; then
+            echo "No staged changes after bump_version + uv lock; skipping commit."
+            exit 0
+          fi
+          git commit -m "chore: auto-bump version for PR #${PR_NUMBER}"
+          git push
