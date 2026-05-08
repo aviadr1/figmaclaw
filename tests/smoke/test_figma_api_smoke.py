@@ -561,6 +561,7 @@ async def test_pull_migrates_legacy_unkeyed_paths_to_full_key_slug_real_api(
 async def test_schema_upgrade_backfills_instance_component_ids_without_body_rewrite(
     tmp_path,
     client: FigmaClient,  # type: ignore[no-untyped-def]
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Smoke: schema-stale pull restores missing inventory keys while preserving markdown body.
 
@@ -612,6 +613,7 @@ async def test_schema_upgrade_backfills_instance_component_ids_without_body_rewr
     # write budget. Avoid max_pages=None here: the live Web App file is large
     # enough that pulling every page can make CI smoke runs unboundedly slow.
     second_pull_budget = len(first.md_paths)
+    caplog.clear()
     upgraded = await _pull_smoke_file(
         client, TEST_FILE_KEY, state, tmp_path, max_pages=second_pull_budget
     )
@@ -635,6 +637,13 @@ async def test_schema_upgrade_backfills_instance_component_ids_without_body_rewr
     text_after = page_md.read_text()
     body_after = _body_from_rendered_markdown(text_after)
     assert body_after == body_before
+    if not _has_populated_instance_component_ids(text_after) and any(
+        "raw_frames will be omitted" in record.getMessage() for record in caplog.records
+    ):
+        pytest.skip(
+            "Figma API omitted raw frame inventory during live schema-upgrade smoke; "
+            "instance_component_ids backfill invariant is inconclusive"
+        )
     assert _has_populated_instance_component_ids(text_after)
 
 
