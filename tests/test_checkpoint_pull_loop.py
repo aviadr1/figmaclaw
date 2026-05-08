@@ -53,6 +53,9 @@ esac
 set -euo pipefail
 TRACE_FILE="${TRACE_FILE:?}"
 echo "git $*" >> "$TRACE_FILE"
+if [ "${1:-}" = "push" ] && [ "${GIT_PUSH_FAIL:-0}" = "1" ]; then
+  exit 1
+fi
 if [ "${1:-}" = "diff" ] && [ "${GIT_DIRTY:-0}" = "1" ]; then
   exit 1
 fi
@@ -127,6 +130,7 @@ def _run_loop(
             "TIMEOUT_COUNT_FILE": str(timeout_count),
             "SCENARIO": scenario,
             "GIT_DIRTY": git_dirty,
+            "GIT_PUSH_FAIL": "0",
             "TIMEOUT_MODE": timeout_mode,
             "MAX_BATCHES": "10",
             "MAX_IDLE_HAS_MORE_BATCHES": "3",
@@ -516,7 +520,41 @@ def test_timeout_treats_flushed_auto_commit_as_progress(tmp_path: Path) -> None:
 
     events_text = (obs_dir / "checkpoint_events.csv").read_text()
     assert "partial_commit_on_timeout" in events_text
-    assert "timeout auto-commit saved work" in events_text
+    assert "timeout after auto-committed progress" in events_text
+    assert "retrying with --max-pages 4" in out
+
+
+def test_timeout_counts_auto_commit_progress_even_when_flush_push_fails(
+    tmp_path: Path,
+) -> None:
+    """Regression from linear-git CI.
+
+    `figmaclaw pull --auto-commit --push-every 1` can push many page commits
+    before the outer batch timeout fires. A final best-effort `git push` may
+    still fail because origin already moved, but that must not make the wrapper
+    report `total_commits=0` or stop as `timeout_no_progress_stop`.
+    """
+    obs_dir = tmp_path / "obs"
+    out = _run_loop(
+        tmp_path,
+        scenario="auto_commit_then_has_more",
+        git_dirty="0",
+        timeout_mode="first_only",
+        MAX_PAGES_PER_BATCH="8",
+        FIGMACLAW_SYNC_OBS_DIR=str(obs_dir),
+        AUTO_COMMIT_ENABLED="true",
+        PUSH_EVERY="1",
+        GIT_PUSH_FAIL="1",
+    )
+
+    events_text = (obs_dir / "checkpoint_events.csv").read_text()
+    summary_text = (obs_dir / "checkpoint_summary.txt").read_text()
+    assert "auto_commit_progress" in events_text
+    assert "auto_commit_flush_failed" in events_text
+    assert "partial_commit_on_timeout" in events_text
+    assert "timeout_no_progress_stop" not in events_text
+    assert "total_auto_commits=10" in summary_text
+    assert "total_commits=10" in summary_text
     assert "retrying with --max-pages 4" in out
 
 
