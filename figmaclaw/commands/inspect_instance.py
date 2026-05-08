@@ -39,8 +39,19 @@ def inspect_instance_cmd(
         *config.design_system_library_hashes,
         *(value.strip() for value in current_ds_hashes if value.strip()),
     }
+    current_file_keys = set(config.design_system_file_keys)
+    current_published_keys = {*config.design_system_published_keys, *current_hashes}
     try:
-        result = asyncio.run(_run(api_key, file_key, node_id, current_hashes))
+        result = asyncio.run(
+            _run(
+                api_key,
+                file_key,
+                node_id,
+                current_hashes,
+                current_file_keys,
+                current_published_keys,
+            )
+        )
     except ValueError as exc:
         raise click.UsageError(str(exc)) from exc
     except httpx.HTTPStatusError as exc:
@@ -53,6 +64,8 @@ async def _run(
     file_key: str,
     node_id: str,
     current_ds_hashes: set[str],
+    current_ds_file_keys: set[str],
+    current_ds_published_keys: set[str],
 ) -> InstanceDiff:
     async with FigmaClient(api_key) as client:
         return await diff_instance_against_master(
@@ -60,4 +73,6 @@ async def _run(
             file_key,
             node_id,
             current_ds_library_hashes=current_ds_hashes,
+            current_ds_file_keys=current_ds_file_keys,
+            current_ds_published_keys=current_ds_published_keys,
         )

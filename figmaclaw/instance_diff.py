@@ -96,6 +96,8 @@ async def diff_instance_against_master(
     instance_node_id: str,
     *,
     current_ds_library_hashes: set[str],
+    current_ds_file_keys: set[str] | None = None,
+    current_ds_published_keys: set[str] | None = None,
 ) -> InstanceDiff:
     """Fetch an instance and compare supported properties against its master."""
     normalized_instance_id = normalize_node_id(instance_node_id)
@@ -105,24 +107,48 @@ async def diff_instance_against_master(
         raise ValueError(f"{instance_node_id}: expected INSTANCE, got {instance_node.get('type')}")
 
     component_meta = _component_meta_for_instance(instance_payload, instance_node)
+    component_set_meta = _component_set_meta_for_component(instance_payload, component_meta)
     master_ref = await _resolve_master_ref(
         client,
         file_key=file_key,
         instance_node=instance_node,
         component_meta=component_meta,
+        component_set_meta=component_set_meta,
         current_ds_library_hashes=current_ds_library_hashes,
+        current_ds_file_keys=current_ds_file_keys or set(),
+        current_ds_published_keys=current_ds_published_keys or set(),
     )
 
     master_node: dict[str, Any] | None = None
     component_set_node: dict[str, Any] | None = None
     if master_ref.file_key and master_ref.node_id:
-        master_node = await _fetch_optional_node(client, master_ref.file_key, master_ref.node_id)
+        master_payload = await _fetch_optional_node_response(
+            client,
+            master_ref.file_key,
+            master_ref.node_id,
+        )
+        master_node = _optional_node_from_response(master_payload, master_ref.node_id)
         master_ref.is_resolvable = master_node is not None
-        component_set_id = _component_set_id(component_meta, master_node)
+        master_component_meta = _metadata_for_node(master_payload, "components", master_ref.node_id)
+        master_component_set_meta = _component_set_meta_for_component(
+            master_payload,
+            master_component_meta,
+        )
+        _update_master_ref_from_metadata(
+            master_ref,
+            component_meta=master_component_meta,
+            component_set_meta=master_component_set_meta,
+            current_ds_library_hashes=current_ds_library_hashes,
+            current_ds_file_keys=current_ds_file_keys or set(),
+            current_ds_published_keys=current_ds_published_keys or set(),
+        )
+        component_set_id = _component_set_id(master_component_meta or component_meta, master_node)
         if component_set_id and master_ref.file_key:
             component_set_node = await _fetch_optional_node(
                 client, master_ref.file_key, component_set_id
             )
+        if component_set_node is None and master_component_set_meta:
+            component_set_node = master_component_set_meta
         if component_set_node is None and master_ref.component_set_key:
             component_set_meta = await _fetch_component_set_meta(
                 client,
@@ -157,23 +183,33 @@ def diff_nodes_against_master(
     master_node_id: str | None,
     master_library_hash: str | None,
     master_published_key: str | None = None,
+    master_component_key: str | None = None,
+    master_component_set_key: str | None = None,
     current_ds_library_hashes: set[str] | None = None,
+    current_ds_file_keys: set[str] | None = None,
+    current_ds_published_keys: set[str] | None = None,
     component_set_node: dict[str, Any] | None = None,
 ) -> InstanceDiff:
     """Pure helper for tests and callers that already have both node payloads."""
-    hashes = current_ds_library_hashes or set()
     node_id = str(instance_node.get("id") or "")
+    master = MasterRef(
+        file_key=master_file_key,
+        node_id=normalize_node_id(master_node_id) if master_node_id else None,
+        library_hash=master_library_hash,
+        published_key=master_published_key,
+        component_key=master_component_key,
+        component_set_key=master_component_set_key,
+        is_resolvable=master_node is not None,
+    )
+    master.is_current_ds = _is_current_ds(
+        master,
+        current_ds_library_hashes=current_ds_library_hashes or set(),
+        current_ds_file_keys=current_ds_file_keys or set(),
+        current_ds_published_keys=current_ds_published_keys or set(),
+    )
     return _build_instance_diff(
         instance=InstanceRef(file_key=file_key, node_id=normalize_node_id(node_id)),
-        master=MasterRef(
-            file_key=master_file_key,
-            node_id=normalize_node_id(master_node_id) if master_node_id else None,
-            library_hash=master_library_hash,
-            published_key=master_published_key,
-            component_set_key=master_published_key,
-            is_current_ds=bool(master_library_hash and master_library_hash in hashes),
-            is_resolvable=master_node is not None,
-        ),
+        master=master,
         instance_node=instance_node,
         master_node=master_node,
         component_set_node=component_set_node,
@@ -218,14 +254,60 @@ def _component_meta_for_instance(
     component_id = instance_node.get("componentId")
     if not isinstance(component_id, str) or not component_id:
         return {}
-    components = payload.get("components")
-    if not isinstance(components, Mapping):
+    return _metadata_for_node(payload, "components", component_id)
+
+
+def _component_set_meta_for_component(
+    payload: Mapping[str, Any],
+    component_meta: Mapping[str, Any],
+) -> dict[str, Any]:
+    component_set_id = _first_str(component_meta, "componentSetId", "component_set_id")
+    if not component_set_id:
         return {}
-    for key in (component_id, component_id.replace(":", "-"), normalize_node_id(component_id)):
-        value = components.get(key)
+    return _metadata_for_node(payload, "componentSets", component_set_id)
+
+
+def _metadata_for_node(
+    payload: Mapping[str, Any],
+    map_name: str,
+    node_id: str,
+) -> dict[str, Any]:
+    values = payload.get(map_name)
+    if not isinstance(values, Mapping):
+        return {}
+    for key in _node_id_keys(node_id):
+        value = values.get(key)
         if isinstance(value, dict):
             return value
     return {}
+
+
+def _node_id_keys(node_id: str) -> tuple[str, str, str]:
+    normalized = normalize_node_id(node_id)
+    return (node_id, node_id.replace(":", "-"), normalized)
+
+
+async def _fetch_optional_node_response(
+    client: FigmaClient,
+    file_key: str,
+    node_id: str,
+) -> dict[str, Any]:
+    try:
+        return await client.get_nodes_response(file_key, [node_id], depth=1)
+    except httpx.HTTPStatusError:
+        return {}
+
+
+def _optional_node_from_response(
+    payload: Mapping[str, Any],
+    node_id: str,
+) -> dict[str, Any] | None:
+    if not payload:
+        return None
+    try:
+        return _node_from_response(payload, normalize_node_id(node_id))
+    except ValueError:
+        return None
 
 
 async def _resolve_master_ref(
@@ -234,13 +316,20 @@ async def _resolve_master_ref(
     file_key: str,
     instance_node: Mapping[str, Any],
     component_meta: dict[str, Any],
+    component_set_meta: dict[str, Any],
     current_ds_library_hashes: set[str],
+    current_ds_file_keys: set[str],
+    current_ds_published_keys: set[str],
 ) -> MasterRef:
     component_id = _str_or_none(instance_node.get("componentId"))
     component_key = _first_str(component_meta, "key") or _str_or_none(
         instance_node.get("componentKey")
     )
-    component_set_key = _first_str(component_meta, "componentSetKey", "component_set_key")
+    component_set_key = _first_str(component_set_meta, "key") or _first_str(
+        component_meta,
+        "componentSetKey",
+        "component_set_key",
+    )
     meta = dict(component_meta)
     if component_key and (not meta.get("file_key") or not meta.get("node_id")):
         remote_meta = await _fetch_component_meta(client, component_key)
@@ -251,35 +340,95 @@ async def _resolve_master_ref(
     master_node_id = _first_str(meta, "node_id", "nodeId") or component_id
     library_hash = _first_str(meta, "library_hash", "libraryHash")
     published_key = component_set_key or component_key
-    return MasterRef(
+    master = MasterRef(
         file_key=master_file_key,
         node_id=normalize_node_id(master_node_id) if master_node_id else None,
         library_hash=library_hash,
         published_key=published_key,
         component_key=component_key,
         component_set_key=component_set_key,
-        is_current_ds=bool(library_hash and library_hash in current_ds_library_hashes),
         is_resolvable=False,
+    )
+    _update_master_ref_from_metadata(
+        master,
+        component_meta=component_meta,
+        component_set_meta=component_set_meta,
+        current_ds_library_hashes=current_ds_library_hashes,
+        current_ds_file_keys=current_ds_file_keys,
+        current_ds_published_keys=current_ds_published_keys,
+    )
+    return master
+
+
+def _update_master_ref_from_metadata(
+    master: MasterRef,
+    *,
+    component_meta: Mapping[str, Any],
+    component_set_meta: Mapping[str, Any],
+    current_ds_library_hashes: set[str],
+    current_ds_file_keys: set[str],
+    current_ds_published_keys: set[str],
+) -> None:
+    component_key = _first_str(component_meta, "key")
+    component_set_key = _first_str(component_set_meta, "key") or _first_str(
+        component_meta,
+        "componentSetKey",
+        "component_set_key",
+    )
+    library_hash = _first_str(component_meta, "library_hash", "libraryHash")
+    if component_key:
+        master.component_key = component_key
+    if component_set_key:
+        master.component_set_key = component_set_key
+    if library_hash:
+        master.library_hash = library_hash
+    master.published_key = master.component_set_key or master.component_key or master.published_key
+    master.is_current_ds = _is_current_ds(
+        master,
+        current_ds_library_hashes=current_ds_library_hashes,
+        current_ds_file_keys=current_ds_file_keys,
+        current_ds_published_keys=current_ds_published_keys,
     )
 
 
-async def _fetch_component_meta(client: FigmaClient, component_key: str) -> dict[str, Any]:
+def _is_current_ds(
+    master: MasterRef,
+    *,
+    current_ds_library_hashes: set[str],
+    current_ds_file_keys: set[str],
+    current_ds_published_keys: set[str],
+) -> bool:
+    current_ds_identifiers = current_ds_library_hashes | current_ds_published_keys
+    return any(
+        (
+            bool(master.library_hash and master.library_hash in current_ds_identifiers),
+            bool(master.file_key and master.file_key in current_ds_file_keys),
+            bool(master.published_key and master.published_key in current_ds_identifiers),
+            bool(master.component_key and master.component_key in current_ds_identifiers),
+            bool(master.component_set_key and master.component_set_key in current_ds_identifiers),
+        )
+    )
+
+
+async def _fetch_optional_meta(fetch: Any, key: str | None) -> dict[str, Any]:
+    if not key:
+        return {}
     try:
-        return await client.get_component(component_key)
+        result = await fetch(key)
     except httpx.HTTPStatusError:
         return {}
+    return result if isinstance(result, dict) else {}
+
+
+async def _fetch_component_meta(client: FigmaClient, component_key: str) -> dict[str, Any]:
+    return await _fetch_optional_meta(client.get_component, component_key)
 
 
 async def _fetch_component_set_meta(
     client: FigmaClient,
     component_set_key: str | None,
 ) -> dict[str, Any]:
-    if not component_set_key:
-        return {}
-    try:
-        return await client.get_component_set(component_set_key)
-    except httpx.HTTPStatusError:
-        return {}
+    return await _fetch_optional_meta(client.get_component_set, component_set_key)
 
 
 async def _fetch_optional_node(

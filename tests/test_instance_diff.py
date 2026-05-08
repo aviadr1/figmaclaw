@@ -116,6 +116,48 @@ def test_instance_diff_old_ds_master_classification() -> None:
     assert diff.master.is_current_ds is False
 
 
+def test_instance_diff_current_ds_can_match_file_or_published_key() -> None:
+    by_file = diff_nodes_against_master(
+        file_key="file123",
+        instance_node=_matching_instance(),
+        master_node=_master_node(),
+        master_file_key="ds-file",
+        master_node_id="99:1",
+        master_library_hash=None,
+        current_ds_library_hashes=set(),
+        current_ds_file_keys={"ds-file"},
+    )
+    by_component_key = diff_nodes_against_master(
+        file_key="file123",
+        instance_node=_matching_instance(),
+        master_node=_master_node(),
+        master_file_key="remote-file",
+        master_node_id="99:1",
+        master_library_hash=None,
+        master_component_key=COMPONENT_KEY,
+        current_ds_library_hashes=set(),
+        current_ds_published_keys={COMPONENT_KEY},
+    )
+    by_component_set_key = diff_nodes_against_master(
+        file_key="file123",
+        instance_node=_matching_instance(),
+        master_node=_master_node(),
+        master_file_key="remote-file",
+        master_node_id="99:1",
+        master_library_hash=None,
+        master_component_set_key=COMPONENT_SET_KEY,
+        current_ds_library_hashes=set(),
+        current_ds_published_keys={COMPONENT_SET_KEY},
+    )
+
+    assert by_file.master.is_current_ds is True
+    assert by_component_key.master.is_current_ds is True
+    assert by_component_key.master.component_key == COMPONENT_KEY
+    assert by_component_key.master.component_set_key is None
+    assert by_component_set_key.master.is_current_ds is True
+    assert by_component_set_key.master.component_set_key == COMPONENT_SET_KEY
+
+
 def test_instance_diff_unresolvable_master() -> None:
     diff = diff_nodes_against_master(
         file_key="file123",
@@ -222,18 +264,25 @@ async def test_diff_instance_against_master_resolves_from_component_metadata() -
     master = _master_node()
     client = MagicMock()
     client.get_nodes_response = AsyncMock(
-        return_value={
-            "nodes": {"10:2": {"document": instance}},
-            "components": {
-                "99:1": {
-                    "key": COMPONENT_KEY,
-                    "componentSetKey": COMPONENT_SET_KEY,
-                    "file_key": "ds-file",
-                    "node_id": "99:1",
-                    "library_hash": CURRENT_HASH,
-                }
+        side_effect=[
+            {
+                "nodes": {"10:2": {"document": instance}},
+                "components": {
+                    "99:1": {
+                        "key": COMPONENT_KEY,
+                        "componentSetKey": COMPONENT_SET_KEY,
+                        "file_key": "ds-file",
+                        "node_id": "99:1",
+                        "library_hash": CURRENT_HASH,
+                    }
+                },
             },
-        }
+            {
+                "nodes": {"99:1": {"document": master}},
+                "components": {},
+                "componentSets": {},
+            },
+        ]
     )
     client.get_nodes = AsyncMock(return_value={"99:1": master})
     client.get_component_set = AsyncMock(return_value={})
@@ -252,7 +301,8 @@ async def test_diff_instance_against_master_resolves_from_component_metadata() -
     assert diff.master.library_hash == CURRENT_HASH
     assert diff.master.is_current_ds is True
     assert diff.master.is_resolvable is True
-    client.get_nodes.assert_awaited_once_with("ds-file", ["99:1"], depth=1)
+    assert client.get_nodes_response.await_args_list[1].args == ("ds-file", ["99:1"])
+    assert client.get_nodes_response.await_args_list[1].kwargs == {"depth": 1}
 
 
 @pytest.mark.asyncio
@@ -294,17 +344,24 @@ def test_inspect_instance_cli_prints_instance_diff_json(tmp_path, monkeypatch) -
     fake.__aenter__ = AsyncMock(return_value=fake)
     fake.__aexit__ = AsyncMock(return_value=False)
     fake.get_nodes_response = AsyncMock(
-        return_value={
-            "nodes": {"10:2": {"document": _overridden_instance()}},
-            "components": {
-                "99:1": {
-                    "key": COMPONENT_KEY,
-                    "file_key": "ds-file",
-                    "node_id": "99:1",
-                    "library_hash": CURRENT_HASH,
-                }
+        side_effect=[
+            {
+                "nodes": {"10:2": {"document": _overridden_instance()}},
+                "components": {
+                    "99:1": {
+                        "key": COMPONENT_KEY,
+                        "file_key": "ds-file",
+                        "node_id": "99:1",
+                        "library_hash": CURRENT_HASH,
+                    }
+                },
             },
-        }
+            {
+                "nodes": {"99:1": {"document": _master_node()}},
+                "components": {},
+                "componentSets": {},
+            },
+        ]
     )
     fake.get_nodes = AsyncMock(return_value={"99:1": _master_node()})
     monkeypatch.setenv("FIGMA_API_KEY", "figd_test")
@@ -363,7 +420,6 @@ async def test_diff_instance_against_master_uses_component_key_for_remote_master
         return_value={
             "file_key": "ds-file",
             "node_id": "99:1",
-            "library_hash": CURRENT_HASH,
         }
     )
     client.get_component_set = AsyncMock(
@@ -379,7 +435,8 @@ async def test_diff_instance_against_master_uses_component_key_for_remote_master
         client,
         "file123",
         "10:2",
-        current_ds_library_hashes={CURRENT_HASH},
+        current_ds_library_hashes=set(),
+        current_ds_file_keys={"ds-file"},
     )
 
     client.get_component.assert_awaited_once_with(COMPONENT_KEY)
@@ -387,6 +444,54 @@ async def test_diff_instance_against_master_uses_component_key_for_remote_master
     assert diff.master.published_key == COMPONENT_SET_KEY
     assert diff.master.is_current_ds is True
     assert diff.variant.available[0]["property"] == "size"
+
+
+@pytest.mark.asyncio
+async def test_diff_instance_against_master_reads_master_components_and_component_sets() -> None:
+    instance = _matching_instance()
+    instance["componentId"] = "99:1"
+    master = _master_node()
+    client = MagicMock()
+    client.get_nodes_response = AsyncMock(
+        side_effect=[
+            {
+                "nodes": {"10:2": {"document": instance}},
+                "components": {},
+                "componentSets": {},
+            },
+            {
+                "nodes": {"99:1": {"document": master}},
+                "components": {
+                    "99:1": {
+                        "key": COMPONENT_KEY,
+                        "name": "color=primary, size=lg",
+                        "remote": True,
+                        "componentSetId": "88:1",
+                    }
+                },
+                "componentSets": {
+                    "88:1": {
+                        "key": COMPONENT_SET_KEY,
+                        "name": "button",
+                        "remote": True,
+                    }
+                },
+            },
+        ]
+    )
+    client.get_nodes = AsyncMock(return_value={})
+
+    diff = await diff_instance_against_master(
+        client,
+        "file123",
+        "10:2",
+        current_ds_library_hashes={COMPONENT_SET_KEY},
+    )
+
+    assert diff.master.component_key == COMPONENT_KEY
+    assert diff.master.component_set_key == COMPONENT_SET_KEY
+    assert diff.master.published_key == COMPONENT_SET_KEY
+    assert diff.master.is_current_ds is True
 
 
 def test_inspect_instance_cli_reports_usage_error_for_non_instance(tmp_path, monkeypatch) -> None:

@@ -16,6 +16,8 @@ class FigmaclawConfig:
 
     license_type: str = "professional"
     design_system_library_hashes: tuple[str, ...] = ()
+    design_system_file_keys: tuple[str, ...] = ()
+    design_system_published_keys: tuple[str, ...] = ()
 
     def is_enterprise(self) -> bool:
         return self.license_type == "enterprise"
@@ -29,6 +31,10 @@ def load_config(repo_dir: Path) -> FigmaclawConfig:
     * ``pyproject.toml``: ``[tool.figmaclaw] license_type = "enterprise"``
     * ``pyproject.toml``:
       ``[tool.figmaclaw.design_system] library_hashes = ["..."]``
+    * ``pyproject.toml``:
+      ``[tool.figmaclaw.design_system] file_keys = ["..."]``
+    * ``pyproject.toml``:
+      ``[tool.figmaclaw.design_system] published_keys = ["..."]``
     * ``figmaclaw.json`` or ``.figmaclaw.json`` with the same keys
     * env override: ``FIGMACLAW_LICENSE_TYPE=enterprise``
     * env override:
@@ -54,6 +60,8 @@ def load_config(repo_dir: Path) -> FigmaclawConfig:
     return FigmaclawConfig(
         license_type=license_type,
         design_system_library_hashes=_design_system_hashes(values),
+        design_system_file_keys=_design_system_values(values, "file_keys"),
+        design_system_published_keys=_design_system_values(values, "published_keys"),
     )
 
 
@@ -90,19 +98,23 @@ def _load_json_config(repo_dir: Path) -> dict[str, Any]:
 
 
 def _design_system_hashes(values: dict[str, Any]) -> tuple[str, ...]:
+    return _design_system_values(values, "library_hashes")
+
+
+def _design_system_values(values: dict[str, Any], key: str) -> tuple[str, ...]:
     design_system = values.get("design_system")
     if not isinstance(design_system, dict):
         return ()
-    raw_hashes = design_system.get("library_hashes")
-    if isinstance(raw_hashes, str):
-        raw_values: list[Any] = [raw_hashes]
-    elif isinstance(raw_hashes, list):
-        raw_values = raw_hashes
+    raw_values = design_system.get(key)
+    if isinstance(raw_values, str):
+        values_list: list[Any] = [raw_values]
+    elif isinstance(raw_values, list):
+        values_list = raw_values
     else:
         return ()
-    hashes = []
-    for value in raw_values:
+    normalized = []
+    for value in values_list:
         text = str(value).strip()
         if text:
-            hashes.append(text)
-    return tuple(dict.fromkeys(hashes))
+            normalized.append(text)
+    return tuple(dict.fromkeys(normalized))
