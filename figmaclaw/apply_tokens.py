@@ -243,7 +243,6 @@ def _from_compact_rows(
             continue
         # Use the catalog-resolved bare name even if the input row carried a
         # prefix — the emitted manifest stays identity-stable across re-runs.
-        variable_id, variable = candidates[0]
         token_str = stripped_token or token_str
         variable_id, variable = candidates[0]
         refusal = _catalog_refusal(

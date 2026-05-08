@@ -280,10 +280,15 @@ for (const row of ROWS) {
     const variantChild = pickVariantChild(componentSet, row.variants || {});
     if (!variantChild) { stats.skipped_no_variant++; recordSkip("no_variant", row); continue; }
 
-    const newInstance = variantChild.createInstance();
+    // Validate the parent + index BEFORE creating the new instance: in the
+    // Figma Plugin API, createInstance() inserts the node into the document
+    // immediately and an early skip would leave it orphaned at the page root.
+    // (#167 Copilot finding 3211338750.)
     const parent = oldInstance.parent;
     const oldIdx = parent && parent.children ? parent.children.indexOf(oldInstance) : -1;
     if (!parent || oldIdx < 0) { stats.skipped_no_parent++; recordSkip("no_parent", row); continue; }
+
+    const newInstance = variantChild.createInstance();
 
     // Place the new instance at the old position.
     if (typeof parent.insertChild === "function") {

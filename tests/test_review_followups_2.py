@@ -467,6 +467,59 @@ def test_copilot_round2_b_unknown_oldcid_does_not_inflate_unique_count(
     assert data["by_old_component_id"] == {"OLD1": 1}
 
 
+# Copilot round-3 findings on commit a25dbca ---------------------------
+
+
+def test_copilot_round3_no_orphan_instance_on_skipped_no_parent_path() -> None:
+    """createInstance() must not run before parent/oldIdx validation.
+
+    The Figma Plugin API inserts the new node into the document on
+    creation; if the row is then skipped, the new instance is left
+    orphaned at the page root. Validate parent + index FIRST.
+    """
+    from figmaclaw.audit_page_swap import render_swap_script
+
+    js = render_swap_script(
+        page_node_id="9559:29",
+        namespace="ns",
+        rows=[],
+    )
+    # The validation block must precede the createInstance() call.
+    parent_check = js.find('recordSkip("no_parent"')
+    create_call = js.find("variantChild.createInstance()")
+    assert 0 < parent_check < create_call, (
+        "parent/oldIdx skip-handler must come BEFORE createInstance() to "
+        "avoid orphaning the new instance at page root"
+    )
+
+
+def test_copilot_round3_apply_tokens_no_duplicate_unpack(tmp_path: Path) -> None:
+    """The token-prefix retry path unpacks `candidates[0]` exactly once."""
+    import inspect
+
+    from figmaclaw.apply_tokens import _from_compact_rows
+
+    src = inspect.getsource(_from_compact_rows)
+    # `variable_id, variable = candidates[0]` should appear exactly once in
+    # the function body — the pre-c229466 dead-duplication regressed; the
+    # fix collapses it to a single unpack after `token_str = stripped_token or ...`.
+    assert src.count("variable_id, variable = candidates[0]") == 1
+
+
+def test_copilot_round3_scheduled_tasks_lock_gitignored(tmp_path: Path) -> None:
+    """The harness lock file is in .gitignore so `git add -A` doesn't pick it up."""
+    gitignore = (Path(__file__).resolve().parents[1] / ".gitignore").read_text(encoding="utf-8")
+    assert ".claude/scheduled_tasks.lock" in gitignore
+
+
+def test_copilot_round3_use_figma_batch_options_documents_last_wins() -> None:
+    """The decorator's docstring matches Click's actual flag_value semantics."""
+    from figmaclaw.use_figma_batches import use_figma_batch_options
+
+    doc = use_figma_batch_options.__doc__ or ""
+    assert "last-wins" in doc or "last one wins" in doc.lower()
+
+
 # README + docs touched (finding #2) -------------------------------------
 
 

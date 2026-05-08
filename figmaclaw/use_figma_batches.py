@@ -139,13 +139,19 @@ def use_figma_batch_options(default_batch_size: int) -> Callable[[Callable], Cal
 
     Both `apply-tokens` and `audit-page swap` expose the same protocol:
 
-      --dry-run / --emit-only / --execute  (mutex flag-value triple)
-      --resume-from N           (1-based, only meaningful in --execute)
-      --continue-on-error       (keep going past a failed batch)
-      --batch-size N            (per-command default)
-      --batch-dir PATH          (mandatory for emit-only / execute)
-      --json                    (structured output)
+      --dry-run / --emit-only / --execute   (last-wins; share the `mode` dest)
+      --resume-from N             (1-based, only meaningful in --execute)
+      --continue-on-error         (keep going past a failed batch)
+      --batch-size N              (per-command default)
+      --batch-dir PATH            (mandatory for emit-only / execute)
+      --json                      (structured output)
 
+    The three mode flags share Click's ``mode`` dest via ``flag_value``, so
+    passing more than one is not an error — the last one on the command line
+    wins. (Click does not enforce mutual exclusion across ``flag_value``
+    options, and a callback-based mutex would surprise operators who
+    interpret ``--dry-run --execute`` as "I changed my mind" — which is the
+    same semantics they get from ``--dry-run`` later in the same line.)
     Centralising the decorator ensures the two commands cannot drift out of
     sync — once we add (say) ``--retry-budget`` here it lights up for both.
     """
