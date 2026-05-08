@@ -244,6 +244,51 @@ def test_manifest_v1_load_migrates_file_schema_to_page_schema(tmp_path: Path):
     assert page.component_schema_versions == {"figma/web-app-abc123/components/buttons-2-1.md": 7}
 
 
+def test_manifest_preserves_unknown_future_schema_fields(tmp_path: Path):
+    """INVARIANT: old writers must not erase manifest fields added by newer schemas."""
+    manifest_path = tmp_path / ".figma-sync" / "manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 99,
+                "future_root_field": {"kept": True},
+                "tracked_files": ["abc123"],
+                "files": {
+                    "abc123": {
+                        "file_name": "Web App",
+                        "version": "v1",
+                        "last_modified": "2026-03-31T00:00:00Z",
+                        "pull_schema_version": 7,
+                        "future_file_field": "do-not-drop",
+                        "pages": {
+                            "0:1": {
+                                "page_name": "Onboarding",
+                                "page_slug": "onboarding-0-1",
+                                "md_path": "figma/web-app-abc123/pages/onboarding-0-1.md",
+                                "page_hash": "deadbeef12345678",
+                                "last_refreshed_at": "2026-03-31T01:00:00Z",
+                                "future_page_field": [1, 2, 3],
+                            }
+                        },
+                    }
+                },
+            }
+        )
+    )
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.manifest.files["abc123"].last_modified = "2026-04-01T00:00:00Z"
+    state.save()
+
+    payload = json.loads(manifest_path.read_text())
+    assert payload["schema_version"] == 99
+    assert payload["future_root_field"] == {"kept": True}
+    assert payload["files"]["abc123"]["future_file_field"] == "do-not-drop"
+    assert payload["files"]["abc123"]["pages"]["0:1"]["future_page_field"] == [1, 2, 3]
+
+
 def test_sync_state_save_skips_manifest_timestamp_only_changes(tmp_path: Path):
     """W-1: manifest timestamp-only updates must not rewrite the committed cache.
 

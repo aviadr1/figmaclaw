@@ -11,7 +11,7 @@ import fnmatch
 from collections.abc import Callable
 from pathlib import Path
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from figmaclaw.figma_utils import write_json_if_changed
 
@@ -25,6 +25,8 @@ class PageEntry(BaseModel):
     md_path is None when the page has no screen sections (all sections are
     component libraries — only component_md_paths are written in that case).
     """
+
+    model_config = ConfigDict(extra="allow")
 
     page_name: str
     page_slug: str
@@ -41,6 +43,8 @@ class PageEntry(BaseModel):
 
 class FileEntry(BaseModel):
     """State for a tracked Figma file."""
+
+    model_config = ConfigDict(extra="allow")
 
     file_name: str
     version: str
@@ -88,6 +92,8 @@ class Manifest(BaseModel):
     ``tracked_files`` if it is already present in ``skipped_files``.
     """
 
+    model_config = ConfigDict(extra="allow")
+
     schema_version: int = CURRENT_MANIFEST_SCHEMA_VERSION
     skip_pages: list[str] = Field(
         default_factory=lambda: ["old-*", "old *", "---"],
@@ -104,7 +110,7 @@ class Manifest(BaseModel):
     @model_validator(mode="after")
     def _migrate_manifest_schema(self) -> Manifest:
         """Upgrade legacy manifest shape without dropping tracked state."""
-        self.schema_version = CURRENT_MANIFEST_SCHEMA_VERSION
+        self.schema_version = max(self.schema_version, CURRENT_MANIFEST_SCHEMA_VERSION)
         return self
 
 
@@ -188,7 +194,10 @@ class FigmaSyncState:
 
     def save(self) -> None:
         """Persist manifest to disk."""
-        self.manifest.schema_version = CURRENT_MANIFEST_SCHEMA_VERSION
+        self.manifest.schema_version = max(
+            self.manifest.schema_version,
+            CURRENT_MANIFEST_SCHEMA_VERSION,
+        )
         self._normalize_schema_versions()
         self._sync_dir.mkdir(parents=True, exist_ok=True)
         write_json_if_changed(
