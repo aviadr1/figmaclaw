@@ -92,6 +92,18 @@ class InstanceDiff(BaseModel):
     override_properties: list[str] = Field(default_factory=list)
 
 
+class InstanceDiffError(BaseModel):
+    """JSON-serializable per-record failure for batch inspection."""
+
+    instance: InstanceRef
+    error: str
+    is_resolvable: Literal[False] = False
+
+
+class NodeNotFoundError(ValueError):
+    """Raised when Figma omits a requested node from a successful /nodes response."""
+
+
 async def diff_instance_against_master(
     client: FigmaClient,
     file_key: str,
@@ -184,7 +196,7 @@ async def diff_instances_against_masters(
     current_ds_library_hashes: set[str],
     current_ds_file_keys: set[str] | None = None,
     current_ds_published_keys: set[str] | None = None,
-) -> list[InstanceDiff]:
+) -> list[InstanceDiff | InstanceDiffError]:
     """Fetch instances in one batch and compare them against their masters.
 
     The CLI uses this for audit/debugger bulk reads. It intentionally keeps the
@@ -204,11 +216,21 @@ async def diff_instances_against_masters(
     )
     component_cache: dict[str, dict[str, Any]] = {}
     component_set_cache: dict[str, dict[str, Any]] = {}
-    rows: list[tuple[dict[str, Any], dict[str, Any], MasterRef]] = []
+    records: list[InstanceDiff | InstanceDiffError | None] = []
+    rows: list[tuple[int, dict[str, Any], dict[str, Any], MasterRef]] = []
     master_ids_by_file: dict[str, list[str]] = defaultdict(list)
 
     for original_id, normalized_id in zip(instance_node_ids, normalized_ids, strict=True):
-        instance_node = _node_from_response(instance_payload, normalized_id)
+        try:
+            instance_node = _node_from_response(instance_payload, normalized_id)
+        except NodeNotFoundError as exc:
+            records.append(
+                InstanceDiffError(
+                    instance=InstanceRef(file_key=file_key, node_id=normalized_id),
+                    error=str(exc),
+                )
+            )
+            continue
         if instance_node.get("type") != "INSTANCE":
             raise ValueError(f"{original_id}: expected INSTANCE, got {instance_node.get('type')}")
 
@@ -225,7 +247,9 @@ async def diff_instances_against_masters(
             current_ds_published_keys=current_ds_published_keys,
             component_cache=component_cache,
         )
-        rows.append((instance_node, component_meta, master_ref))
+        row_index = len(records)
+        records.append(None)
+        rows.append((row_index, instance_node, component_meta, master_ref))
         if master_ref.file_key and master_ref.node_id:
             master_ids_by_file[master_ref.file_key].append(master_ref.node_id)
 
@@ -238,10 +262,17 @@ async def diff_instances_against_masters(
         )
 
     resolved_rows: list[
-        tuple[dict[str, Any], MasterRef, dict[str, Any] | None, dict[str, Any], str | None]
+        tuple[
+            int,
+            dict[str, Any],
+            MasterRef,
+            dict[str, Any] | None,
+            dict[str, Any],
+            str | None,
+        ]
     ] = []
     component_set_ids_by_file: dict[str, list[str]] = defaultdict(list)
-    for instance_node, component_meta, master_ref in rows:
+    for row_index, instance_node, component_meta, master_ref in rows:
         master_payload = master_payloads.get(master_ref.file_key or "", {})
         master_node = None
         if master_ref.node_id:
@@ -269,6 +300,7 @@ async def diff_instances_against_masters(
             component_set_ids_by_file[master_ref.file_key].append(component_set_id)
         resolved_rows.append(
             (
+                row_index,
                 instance_node,
                 master_ref,
                 master_node,
@@ -285,8 +317,8 @@ async def diff_instances_against_masters(
             list(dict.fromkeys(component_set_ids)),
         )
 
-    diffs: list[InstanceDiff] = []
     for (
+        row_index,
         instance_node,
         master_ref,
         master_node,
@@ -307,19 +339,17 @@ async def diff_instances_against_masters(
                 master_ref.component_set_key,
                 component_set_cache,
             )
-        diffs.append(
-            _build_instance_diff(
-                instance=InstanceRef(
-                    file_key=file_key,
-                    node_id=normalize_node_id(str(instance_node.get("id") or "")),
-                ),
-                master=master_ref,
-                instance_node=instance_node,
-                master_node=master_node,
-                component_set_node=component_set_node,
-            )
+        records[row_index] = _build_instance_diff(
+            instance=InstanceRef(
+                file_key=file_key,
+                node_id=normalize_node_id(str(instance_node.get("id") or "")),
+            ),
+            master=master_ref,
+            instance_node=instance_node,
+            master_node=master_node,
+            component_set_node=component_set_node,
         )
-    return diffs
+    return [record for record in records if record is not None]
 
 
 def diff_nodes_against_master(
@@ -393,7 +423,7 @@ def _node_from_response(payload: Mapping[str, Any], node_id: str) -> dict[str, A
             document = entry.get("document")
             if isinstance(document, dict):
                 return document
-    raise ValueError(f"{node_id}: node not found in Figma response")
+    raise NodeNotFoundError(f"{node_id}: node not found in Figma response")
 
 
 def _component_meta_for_instance(

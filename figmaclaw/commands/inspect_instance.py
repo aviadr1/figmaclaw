@@ -12,7 +12,11 @@ import httpx
 from figmaclaw.commands._shared import require_figma_api_key
 from figmaclaw.config import load_config
 from figmaclaw.figma_client import FigmaClient, normalize_node_id
-from figmaclaw.instance_diff import InstanceDiff, diff_instances_against_masters
+from figmaclaw.instance_diff import (
+    InstanceDiff,
+    InstanceDiffError,
+    diff_instances_against_masters,
+)
 
 
 @click.command("inspect-instance")
@@ -103,7 +107,7 @@ async def _run(
     current_ds_hashes: set[str],
     current_ds_file_keys: set[str],
     current_ds_published_keys: set[str],
-) -> list[InstanceDiff]:
+) -> list[InstanceDiff | InstanceDiffError]:
     async with FigmaClient(api_key) as client:
         expanded_published_keys = set(current_ds_published_keys)
         expanded_published_keys.update(

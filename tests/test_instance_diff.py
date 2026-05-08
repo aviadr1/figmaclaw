@@ -564,13 +564,13 @@ async def test_diff_instances_against_masters_batches_instance_and_master_fetche
     )
 
     assert [diff.instance.node_id for diff in diffs] == ["10:2", "10:3"]
-    assert diffs[0].override_properties == [
+    assert diffs[0].model_dump()["override_properties"] == [
         "cornerRadius",
         "fills",
         "itemSpacing",
         "paddingLeft",
     ]
-    assert diffs[1].override_properties == []
+    assert diffs[1].model_dump()["override_properties"] == []
     assert client.get_nodes_response.await_args_list[0].args == (
         "file123",
         ["10:2", "10:3"],
@@ -628,6 +628,52 @@ async def test_diff_instances_against_masters_chunks_instance_fetches() -> None:
     assert client.get_nodes_response.await_args_list[0].args == ("file123", instance_ids[:50])
     assert client.get_nodes_response.await_args_list[1].args == ("file123", instance_ids[50:])
     assert client.get_nodes_response.await_args_list[2].args == ("ds-file", ["99:1"])
+
+
+@pytest.mark.asyncio
+async def test_diff_instances_against_masters_emits_error_for_missing_node() -> None:
+    first = _overridden_instance()
+    first["id"] = "10:2"
+    second = _matching_instance()
+    second["id"] = "10:3"
+    client = MagicMock()
+    client.get_nodes_response = AsyncMock(
+        side_effect=[
+            {
+                "nodes": {
+                    "10:2": {"document": first},
+                    "10:3": {"document": second},
+                },
+                "components": {
+                    "99:1": {
+                        "key": COMPONENT_KEY,
+                        "file_key": "ds-file",
+                        "node_id": "99:1",
+                        "library_hash": CURRENT_HASH,
+                    }
+                },
+            },
+            {
+                "nodes": {"99:1": {"document": _master_node()}},
+            },
+        ]
+    )
+
+    records = await diff_instances_against_masters(
+        client,
+        "file123",
+        ["10:2", "10:404", "10:3"],
+        current_ds_library_hashes={CURRENT_HASH},
+    )
+
+    assert [record.instance.node_id for record in records] == ["10:2", "10:404", "10:3"]
+    assert records[0].model_dump()["override_properties"]
+    assert records[1].model_dump() == {
+        "instance": {"file_key": "file123", "node_id": "10:404"},
+        "error": "10:404: node not found in Figma response",
+        "is_resolvable": False,
+    }
+    assert records[2].model_dump()["override_properties"] == []
 
 
 def test_inspect_instance_cli_reports_usage_error_for_non_instance(tmp_path, monkeypatch) -> None:
@@ -715,6 +761,7 @@ def test_inspect_instance_cli_outputs_jsonl_for_nodes_from_file(tmp_path, monkey
             [
                 json.dumps({"id": "10:2", "type": "INSTANCE"}),
                 json.dumps({"id": "I9451:314;148:427", "type": "INSTANCE"}),
+                json.dumps({"id": "10:404", "type": "INSTANCE"}),
                 json.dumps({"id": "10:99", "type": "FRAME"}),
                 json.dumps({"id": "10:3", "type": "INSTANCE"}),
             ]
@@ -772,8 +819,16 @@ def test_inspect_instance_cli_outputs_jsonl_for_nodes_from_file(tmp_path, monkey
 
     assert result.exit_code == 0
     rows = [json.loads(line) for line in result.output.splitlines() if line.startswith("{")]
-    assert [row["instance"]["node_id"] for row in rows] == ["10:2", "10:3"]
+    assert [row["instance"]["node_id"] for row in rows] == ["10:2", "10:404", "10:3"]
     assert rows[0]["override_properties"]
-    assert rows[1]["override_properties"] == []
+    assert rows[1] == {
+        "error": "10:404: node not found in Figma response",
+        "instance": {"file_key": "file123", "node_id": "10:404"},
+        "is_resolvable": False,
+    }
+    assert rows[2]["override_properties"] == []
     assert "skipped 1 synthesized nested instance ids" in result.output
-    assert fake.get_nodes_response.await_args_list[0].args == ("file123", ["10:2", "10:3"])
+    assert fake.get_nodes_response.await_args_list[0].args == (
+        "file123",
+        ["10:2", "10:404", "10:3"],
+    )
