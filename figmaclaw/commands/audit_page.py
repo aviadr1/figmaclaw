@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
 import click
+from pydantic import ValidationError
 
 from figmaclaw.audit import (
     build_audit_check_report,
@@ -25,12 +27,20 @@ from figmaclaw.audit_page_primitives import (
     default_clone_title,
     iter_node_records,
     load_jsonl_records,
+    looks_like_inactive_page_name,
     record_to_jsonl_line,
     render_clone_script,
+)
+from figmaclaw.audit_page_swap import (
+    AUDIT_PAGE_SWAP_SCHEMA_VERSION,
+    SwapRow,
+    load_swap_manifest,
+    render_swap_script,
 )
 from figmaclaw.commands._shared import require_figma_api_key
 from figmaclaw.commands.reporting import (
     emit_json_report,
+    emit_json_value,
     is_stdout_path,
     resolve_output_path,
     resolve_repo_path,
@@ -38,6 +48,7 @@ from figmaclaw.commands.reporting import (
 )
 from figmaclaw.figma_client import FigmaClient, normalize_node_id
 from figmaclaw.figma_utils import write_json_if_changed
+from figmaclaw.use_figma_exec import execute_use_figma_calls
 
 
 @click.group("audit-page")
@@ -299,6 +310,20 @@ def audit_page_build_idmap_cmd(
     type=click.Path(dir_okay=False, path_type=Path),
     help="Optional JSON request receipt path.",
 )
+@click.option(
+    "--strict-source",
+    is_flag=True,
+    help=(
+        "Refuse to emit when the source node looks like a previous audit-page "
+        "output (e.g. starts with '🛠 Audit'). Pair with --allow-audit-page-source "
+        "to override on purpose."
+    ),
+)
+@click.option(
+    "--allow-audit-page-source",
+    is_flag=True,
+    help="Suppress the audit-page warning and let --strict-source pass through.",
+)
 @click.pass_context
 def audit_page_emit_clone_script_cmd(
     ctx: click.Context,
@@ -309,6 +334,8 @@ def audit_page_emit_clone_script_cmd(
     namespace: str,
     out_path: Path | None,
     receipt_path: Path | None,
+    strict_source: bool,
+    allow_audit_page_source: bool,
 ) -> None:
     """Emit use_figma-clean JS that clones a page, frame, or section and returns a result."""
     repo_dir = Path(ctx.obj["repo_dir"])
@@ -325,6 +352,26 @@ def audit_page_emit_clone_script_cmd(
         raise click.UsageError(
             f"Expected destination page type CANVAS; got {destination_page.get('type')}."
         )
+
+    source_name = source_node.get("name")
+    source_looks_inactive = looks_like_inactive_page_name(
+        source_name if isinstance(source_name, str) else None
+    )
+    if source_looks_inactive and not allow_audit_page_source:
+        warning = (
+            f"WARNING: source node {source_node_id} ({source_name!r}) looks like a "
+            "non-active page (audit/playground/archive/wip/draft/etc.). Cloning a "
+            "partially-migrated, deprecated, or scratch tree silently halves the "
+            "OLD inventory and produces a wrong rules/component-map authoring set. "
+            "If you meant the original source, re-run with that node id; otherwise "
+            "pass --allow-audit-page-source."
+        )
+        click.echo(warning, err=True)
+        if strict_source:
+            raise click.ClickException(
+                "refusing to clone an apparently-inactive source under "
+                "--strict-source; pass --allow-audit-page-source to override."
+            )
 
     target_title = title or (
         str(destination_page.get("name"))
@@ -609,3 +656,252 @@ async def _run_diagnose(
         old_palette=old_palette,
         new_palette=new_palette,
     )
+
+
+# ── audit-page swap ───────────────────────────────────────────────────────────
+
+
+@audit_page_group.command("swap")
+@click.argument("file_key")
+@click.argument("audit_page_id")
+@click.option(
+    "--manifest",
+    "manifest_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    required=True,
+    help=(
+        "Swap manifest JSON. Either a versioned wrapper "
+        "({schema_version, kind, rows: [...]}) or a bare list of swap rows "
+        "({src, newKey, variants, props, preserveText, preserveSizing}). "
+        "Build via the migration's resolver script (e.g. build_swap_manifest.py)."
+    ),
+)
+@click.option(
+    "--namespace",
+    default="linear_git_migration",
+    show_default=True,
+    help="SharedPluginData namespace where the audit page's idMap lives.",
+)
+@click.option(
+    "--batch-dir",
+    "batch_dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    help="Directory for emitted batch JSON, JS, and manifest files.",
+)
+@click.option("--batch-size", type=int, default=50, show_default=True)
+@click.option(
+    "--dry-run",
+    "mode",
+    flag_value="dry-run",
+    default="dry-run",
+    help="Plan only — print row count, unique newKeys, OLD componentIds.",
+)
+@click.option(
+    "--emit-only",
+    "mode",
+    flag_value="emit-only",
+    help="Write deterministic batches but do not run them.",
+)
+@click.option(
+    "--execute",
+    "mode",
+    flag_value="execute",
+    help="Write batches and run them through the use_figma executor.",
+)
+@click.option(
+    "--resume-from",
+    type=int,
+    default=1,
+    show_default=True,
+    help="1-based batch number to start from in --execute mode.",
+)
+@click.option("--continue-on-error", is_flag=True, help="Keep executing after a failed batch.")
+@click.option("--json", "json_output", is_flag=True, help="Output structured JSON.")
+@click.pass_context
+def audit_page_swap_cmd(
+    ctx: click.Context,
+    file_key: str,
+    audit_page_id: str,
+    manifest_path: Path,
+    namespace: str,
+    batch_dir: Path | None,
+    batch_size: int,
+    mode: str,
+    resume_from: int,
+    continue_on_error: bool,
+    json_output: bool,
+) -> None:
+    """Emit / execute component-instance swaps on an audit page.
+
+    The emitted JS template is F17/F22/F30 -compliant: never .detach(), never
+    throw on partial failure, returns aggregate per-row stats. Per swap row it
+    imports the new component_set, picks the variant child by axis match,
+    creates an instance, copies preserve-listed props, inserts at the OLD
+    parent's index, and removes the OLD instance. The audit page's idMap is
+    updated so subsequent apply-tokens runs target the NEW instances.
+
+    Default mode is dry-run; use ``--emit-only`` for deterministic batch
+    files or ``--execute`` to run them.
+
+    Recompose-local rules from the component-migration map are NOT consumed
+    here — they require building a new local component first (Tier-3 work).
+    Pass only ``swap_strategy=direct`` rows; the consumer-repo resolver
+    (``scripts/build_swap_manifest.py``) already filters them out.
+    """
+    repo_dir = Path(ctx.obj["repo_dir"])
+    if batch_size <= 0:
+        raise click.UsageError("--batch-size must be > 0")
+    if resume_from < 1:
+        raise click.UsageError("--resume-from must be >= 1")
+
+    resolved_manifest = resolve_repo_path(repo_dir, manifest_path)
+    try:
+        payload = load_json_file(resolved_manifest)
+        manifest = load_swap_manifest(payload)
+    except (OSError, ValueError, ValidationError) as exc:
+        raise click.UsageError(str(exc)) from exc
+
+    # Reconcile manifest scope with CLI flags. CLI flags win when present.
+    if manifest.file_key and manifest.file_key != file_key:
+        raise click.UsageError(
+            f"manifest file_key {manifest.file_key!r} does not match CLI file_key {file_key!r}"
+        )
+    if manifest.page_node_id and manifest.page_node_id != audit_page_id:
+        raise click.UsageError(
+            f"manifest page_node_id {manifest.page_node_id!r} does not match "
+            f"CLI audit_page_id {audit_page_id!r}"
+        )
+    if manifest.namespace and manifest.namespace != namespace:
+        # Manifest-pinned namespace beats the CLI default; only error when
+        # they disagree explicitly.
+        raise click.UsageError(
+            f"manifest namespace {manifest.namespace!r} does not match "
+            f"CLI --namespace {namespace!r}"
+        )
+
+    rows = manifest.rows
+    report = _swap_plan_report(rows, mode=mode, file_key=file_key, audit_page_id=audit_page_id)
+
+    if mode == "dry-run":
+        if json_output or ctx.obj.get("json"):
+            emit_json_value(report)
+            return
+        _emit_human_swap_plan(report)
+        return
+
+    if not rows:
+        emit_json_value(report)
+        raise click.ClickException("refusing to emit swap batches: 0 rows")
+
+    if batch_dir is None:
+        raise click.UsageError("--batch-dir is required for --emit-only and --execute")
+
+    batch_result = _write_swap_batches(
+        rows,
+        batch_dir=resolve_output_path(repo_dir, batch_dir),
+        batch_size=batch_size,
+        namespace=namespace,
+        file_key=file_key,
+        audit_page_id=audit_page_id,
+    )
+    report["batch_manifest"] = batch_result["manifest"]
+
+    if mode == "emit-only":
+        emit_json_value(report)
+        return
+
+    execution = asyncio.run(
+        execute_use_figma_calls(
+            batch_result["calls"],
+            resume_from=resume_from - 1,
+            continue_on_error=continue_on_error,
+            dry_run=False,
+        )
+    )
+    report["execution"] = execution
+    emit_json_value(report)
+
+
+def _swap_plan_report(
+    rows: list[SwapRow],
+    *,
+    mode: str,
+    file_key: str,
+    audit_page_id: str,
+) -> dict[str, Any]:
+    """Stable plan report for swap dry-run / emit-only modes."""
+    new_keys = Counter(row.new_key for row in rows)
+    old_cids = Counter(row.old_component_id or "<unknown>" for row in rows)
+    return {
+        "schema_version": AUDIT_PAGE_SWAP_SCHEMA_VERSION,
+        "mode": mode,
+        "file_key": file_key,
+        "audit_page_id": audit_page_id,
+        "rows": len(rows),
+        "unique_new_keys": len(new_keys),
+        "unique_old_component_ids": len(old_cids),
+        "by_new_key": dict(new_keys),
+        "by_old_component_id": dict(old_cids),
+    }
+
+
+def _emit_human_swap_plan(report: dict[str, Any]) -> None:
+    click.echo(f"mode: {report['mode']}")
+    click.echo(f"file: {report['file_key']}")
+    click.echo(f"audit page: {report['audit_page_id']}")
+    click.echo(f"rows: {report['rows']}")
+    click.echo(f"unique new keys: {report['unique_new_keys']}")
+    click.echo(f"unique OLD componentIds: {report['unique_old_component_ids']}")
+    for key, count in sorted(report["by_new_key"].items(), key=lambda x: -x[1])[:5]:
+        click.echo(f"  {key}: {count}")
+
+
+def _write_swap_batches(
+    rows: list[SwapRow],
+    *,
+    batch_dir: Path,
+    batch_size: int,
+    namespace: str,
+    file_key: str,
+    audit_page_id: str,
+) -> dict[str, Any]:
+    batch_dir.mkdir(parents=True, exist_ok=True)
+    batches: list[dict[str, Any]] = []
+    calls: list[dict[str, str]] = []
+
+    for batch_index, start in enumerate(range(0, len(rows), batch_size), start=1):
+        batch_rows = rows[start : start + batch_size]
+        rows_path = batch_dir / f"swap-batch-{batch_index:04d}.json"
+        js_path = batch_dir / f"swap-batch-{batch_index:04d}.use_figma.js"
+        write_json_if_changed(rows_path, [row.model_dump(by_alias=True) for row in batch_rows])
+        js = render_swap_script(
+            page_node_id=audit_page_id,
+            namespace=namespace,
+            rows=batch_rows,
+        )
+        js_path.write_bytes(js.encode("utf-8"))
+        description = f"audit-page swap batch {batch_index:04d}"
+        batches.append(
+            {
+                "index": batch_index,
+                "rows": len(batch_rows),
+                "rows_path": rows_path.name,
+                "js_path": js_path.name,
+                "description": description,
+            }
+        )
+        calls.append({"file_key": file_key, "code": js, "description": description})
+
+    manifest = {
+        "schema_version": AUDIT_PAGE_SWAP_SCHEMA_VERSION,
+        "kind": "figmaclaw.audit_page_swap.batch_manifest",
+        "file_key": file_key,
+        "page_node_id": audit_page_id,
+        "namespace": namespace,
+        "batch_size": batch_size,
+        "total_rows": len(rows),
+        "batch_count": len(batches),
+        "batches": batches,
+    }
+    write_json_if_changed(batch_dir / "manifest.json", manifest)
+    return {"manifest": manifest, "calls": calls}

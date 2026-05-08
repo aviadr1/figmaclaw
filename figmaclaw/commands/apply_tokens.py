@@ -148,6 +148,21 @@ def apply_tokens_cmd(
 
     Legacy ``bindings_for_figma.json`` rows only carry token names, so use
     ``--library`` when those names can exist in multiple catalog libraries.
+
+    The accepted compact-row shape is::
+
+        [
+          {"n": "<source-node-id>", "p": "fill", "t": "fg/inverse"},
+          {"node_id": "<id>", "property": "fontFamily",
+           "token_name": "typography/family/sans"}
+        ]
+
+    Both short (``n``/``p``/``t``/``v``) and long (``node_id``/``property``/
+    ``token_name``/``value``) field names are accepted, but cannot be mixed
+    arbitrarily — keys outside of ``{n, p, t, v, node_id, property,
+    token_name, value, variable_key, paint_index}`` are listed back as
+    ``unrecognised_compact_row_fields`` in the refusal so authors know
+    exactly what to rename.
     """
     repo_dir = Path(ctx.obj["repo_dir"])
     try:

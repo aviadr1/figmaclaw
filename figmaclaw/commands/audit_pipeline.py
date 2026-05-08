@@ -32,6 +32,18 @@ def audit_pipeline_group() -> None:
     help="Optional figmaclaw _census.md target registry. Repeat for multiple files.",
 )
 @click.option(
+    "--variants",
+    "variants_paths",
+    type=click.Path(dir_okay=False, path_type=Path),
+    multiple=True,
+    help=(
+        "Optional variant-taxonomy sidecar JSON file (component_set key → "
+        "{name, axes: {<axis>: {values: [...]}}}). When provided, lint verifies "
+        "every variant_mapping axis name and value, and flags missing OLD-axis "
+        "coverage. Repeat for multiple files."
+    ),
+)
+@click.option(
     "--out",
     "out_path",
     type=click.Path(dir_okay=False, path_type=Path),
@@ -43,6 +55,7 @@ def audit_pipeline_lint_cmd(
     ctx: click.Context,
     component_map_path: Path,
     census_paths: tuple[Path, ...],
+    variants_paths: tuple[Path, ...],
     out_path: Path | None,
     json_output: bool,
 ) -> None:
@@ -52,6 +65,7 @@ def audit_pipeline_lint_cmd(
         report = build_pipeline_lint_report(
             resolve_output_path(repo_dir, component_map_path),
             census_paths=[resolve_output_path(repo_dir, path) for path in census_paths],
+            variants_paths=[resolve_output_path(repo_dir, path) for path in variants_paths],
         )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise click.UsageError(str(exc)) from exc

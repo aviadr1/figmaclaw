@@ -8,6 +8,7 @@ markdown bodies.
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter, defaultdict
 from collections.abc import Iterable
 from pathlib import Path
@@ -16,6 +17,18 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from figmaclaw.commands.census import load_census_registry
+from figmaclaw.component_map import (
+    FLAT_SWAP_STRATEGIES,
+    ComponentSetTaxonomy,
+    FlatDirectRule,
+    FlatRule,
+    NestedRule,
+    NestedRuleTarget,
+    ValidationError,
+    VariantTaxonomyDocument,
+    format_validation_error,
+    parse_flat_rule,
+)
 from figmaclaw.token_catalog import AUTHORITATIVE_DEFINITION_SOURCES, TokenCatalog
 from figmaclaw.token_scan import bound_variable_id, paint_is_variable_bound, rgb_to_hex
 
@@ -71,30 +84,62 @@ class AuditDiagnoseReport(BaseModel):
     )
 
 
-TARGET_STATUSES = {
-    "replace_with_new_component",
-    "compose_from_primitives",
-    "designer_audit_required",
-    "discard_on_parent_swap",
-}
-SWAP_STRATEGIES = {
-    "create-instance-and-translate",
-    "swap-with-translation",
-    "swap-direct",
-    "none",
-}
-PARENT_HANDLING = {
-    "leave-as-instance",
-    "detach-then-swap-inners",
-    "compose-from-primitives",
-}
-EXPECTED_TYPES = {"COMPONENT_SET", "COMPONENT", "FRAME", None}
+# Source-of-truth for the rule schema lives in figmaclaw.component_map. The
+# constants below are kept for any external callers that imported them, but
+# are derived from the pydantic models so they cannot drift.
+from typing import get_args as _get_args  # noqa: E402
+
+TARGET_STATUSES = set(_get_args(NestedRuleTarget.model_fields["status"].annotation))
+SWAP_STRATEGIES = set(_get_args(NestedRule.model_fields["swap_strategy"].annotation))
+PARENT_HANDLING = set(_get_args(NestedRule.model_fields["parent_handling"].annotation))
+# expected_type is `NestedExpectedType | None`; first arg holds the Literal.
+EXPECTED_TYPES = set(
+    _get_args(_get_args(NestedRuleTarget.model_fields["expected_type"].annotation)[0])
+)
 VALIDATION_BOOLS = {
     "assert_target_type",
     "assert_name_matches",
     "assert_property_keys",
     "assert_variant_axes",
 }
+
+
+def _rule_is_flat_shape(row: dict[str, Any]) -> bool:
+    """Return True when *row* uses the v3-flat instance-swap schema.
+
+    We check shape (not validity): ``swap_strategy`` taken from the v3-flat
+    vocabulary, OR no ``target`` block + a top-level ``new_key`` /
+    ``audit_required``. Validation belongs to the pydantic models in
+    :mod:`figmaclaw.component_map`.
+    """
+    swap_strategy = row.get("swap_strategy")
+    if isinstance(swap_strategy, str) and swap_strategy in FLAT_SWAP_STRATEGIES:
+        return True
+    return "target" not in row and ("new_key" in row or row.get("audit_required") is True)
+
+
+def _rule_target_summary(rule: FlatRule | NestedRule) -> tuple[str, str | None, str | None]:
+    """Return ``(intent, new_key, expected_new_name)`` for any parsed rule.
+
+    ``intent`` is one of the nested target statuses so the census check can be
+    shared between schemas.
+    """
+    if isinstance(rule, NestedRule):
+        return (
+            rule.target.status,
+            rule.target.new_key,
+            rule.target.expected_new_name,
+        )
+    if isinstance(rule, FlatDirectRule):
+        return ("replace_with_new_component", rule.new_key, rule.new_component_set)
+    # FlatRecomposeLocalRule / FlatAuditOnlyRule have no concrete new_key
+    # registered against the census.
+    intent = (
+        "compose_from_primitives"
+        if rule.swap_strategy == "recompose_local"
+        else "designer_audit_required"
+    )
+    return (intent, None, None)
 
 
 class PipelineLintReport(BaseModel):
@@ -420,8 +465,17 @@ def build_pipeline_lint_report(
     component_map_path: Path,
     *,
     census_paths: list[Path] | None = None,
+    variants_paths: list[Path] | None = None,
 ) -> PipelineLintReport:
-    """Validate the component migration map and optional target census data."""
+    """Validate the component migration map and optional target census data.
+
+    ``variants_paths`` is an optional list of variant-taxonomy JSON files
+    derived from the live Figma file (typically via use_figma calls to
+    ``importComponentSetByKeyAsync(...)``). When provided, every rule with a
+    ``variant_mapping`` is verified against the published variant axes of
+    its NEW (and OLD, when available) component_set. See
+    :func:`load_variant_taxonomies` for the accepted shape.
+    """
     payload = load_json_file(component_map_path)
     findings: list[AuditFinding] = []
     counts: Counter[str] = Counter()
@@ -450,14 +504,25 @@ def build_pipeline_lint_report(
     if census_paths:
         target_registry_state = "probed_empty" if not census else "probed_with_entries"
 
+    variants = load_variant_taxonomies(variants_paths or [])
+
     for idx, row in enumerate(rules):
         if not isinstance(row, dict):
             findings.append(AuditFinding(status="error", message=f"rules[{idx}] must be object"))
             continue
-        errors = validate_component_rule(row, idx)
-        for error in errors:
-            findings.append(AuditFinding(status="error", message=error))
-        findings.extend(validate_rule_against_census(row, idx, census, target_registry_state))
+        prefix = f"rules[{idx}]"
+        parsed: FlatRule | NestedRule | None = None
+        try:
+            parsed = (
+                parse_flat_rule(row) if _rule_is_flat_shape(row) else NestedRule.model_validate(row)
+            )
+        except ValidationError as exc:
+            for error in format_validation_error(prefix, exc):
+                findings.append(AuditFinding(status="error", message=error))
+            # Validation failed; skip semantic checks that need a parsed rule.
+            continue
+        findings.extend(validate_rule_against_census(parsed, idx, census, target_registry_state))
+        findings.extend(validate_rule_variant_mapping(parsed, idx, variants))
 
     for finding in findings:
         counts[finding.status] += 1
@@ -472,105 +537,17 @@ def build_pipeline_lint_report(
     )
 
 
-def validate_component_rule(row: dict[str, Any], idx: int) -> list[str]:
-    """Validate the minimum component_migration_map.v3 row contract."""
-    errors: list[str] = []
-    prefix = f"rules[{idx}]"
-    for key in (
-        "old_component_set",
-        "old_key",
-        "target",
-        "swap_strategy",
-        "parent_handling",
-        "property_translation",
-        "validation",
-    ):
-        if key not in row:
-            errors.append(f"{prefix}: missing {key}")
-    if errors:
-        return errors
-
-    if not isinstance(row["old_component_set"], str) or not row["old_component_set"]:
-        errors.append(f"{prefix}.old_component_set must be non-empty string")
-    if not isinstance(row["old_key"], str) or not row["old_key"]:
-        errors.append(f"{prefix}.old_key must be non-empty string")
-
-    target = row["target"]
-    if not isinstance(target, dict):
-        errors.append(f"{prefix}.target must be object")
-        target = {}
-    status = target.get("status")
-    if status not in TARGET_STATUSES:
-        errors.append(f"{prefix}.target.status invalid: {status!r}")
-    expected_type = target.get("expected_type")
-    if expected_type not in EXPECTED_TYPES:
-        errors.append(f"{prefix}.target.expected_type invalid: {expected_type!r}")
-    if status == "replace_with_new_component":
-        if not target.get("new_key"):
-            errors.append(f"{prefix}.target.new_key required for replace_with_new_component")
-        if expected_type != "COMPONENT_SET":
-            errors.append(
-                f"{prefix}.target.expected_type must be COMPONENT_SET for replace_with_new_component"
-            )
-        if not target.get("expected_new_name"):
-            errors.append(
-                f"{prefix}.target.expected_new_name required for replace_with_new_component"
-            )
-
-    swap_strategy = row["swap_strategy"]
-    parent_handling = row["parent_handling"]
-    if swap_strategy not in SWAP_STRATEGIES:
-        errors.append(f"{prefix}.swap_strategy invalid: {swap_strategy!r}")
-    if parent_handling not in PARENT_HANDLING:
-        errors.append(f"{prefix}.parent_handling invalid: {parent_handling!r}")
-
-    validation = row["validation"]
-    if not isinstance(validation, dict):
-        errors.append(f"{prefix}.validation must be object")
-        validation = {}
-    if swap_strategy == "swap-direct" and validation.get("assert_variant_axes") is not True:
-        errors.append(f"{prefix}: swap-direct requires variant-axis validation")
-    if parent_handling == "compose-from-primitives" and status != "compose_from_primitives":
-        errors.append(
-            f"{prefix}: compose-from-primitives parent_handling requires "
-            "target.status=compose_from_primitives"
-        )
-
-    translation = row["property_translation"]
-    if not isinstance(translation, dict):
-        errors.append(f"{prefix}.property_translation must be object")
-        translation = {}
-    kind = translation.get("kind")
-    if not isinstance(kind, str) or not kind:
-        errors.append(f"{prefix}.property_translation.kind must be non-empty string")
-    if swap_strategy in {"create-instance-and-translate", "swap-with-translation"} and kind in {
-        "none",
-        "noop",
-    }:
-        errors.append(
-            f"{prefix}: translation strategy requires a concrete property_translation.kind"
-        )
-
-    for key in VALIDATION_BOOLS:
-        if not isinstance(validation.get(key), bool):
-            errors.append(f"{prefix}.validation.{key} must be boolean")
-
-    return errors
-
-
 def validate_rule_against_census(
-    row: dict[str, Any],
+    rule: FlatRule | NestedRule,
     idx: int,
     census: dict[str, str],
     target_registry_state: str,
 ) -> list[AuditFinding]:
     """Validate component target identity against optional census data."""
-    target = row.get("target")
-    if not isinstance(target, dict) or target.get("status") != "replace_with_new_component":
+    intent, new_key, expected_name = _rule_target_summary(rule)
+    if intent != "replace_with_new_component":
         return []
-    new_key = target.get("new_key")
-    expected_name = target.get("expected_new_name")
-    if not isinstance(new_key, str) or not new_key:
+    if not new_key:
         return []
     if target_registry_state == "not_probed":
         return [
@@ -601,6 +578,244 @@ def validate_rule_against_census(
             )
         ]
     return []
+
+
+# Variant-axis lint (issue #163) ---------------------------------------------
+
+
+_VARIANT_VALUE_PAIR = re.compile(r"\s*([^=,]+?)\s*=\s*([^,]+?)\s*(?:,|$)")
+
+
+def parse_variant_axis_assignment(
+    spec: str | dict[str, str],
+) -> dict[str, str]:
+    """Parse a variant_mapping right-hand side into ``{axis: value}`` pairs.
+
+    Accepts either:
+
+    * the dict shape used by the resolved swap manifest, e.g.
+      ``{"Type": "Logo", "Colored": "True"}``
+    * the string shape used by component_migration_map authoring, e.g.
+      ``"color=primary, style=filled"`` — whitespace-tolerant.
+
+    A non-conforming string returns an empty dict; the caller can flag the
+    row separately. We intentionally do not raise — variant-axis validation
+    runs after the rule has already passed the structural pydantic check.
+    """
+    if isinstance(spec, dict):
+        return {
+            str(k): str(v) for k, v in spec.items() if isinstance(k, str) and isinstance(v, str)
+        }
+    if not isinstance(spec, str):
+        return {}
+    pairs: dict[str, str] = {}
+    for match in _VARIANT_VALUE_PAIR.finditer(spec):
+        axis = match.group(1).strip()
+        value = match.group(2).strip()
+        if axis and value:
+            pairs[axis] = value
+    return pairs
+
+
+def load_variant_taxonomies(paths: list[Path]) -> dict[str, ComponentSetTaxonomy]:
+    """Load + merge variant-taxonomy sidecar files keyed by component_set key.
+
+    Later files override earlier ones for the same key — useful when an
+    operator splits taxonomy by file (one sidecar per Figma source file).
+    """
+    merged: dict[str, ComponentSetTaxonomy] = {}
+    for path in paths:
+        try:
+            payload = load_json_file(path)
+            doc = VariantTaxonomyDocument.model_validate(payload)
+        except (OSError, ValueError, ValidationError) as exc:
+            raise ValueError(f"{path}: invalid variant-taxonomy file: {exc}") from exc
+        merged.update(doc.component_sets)
+    return merged
+
+
+def _classify_variant_mapping_shape(
+    mapping: dict[str, str | dict[str, str]],
+    new_taxonomy: ComponentSetTaxonomy,
+) -> str:
+    """Return ``"fixed"`` or ``"branching"`` for a ``variant_mapping`` block.
+
+    * **fixed** — every key matches a published NEW axis name and every value
+      is a scalar string. The mapping describes one assignment that applies to
+      every OLD instance regardless of its OLD variant. Example::
+
+          {"Type": "Logo", "Colored": "True"}
+
+    * **branching** — keys are OLD axis values and each value is a
+      string/dict describing the NEW axis assignment for that OLD value::
+
+          {"Primary": "color=primary, style=filled",
+           "Secondary": "color=secondary, style=filled"}
+
+    Disambiguation: a mapping is fixed when *all* keys appear in the NEW
+    component_set's published axis names AND every value is a non-empty
+    scalar string.
+    """
+    new_axes = new_taxonomy.axis_names()
+    if not mapping or not new_axes:
+        return "branching"
+    if not all(key in new_axes for key in mapping):
+        return "branching"
+    if not all(isinstance(value, str) and value for value in mapping.values()):
+        return "branching"
+    return "fixed"
+
+
+def validate_rule_variant_mapping(
+    rule: FlatRule | NestedRule,
+    idx: int,
+    variants: dict[str, ComponentSetTaxonomy],
+) -> list[AuditFinding]:
+    """Lint a rule's ``variant_mapping`` against the published axis taxonomy.
+
+    Two recognised mapping shapes — see ``_classify_variant_mapping_shape``:
+
+    * **fixed**     — ``{NEW_axis_name: NEW_axis_value}``
+    * **branching** — ``{OLD_axis_value: NEW_axis_assignment}``
+
+    Per-shape checks:
+
+    1. *fixed*: every key is a published NEW axis name; every value is a
+       published value of that axis.
+    2. *branching*: every right-hand assignment parses to ``{axis: value}``;
+       every axis name is a published NEW axis; every value is a published
+       value of that axis.
+    3. *both*: when the OLD taxonomy is also provided in the variants
+       document (keyed by ``old_key``), the union of left-hand keys and the
+       fixed-shape assignment must exhaustively cover at least one published
+       OLD axis so the swap step never falls into a silent default. (Per
+       F29 in the consumer-repo rules.)
+
+    Only flat ``swap_strategy=direct`` rules carry a ``variant_mapping``;
+    other shapes are skipped silently.
+    """
+    if not isinstance(rule, FlatDirectRule):
+        return []
+    if not rule.variant_mapping:
+        return []
+
+    findings: list[AuditFinding] = []
+    prefix = f"rules[{idx}]"
+
+    if not variants:
+        findings.append(
+            AuditFinding(
+                status="warning",
+                message=(
+                    f"{prefix}.variant_mapping was not checked against the published "
+                    "variant taxonomy; pass --variants <taxonomy.json> to verify."
+                ),
+            )
+        )
+        return findings
+
+    new_taxonomy = variants.get(rule.new_key)
+    if new_taxonomy is None:
+        findings.append(
+            AuditFinding(
+                status="error",
+                message=(
+                    f"{prefix}.new_key {rule.new_key!r} has no entry in the variant "
+                    "taxonomy file; cannot validate variant_mapping"
+                ),
+            )
+        )
+        return findings
+
+    new_axes = new_taxonomy.axis_names()
+    shape = _classify_variant_mapping_shape(rule.variant_mapping, new_taxonomy)
+
+    if shape == "fixed":
+        for axis_name, axis_value in rule.variant_mapping.items():
+            allowed = new_taxonomy.values_for(axis_name)
+            if allowed and axis_value not in allowed:
+                findings.append(
+                    AuditFinding(
+                        status="error",
+                        message=(
+                            f"{prefix}.variant_mapping[{axis_name!r}] uses unknown "
+                            f"value {axis_value!r} on new component_set "
+                            f"{rule.new_key!r}; published values: {sorted(allowed)}"
+                        ),
+                    )
+                )
+    else:
+        for old_axis_value, raw_assignment in rule.variant_mapping.items():
+            assignment = parse_variant_axis_assignment(raw_assignment)
+            if not assignment:
+                findings.append(
+                    AuditFinding(
+                        status="error",
+                        message=(
+                            f"{prefix}.variant_mapping[{old_axis_value!r}] could not be "
+                            f"parsed as an `axis=value, axis=value` string or "
+                            f"{{axis: value}} object; got {raw_assignment!r}"
+                        ),
+                    )
+                )
+                continue
+            for axis_name, axis_value in assignment.items():
+                if axis_name not in new_axes:
+                    findings.append(
+                        AuditFinding(
+                            status="error",
+                            message=(
+                                f"{prefix}.variant_mapping[{old_axis_value!r}] references "
+                                f"unknown axis {axis_name!r} on new component_set "
+                                f"{rule.new_key!r}; published axes: {sorted(new_axes)}"
+                            ),
+                        )
+                    )
+                    continue
+                allowed = new_taxonomy.values_for(axis_name)
+                if allowed and axis_value not in allowed:
+                    findings.append(
+                        AuditFinding(
+                            status="error",
+                            message=(
+                                f"{prefix}.variant_mapping[{old_axis_value!r}] uses "
+                                f"unknown value {axis_value!r} for axis {axis_name!r} on "
+                                f"new component_set {rule.new_key!r}; published values: "
+                                f"{sorted(allowed)}"
+                            ),
+                        )
+                    )
+
+    # Coverage check: OLD axis values that the lint can reach. A "fixed"
+    # variant_mapping covers every OLD instance trivially (no branching), so
+    # the only coverage gap is when the mapping is "branching" and the OLD
+    # taxonomy is published.
+    old_taxonomy = variants.get(rule.old_key) if rule.old_key else None
+    if shape == "branching" and old_taxonomy is not None:
+        mapped_left = set(rule.variant_mapping)
+        # Find at least one OLD axis whose values are referenced — this is the
+        # axis the operator branched on. Coverage is enforced for that axis.
+        for axis_name in old_taxonomy.axis_names():
+            published = old_taxonomy.values_for(axis_name)
+            if not published:
+                continue
+            if not (published & mapped_left):
+                continue  # operator branched on a different axis
+            missing = sorted(value for value in published if value not in mapped_left)
+            if missing:
+                findings.append(
+                    AuditFinding(
+                        status="error",
+                        message=(
+                            f"{prefix}.variant_mapping is missing entries for OLD axis "
+                            f"{axis_name!r} value(s): {missing}; every published OLD "
+                            "axis value must map to a NEW axis assignment so the swap "
+                            "step never falls into a silent default."
+                        ),
+                    )
+                )
+
+    return findings
 
 
 def load_census_component_sets(paths: list[Path]) -> dict[str, str]:

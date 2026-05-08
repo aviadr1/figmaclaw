@@ -146,6 +146,26 @@ def load_apply_token_input(
     raise ValueError("expected a versioned apply-tokens manifest or a JSON list of compact rows")
 
 
+_COMPACT_ROW_RECOGNISED_KEYS: frozenset[str] = frozenset(
+    {
+        "n",
+        "p",
+        "t",
+        "v",
+        "node_id",
+        "property",
+        "token_name",
+        "value",
+        "variable_key",
+        "paint_index",
+    }
+)
+
+
+def _unrecognised_compact_row_fields(raw: dict[str, Any]) -> list[str]:
+    return sorted(key for key in raw if key not in _COMPACT_ROW_RECOGNISED_KEYS)
+
+
 def _from_compact_rows(
     rows: list[Any],
     *,
@@ -168,7 +188,14 @@ def _from_compact_rows(
         prop = raw.get("property") or raw.get("p")
         token = raw.get("token_name") or raw.get("t")
         if not node_id or not prop or not token:
-            refusals.append(Refusal(index, "missing_node_property_or_token", dict(raw)))
+            unrecognised = _unrecognised_compact_row_fields(raw)
+            payload = dict(raw)
+            if unrecognised:
+                payload["unrecognised_compact_row_fields"] = unrecognised
+                reason = "unrecognised_compact_row_fields"
+            else:
+                reason = "missing_node_property_or_token"
+            refusals.append(Refusal(index, reason, payload))
             continue
         paint_index = _parse_paint_index(raw, index)
         if isinstance(paint_index, Refusal):
@@ -618,6 +645,12 @@ const hardFailures =
   stats.unsupported_property +
   stats.errors;
 
+// We never throw here on hardFailures > 0. A throw inside the Figma plugin
+// runtime rolls back the entire transaction, so a single bad row in a batch
+// of N would atomically revert the (N - 1) successful per-row writes that
+// already ran. Rows are independent — each one wraps its own work in a
+// try/catch and increments per-reason counters above. Returning the summary
+// lets the caller decide whether to fail the run based on aggregate stats.
 const summary = {
   ok: hardFailures === 0,
   targetPageId: targetPage.id,
@@ -627,10 +660,6 @@ const summary = {
   variableErrors,
   errorsSample: errors,
 };
-
-if (!summary.ok) {
-  throw new Error(`apply-tokens batch incomplete: ${JSON.stringify(summary)}`);
-}
 
 return summary;
 """
