@@ -32,6 +32,15 @@ Migrating a Figma file from one design system to another (or auditing one for to
 
 The `audit-page` / `audit-pipeline` / `apply-tokens` command family turns those passes into deterministic pipelines: every change is encoded as a manifest, linted against accumulated invariants (the `FCLAW` rule namespace), applied in atomic batches, and verified after each batch via REST. Round 1 of a real-world migration produced 365 silently-incorrect bindings; the rules and verifiers in this command family exist so round N doesn't.
 
+The migration commands share a common `--dry-run` / `--emit-only` / `--execute` discipline and a use_figma batch-emission protocol (`<prefix>-NNNN.{json,use_figma.js}` + `manifest.json`). All emitted JS templates are F17/F22/F30 compliant — never `.detach()`, never `throw` on aggregate stats — so a single bad row never rolls back its successful sibling writes.
+
+| Command | Purpose |
+|---|---|
+| `audit-page emit-clone-script` | Clone a source page into an audit page (warns if the source looks inactive — archive, playground, prior audit clone, etc.). |
+| `audit-page swap` | Apply component-instance swaps from a typed manifest. Emits per-row try/catch JS, persists the SPD idMap so subsequent `apply-tokens` runs target NEW instances. |
+| `audit-pipeline lint` | Validate the `component_migration_map.v3.json` (nested + flat shapes); with `--variants <taxonomy.json>` enforces variant-axis names, values, and OLD-axis coverage. |
+| `apply-tokens` | Apply variable-binding fixes; legacy compact-row + versioned manifest accepted. Refusals list unrecognised + missing canonical fields, plus a `did_you_mean_token_name` hint when a `<library>:` prefix is detected. |
+
 See [docs/migration-pipeline.md](docs/migration-pipeline.md) for the full pipeline.
 
 ## Setup Is Two Separate Steps

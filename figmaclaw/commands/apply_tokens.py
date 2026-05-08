@@ -29,6 +29,7 @@ from figmaclaw.token_catalog import (
     catalog_staleness_errors,
     load_catalog,
 )
+from figmaclaw.use_figma_batches import use_figma_batch_options
 from figmaclaw.use_figma_exec import execute_use_figma_calls
 
 
@@ -51,13 +52,7 @@ from figmaclaw.use_figma_exec import execute_use_figma_calls
         "contains this substring. Repeatable."
     ),
 )
-@click.option(
-    "--batch-dir",
-    "batch_dir",
-    type=click.Path(file_okay=False, path_type=Path),
-    help="Directory for emitted batch JSON, JS, and manifest files.",
-)
-@click.option("--batch-size", type=int, default=100, show_default=True)
+@use_figma_batch_options(default_batch_size=100)
 @click.option("--namespace", default=DEFAULT_NAMESPACE, show_default=True)
 @click.option(
     "--remaining-out",
@@ -72,23 +67,6 @@ from figmaclaw.use_figma_exec import execute_use_figma_calls
     show_default=True,
     help="Resolve source node ids through audit-page idMap, or apply node ids directly.",
 )
-@click.option(
-    "--dry-run",
-    "mode",
-    flag_value="dry-run",
-    default="dry-run",
-    help="Plan only.",
-)
-@click.option("--emit-only", "mode", flag_value="emit-only", help="Write deterministic batches.")
-@click.option("--execute", "mode", flag_value="execute", help="Write batches and run them.")
-@click.option(
-    "--resume-from",
-    type=int,
-    default=1,
-    show_default=True,
-    help="1-based batch number to start from in --execute mode.",
-)
-@click.option("--continue-on-error", is_flag=True, help="Keep executing after a failed batch.")
 @click.option(
     "--allow-stale-catalog",
     is_flag=True,
@@ -112,7 +90,6 @@ from figmaclaw.use_figma_exec import execute_use_figma_calls
         "allows variable-id fallback. Pair with --library to match the legacy target library."
     ),
 )
-@click.option("--json", "json_output", is_flag=True, help="Output structured JSON.")
 @click.pass_context
 def apply_tokens_cmd(
     ctx: click.Context,
@@ -148,6 +125,28 @@ def apply_tokens_cmd(
 
     Legacy ``bindings_for_figma.json`` rows only carry token names, so use
     ``--library`` when those names can exist in multiple catalog libraries.
+
+    The accepted compact-row shape is::
+
+        [
+          {"n": "<source-node-id>", "p": "fill", "t": "fg/inverse"},
+          {"node_id": "<id>", "property": "fontFamily",
+           "token_name": "typography/family/sans"}
+        ]
+
+    Short (``n``/``p``/``t``/``v``) and long (``node_id``/``property``/
+    ``token_name``/``value``) field names are interchangeable, and rows MAY
+    mix them per-row. Keys outside of ``{n, p, t, v, node_id, property,
+    token_name, value, variable_key, paint_index}`` are listed back as
+    ``unrecognised_compact_row_fields`` in the refusal, alongside any
+    canonical fields whose accepted aliases were absent
+    (``missing_canonical_fields``), so authors know exactly what to rename.
+
+    Token names with a leading ``<library>:`` prefix (e.g. ``tapin:fg/inverse``)
+    are not in the catalog by that name; pass the bare name and use
+    ``--library "TAP IN"`` to scope resolution. The refusal's
+    ``did_you_mean_token_name`` field surfaces the stripped form when a
+    prefix is detected.
     """
     repo_dir = Path(ctx.obj["repo_dir"])
     try:
@@ -256,3 +255,23 @@ def _emit_human_plan(report: dict) -> None:
     click.echo(f"refusals: {report['refusals']}")
     for reason, count in report["counts"]["refusals"].items():
         click.echo(f"  {reason}: {count}")
+    # Surface a sample of refused rows in the human path too — counts alone
+    # force operators to re-run with --json. (#167 review finding #9.)
+    sample = report.get("refusal_sample") or []
+    for entry in sample[:5]:
+        row = entry.get("row") or {}
+        # Make the most informative diagnostic fields visible per row.
+        details: list[str] = []
+        if "unrecognised_compact_row_fields" in row:
+            details.append(f"unknown={row['unrecognised_compact_row_fields']}")
+        if "missing_canonical_fields" in row:
+            details.append(f"missing={row['missing_canonical_fields']}")
+        if "did_you_mean_token_name" in row:
+            details.append(f"did_you_mean={row['did_you_mean_token_name']!r}")
+        details_text = "; ".join(details) if details else ""
+        click.echo(
+            f"    row {entry['row_index']}: {entry['reason']}"
+            + (f" ({details_text})" if details_text else "")
+        )
+    if len(sample) > 5:
+        click.echo(f"    … {len(sample) - 5} more (--remaining-out for full list)")

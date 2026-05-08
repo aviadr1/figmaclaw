@@ -14,3 +14,7 @@ dist/
 
 # Local test artifacts
 test-results/
+
+# Claude harness scratch state — per-session pid/timestamp lock that
+# accidentally lands in commits when `git add -A` is used.
+.claude/scheduled_tasks.lock

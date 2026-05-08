@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from figmaclaw.audit import walk_nodes_with_context
-from figmaclaw.figma_js import READ_SPD_CHUNKS_JS
+from figmaclaw.figma_js import READ_SPD_CHUNKS_JS, WRITE_SPD_CHUNKS_JS
 
 JSONL_NODE_FIELDS = (
     "fills",
@@ -43,6 +44,136 @@ JSONL_NODE_FIELDS = (
 )
 
 ALLOWED_CLONE_REST_TYPES = frozenset({"CANVAS", "FRAME", "SECTION"})
+
+# Patterns whose presence in a page name strongly suggests it is NOT the live
+# source — previous-run audit clones, archives, playgrounds, in-progress
+# drafts, exploratory work, etc. Cloning one of these silently pulls
+# partially-migrated, deprecated, or scratch content into a migration run, so
+# we warn before letting the operator commit to it.
+#
+# Tuned against real page names observed in the linear-git consumer repo:
+#
+#   inactive markers                   active markers (do NOT trigger)
+#   ──────────────────                 ──────────────────
+#   "🛠 Audit — Web App page 2026-05-08"  "✅ Web App"
+#   "📦 Archive", "📦 ARCHIVE"             "❖ Design System"
+#   "🚧 IN PROGRESS - Mobile"              "Community / Homepage MOBILE"
+#   "😎 PLAYGROUND", "Mobile Playground"   "✅ Streaming Main Layout"
+#   "[OLD] Components"                     "Branding / round 5 …"
+#   "[Archived 17 Nov 2025]"
+#   "Gigaverse UX UI ARCHIVE 🚫"
+#   "Base [Nope, not anymore] 👋"
+#   "[wip] [process] Design versioning"
+#   "Giles - Giga Wires WIP"
+#   "Concept 2", "Hackaton - Anymous user"
+#   "claude test / Page 1"
+#   "Untitled UI – PRO STYLES (v7.0) (Copy)"
+#   "Monetization Archive", "Gigaverse 2.0 Exploration / Archive"
+#   "Delete"
+#
+# Word-bounded so "OLDER" / "test" inside a real word don't trigger, and the
+# emoji set is the literal indicator vocabulary used in the wild.
+
+_INACTIVE_NAME_KEYWORD = re.compile(
+    r"""
+    (?:^|(?<=[\s\-—–_/|()\[\]:.,]))            # left boundary
+    (?:
+        audit
+      | archive[ds]?
+      | archiving
+      | playground
+      | sandbox
+      | scratch
+      | deprecated
+      | obsolete
+      | legacy
+      | retired
+      | wip
+      | draft[s]?
+      | in[\s\-_]?progress
+      | exploration
+      | exploratory
+      | inspo
+      | spike
+      | experiment(?:al)?
+      | hackath?on
+      | test(?:ing|s)?
+      | tmp
+      | temp(?:orary)?
+      | discard(?:ed)?
+      | trash
+      | junk
+      | backup
+      | nope
+      | delete[d]?
+    )
+    (?=[\s\-—–_/|()\[\]:.,!?]|$)               # right boundary
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Keywords like "old" are extremely short and would false-positive on names
+# like "Old Town"; we only treat them as inactive markers when they appear
+# bracketed or with the explicit `[OLD]` prefix Figma operators use.
+_INACTIVE_BRACKETED = re.compile(
+    r"\[\s*(?:OLD|WIP|DRAFT|ARCHIVED?|DEPRECATED|LEGACY|RETIRED|"
+    r"NOPE|TEST|TODO|TMP|TEMP|BUG|BUGS|EXPERIMENT(?:AL)?|"
+    r"PROCESS|SPIKE|EXPLORATION|HACKATH?ON|RESEARCH)"
+    r"[^\]]*\]",
+    re.IGNORECASE,
+)
+
+# Figma users tag inactive pages with a small set of construction / box /
+# warning emoji; these are reliable on their own.
+#
+# We escape every codepoint explicitly to avoid accidentally pulling the
+# Variation Selector U+FE0F (which composes most "emoji style" glyphs) into
+# the class — that would false-positive on benign emoji like 🏞️.
+_INACTIVE_EMOJI_CHARS = (
+    "\U0001f6e0"  # 🛠 hammer & wrench
+    "\U0001f6a7"  # 🚧 construction
+    "\U0001f4e6"  # 📦 package
+    "\U0001f5c4"  # 🗄 file cabinet
+    "\U0001f5c3"  # 🗃 card file box
+    "\U0001f4a9"  # 💩 pile of poo (yes, it shows up)
+    "\U0001f6ab"  # 🚫 no entry sign
+    "\U000026d4"  # ⛔ no entry
+    "\U0001f6d1"  # 🛑 stop sign
+    "\U0001fa66"  # 🪦 headstone
+    "\U0001fa64"  # 🪤 mouse trap
+    "\U0001f5d1"  # 🗑 wastebasket
+)
+_INACTIVE_EMOJI = re.compile(f"[{_INACTIVE_EMOJI_CHARS}]")
+
+# A trailing "(Copy)" or "(copy 2)" segment is Figma's auto-marker on
+# duplicated files and pages; almost always a sandbox.
+_COPY_SUFFIX = re.compile(r"\(\s*copy\b", re.IGNORECASE)
+
+
+def looks_like_inactive_page_name(name: str | None) -> bool:
+    """Return True when *name* looks like a non-active page.
+
+    A non-active page is anything that signals "not the live source": prior
+    audit clones, archives, playgrounds, sandboxes, drafts, copies, etc. The
+    check is advisory; false positives are OK because the operator can
+    override with ``--allow-audit-page-source``.
+    """
+    if not isinstance(name, str):
+        return False
+    text = name.strip()
+    if not text:
+        return False
+    if _INACTIVE_EMOJI.search(text):
+        return True
+    if _INACTIVE_BRACKETED.search(text):
+        return True
+    if _COPY_SUFFIX.search(text):
+        return True
+    return bool(_INACTIVE_NAME_KEYWORD.search(text))
+
+
+# Backwards-compatible alias for any caller that imported the old name.
+looks_like_audit_page_name = looks_like_inactive_page_name
 
 
 def annotate_component_keys(node: dict[str, Any], components: dict[str, Any]) -> None:
@@ -211,28 +342,9 @@ function walkPairs(src, dst, pairs) {
   }
 }
 
-function chunkString(value, size) {
-  const chunks = [];
-  for (let i = 0; i < value.length; i += size) {
-    chunks.push(value.slice(i, i + size));
-  }
-  return chunks;
-}
-
 __READ_SPD_CHUNKS_JS__
 
-function writeSPDChunks(prefix, countKey, value, size) {
-  const oldCount = Number(targetPage.getSharedPluginData(NAMESPACE, countKey) || "0");
-  const chunks = chunkString(value, size);
-  targetPage.setSharedPluginData(NAMESPACE, countKey, String(chunks.length));
-  for (let i = 0; i < chunks.length; i++) {
-    targetPage.setSharedPluginData(NAMESPACE, `${prefix}.${i}`, chunks[i]);
-  }
-  for (let i = chunks.length; i < oldCount; i++) {
-    targetPage.setSharedPluginData(NAMESPACE, `${prefix}.${i}`, "");
-  }
-  return chunks.length;
-}
+__WRITE_SPD_CHUNKS_JS__
 
 function existingIdMap() {
   const raw = readSPDChunks("idMap", "idMapChunkCount");
@@ -367,5 +479,6 @@ def render_clone_script(
         .replace("__TARGET_PAGE_NAME_JSON__", json.dumps(title))
         .replace("__NAMESPACE_JSON__", json.dumps(namespace))
         .replace("__READ_SPD_CHUNKS_JS__", READ_SPD_CHUNKS_JS)
+        .replace("__WRITE_SPD_CHUNKS_JS__", WRITE_SPD_CHUNKS_JS)
         .lstrip()
     )
