@@ -22,10 +22,11 @@ from figmaclaw.commands.observability import (
     env_interval_seconds,
 )
 from figmaclaw.figma_client import FigmaClient
+from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
+from figmaclaw.figma_sync_state import file_has_pull_schema_debt
 from figmaclaw.git_utils import git_commit, git_push
 from figmaclaw.prune_utils import prune_file_artifacts_from_manifest
 from figmaclaw.pull_logic import DEFAULT_PER_PAGE_TIMEOUT_S, PullResult, pull_file
-from figmaclaw.schema_status import is_pull_schema_stale
 from figmaclaw.status_markers import COMMIT_MSG_PREFIX, HAS_MORE_TRUE
 
 DEFAULT_PER_FILE_TIMEOUT_S: float = 300.0
@@ -263,6 +264,13 @@ async def _run(
         if committed:
             commit_count += 1
             click.echo(f"  ✓ committed: {page_label}")
+            obs.emit(
+                "page_auto_commit",
+                page_label=page_label,
+                commit_count=commit_count,
+                paths=len(paths),
+                push_due=bool(push_every and commit_count % push_every == 0),
+            )
             if push_every and commit_count % push_every == 0:
                 click.echo(f"  ↑ pushing ({commit_count} commits)...")
                 _git_push(repo_dir)
@@ -322,10 +330,12 @@ async def _run(
             file_name = getattr(stored_entry, "file_name", "") or "unknown"
             obs.emit("file_start", file_key=key, file_name=file_name)
 
-            # Listing pre-filter: skip get_file_meta entirely when the listing tells us
-            # the file hasn't changed (or isn't reachable at all).
-            #   - listing_lm is None  → file not in team listing (e.g. FigJam boards);
-            #     skip — if it's not reachable via the listing, it can't have changed
+            # Listing pre-filter: skip get_file_meta only when the listing proves
+            # the tracked file is still present and unchanged.
+            #   - listing_lm is None  → file not in team listing; probe with get_file_meta
+            #     instead of skipping. Absence can mean deleted, moved, permission-lost,
+            #     or an API listing gap; only the file-scoped endpoint can distinguish
+            #     "still accessible" from "must prune artifacts".
             #   - listing_lm == stored → last_modified unchanged; skip
             #   - listing_lm != stored → file changed; proceed to get_file_meta
             #
@@ -338,14 +348,24 @@ async def _run(
             if not force and listing_last_modified is not None:
                 listing_lm = listing_last_modified.get(key)
                 stored_lm = stored_entry.last_modified if stored_entry else ""
-                stored_schema = stored_entry.pull_schema_version if stored_entry else 0
-                schema_needs_refresh = is_pull_schema_stale(stored_schema)
-                unchanged_on_figma = listing_lm is None or stored_lm == listing_lm
+                schema_needs_refresh = (
+                    file_has_pull_schema_debt(
+                        stored_entry,
+                        current_pull_schema_version=CURRENT_PULL_SCHEMA_VERSION,
+                        should_skip_page=state.should_skip_page,
+                    )
+                    if stored_entry is not None
+                    else True
+                )
+                unchanged_on_figma = bool(listing_lm and stored_lm == listing_lm)
                 if unchanged_on_figma and not schema_needs_refresh:
                     obs.files_skipped_prefilter += 1
                     obs.file_end(key, "listing_prefilter_skip", file_start)
                     continue
+                if listing_lm is None:
+                    obs.emit("listing_prefilter_probe", file_key=key, reason="missing_from_listing")
 
+            file_commit_count_start = commit_count
             try:
                 obs.files_attempted_pull += 1
                 stop_heartbeat = asyncio.Event()
@@ -388,6 +408,7 @@ async def _run(
                     "file_timeout",
                     file_start,
                     timeout_s=per_file_timeout_s if per_file_timeout_s is not None else "none",
+                    auto_commits=commit_count - file_commit_count_start,
                 )
                 continue
             except Exception as exc:
@@ -396,6 +417,7 @@ async def _run(
                 obs.file_end(key, "error", file_start)
                 continue
             all_results.append(result)
+            file_auto_commits = commit_count - file_commit_count_start
 
             if max_pages is not None and pages_budget is not None:
                 # Schema-only upgrades don't count toward the budget — they can't cause
@@ -432,7 +454,7 @@ async def _run(
                     if listing_lm and stored_entry and not stored_entry.last_modified:
                         stored_entry.last_modified = listing_lm
                 click.echo(f"{key}: unchanged (skipped)")
-                obs.file_end(key, "pull_skipped", file_start)
+                obs.file_end(key, "pull_skipped", file_start, auto_commits=file_auto_commits)
             else:
                 wrote_any = bool(
                     result.pages_written
@@ -468,6 +490,7 @@ async def _run(
                     pages_errors=result.pages_errored,
                     schema_upgraded=result.pages_schema_upgraded,
                     has_more=result.has_more,
+                    auto_commits=file_auto_commits,
                 )
 
     state.save()

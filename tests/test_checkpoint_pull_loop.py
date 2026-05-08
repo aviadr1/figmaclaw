@@ -53,6 +53,19 @@ esac
 set -euo pipefail
 TRACE_FILE="${TRACE_FILE:?}"
 echo "git $*" >> "$TRACE_FILE"
+if [ "${1:-}" = "push" ] && [ "${GIT_PUSH_FAIL:-0}" = "1" ]; then
+  exit 1
+fi
+if [ "${1:-}" = "push" ] && [ "${GIT_PUSH_FAIL_ONCE:-0}" = "1" ]; then
+  push_count_file="${GIT_PUSH_COUNT_FILE:?}"
+  push_count=0
+  if [ -f "$push_count_file" ]; then push_count="$(cat "$push_count_file")"; fi
+  push_count=$((push_count+1))
+  echo "$push_count" > "$push_count_file"
+  if [ "$push_count" -eq 1 ]; then
+    exit 1
+  fi
+fi
 if [ "${1:-}" = "diff" ] && [ "${GIT_DIRTY:-0}" = "1" ]; then
   exit 1
 fi
@@ -110,6 +123,7 @@ def _run_loop(
     args = tmp_path / "pull-args.txt"
     timeout_args = tmp_path / "timeout-args.txt"
     timeout_count = tmp_path / "timeout-count.txt"
+    push_count = tmp_path / "push-count.txt"
 
     bin_dir = _setup_fake_bin(
         tmp_path, scenario=scenario, git_dirty=git_dirty, timeout_mode=timeout_mode
@@ -125,8 +139,11 @@ def _run_loop(
             "ARGS_FILE": str(args),
             "TIMEOUT_ARGS_FILE": str(timeout_args),
             "TIMEOUT_COUNT_FILE": str(timeout_count),
+            "GIT_PUSH_COUNT_FILE": str(push_count),
             "SCENARIO": scenario,
             "GIT_DIRTY": git_dirty,
+            "GIT_PUSH_FAIL": "0",
+            "GIT_PUSH_FAIL_ONCE": "0",
             "TIMEOUT_MODE": timeout_mode,
             "MAX_BATCHES": "10",
             "MAX_IDLE_HAS_MORE_BATCHES": "3",
@@ -516,8 +533,85 @@ def test_timeout_treats_flushed_auto_commit_as_progress(tmp_path: Path) -> None:
 
     events_text = (obs_dir / "checkpoint_events.csv").read_text()
     assert "partial_commit_on_timeout" in events_text
-    assert "timeout auto-commit saved work" in events_text
+    assert "timeout after auto-committed progress" in events_text
     assert "retrying with --max-pages 4" in out
+
+
+def test_timeout_counts_auto_commit_progress_even_when_flush_push_fails(
+    tmp_path: Path,
+) -> None:
+    """Regression from linear-git CI.
+
+    `figmaclaw pull --auto-commit --push-every 1` can push many page commits
+    before the outer batch timeout fires. A final best-effort `git push` may
+    still fail because origin already moved, but that must not make the wrapper
+    report `total_commits=0` or stop as `timeout_no_progress_stop`.
+    """
+    obs_dir = tmp_path / "obs"
+    out = _run_loop(
+        tmp_path,
+        scenario="auto_commit_then_has_more",
+        git_dirty="0",
+        timeout_mode="first_only",
+        MAX_PAGES_PER_BATCH="8",
+        FIGMACLAW_SYNC_OBS_DIR=str(obs_dir),
+        AUTO_COMMIT_ENABLED="true",
+        PUSH_EVERY="1",
+        GIT_PUSH_FAIL="1",
+    )
+
+    events_text = (obs_dir / "checkpoint_events.csv").read_text()
+    summary_text = (obs_dir / "checkpoint_summary.txt").read_text()
+    assert "auto_commit_progress" in events_text
+    assert "auto_commit_flush_failed" in events_text
+    assert "partial_commit_on_timeout" in events_text
+    assert "timeout_no_progress_stop" not in events_text
+    assert "total_auto_commits=10" in summary_text
+    assert "total_commits=10" in summary_text
+    assert "retrying with --max-pages 4" in out
+
+
+def test_safety_net_commit_push_race_retries_without_aborting(tmp_path: Path) -> None:
+    """A transient remote ref race during the shell safety-net push should not
+    abort the wrapper before observability is written."""
+    obs_dir = tmp_path / "obs"
+    out = _run_loop(
+        tmp_path,
+        scenario="single_done",
+        git_dirty="1",
+        timeout_mode="pass",
+        FIGMACLAW_SYNC_OBS_DIR=str(obs_dir),
+        GIT_PUSH_FAIL_ONCE="1",
+    )
+
+    trace = (tmp_path / "git-trace.txt").read_text()
+    summary_text = (obs_dir / "checkpoint_summary.txt").read_text()
+    assert trace.count("git push") >= 2
+    assert "git pull --no-rebase --ff-only origin main" in trace
+    assert "total_safety_net_commits=1" in summary_text
+    assert "final_reason=has_more_false" in summary_text
+    assert "warning: safety-net commit push failed" not in out
+
+
+def test_safety_net_commit_push_retry_failure_does_not_errexit(tmp_path: Path) -> None:
+    """If both safety-net push attempts fail, the wrapper reports false progress
+    and still writes observability instead of exiting through Bash errexit."""
+    obs_dir = tmp_path / "obs"
+    out = _run_loop(
+        tmp_path,
+        scenario="single_done",
+        git_dirty="1",
+        timeout_mode="pass",
+        FIGMACLAW_SYNC_OBS_DIR=str(obs_dir),
+        GIT_PUSH_FAIL="1",
+    )
+
+    trace = (tmp_path / "git-trace.txt").read_text()
+    summary_text = (obs_dir / "checkpoint_summary.txt").read_text()
+    assert trace.count("git push") >= 2
+    assert "warning: safety-net commit push failed after retry" in out
+    assert "total_safety_net_commits=0" in summary_text
+    assert "final_reason=has_more_false" in summary_text
 
 
 def test_exit_trap_flushes_any_unpushed_commits_on_normal_exit(tmp_path: Path) -> None:

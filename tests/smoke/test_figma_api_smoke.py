@@ -592,7 +592,8 @@ async def test_schema_upgrade_backfills_instance_component_ids_without_body_rewr
             "no pulled page in this batch has populated instance_component_ids; "
             "schema-upgrade backfill invariant is inconclusive"
         )
-    page_hash_before = _page_entry_for_md_path(state, TEST_FILE_KEY, tmp_path, page_md).page_hash
+    page_entry = _page_entry_for_md_path(state, TEST_FILE_KEY, tmp_path, page_md)
+    page_hash_before = page_entry.page_hash
 
     text_before = page_md.read_text()
     body_before = _body_from_rendered_markdown(text_before)
@@ -604,8 +605,10 @@ async def test_schema_upgrade_backfills_instance_component_ids_without_body_rewr
     assert not _has_populated_instance_component_ids(mutated)
     page_md.write_text(mutated)
 
-    # Mark manifest as pre-v6 so pull runs schema-upgrade path.
+    # Mark both the aggregate and target page as pre-v6 so the page-level
+    # schema tracker runs schema-upgrade path for the mutated artifact.
     state.manifest.files[TEST_FILE_KEY].pull_schema_version = 5
+    page_entry.pull_schema_version = 5
     state.save()
 
     # The target came from the first pull's write order, so the same bounded
