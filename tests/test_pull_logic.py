@@ -2337,12 +2337,20 @@ async def test_file_schema_debt_does_not_reprocess_page_current_artifacts(tmp_pa
 
     state.manifest.files["abc123"].pull_schema_version = CURRENT_PULL_SCHEMA_VERSION - 1
     state.save()
+    mock_client.get_page.reset_mock()
+    mock_client.get_pages.reset_mock()
+    mock_client.get_component_sets.reset_mock()
+    mock_client.get_nodes.reset_mock()
 
     result = await pull_file(mock_client, "abc123", state, tmp_path, force=False, max_pages=1)
 
     assert result.pages_written == 0
     assert result.pages_schema_upgraded == 0
     assert result.pages_skipped == 1
+    mock_client.get_page.assert_not_called()
+    mock_client.get_pages.assert_not_called()
+    mock_client.get_component_sets.assert_not_called()
+    mock_client.get_nodes.assert_not_called()
     assert state.manifest.files["abc123"].pull_schema_version == CURRENT_PULL_SCHEMA_VERSION
     assert (
         state.manifest.files["abc123"].pages["7741:45837"].pull_schema_version

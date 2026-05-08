@@ -173,6 +173,32 @@ def _build_prune_candidate_dirs(
     return candidate_dirs
 
 
+def _prune_generated_orphans_for_file(
+    state: FigmaSyncState,
+    repo_root: Path,
+    file_slug: str,
+    *,
+    previous_pages: dict[str, PageEntry],
+) -> None:
+    """Prune generated files under one Figma file that no manifest entry owns."""
+    expected_paths = _all_manifest_generated_paths(state)
+    previous_entry_paths = {
+        rel for previous_entry in previous_pages.values() for rel in entry_paths(previous_entry)
+    }
+    candidate_dirs = _build_prune_candidate_dirs(
+        repo_root,
+        file_slug,
+        expected_paths=expected_paths,
+        previous_entry_paths=previous_entry_paths,
+    )
+    orphan_rels = set(
+        find_generated_orphans(
+            repo_root, candidate_dirs=candidate_dirs, expected_paths=expected_paths
+        )
+    )
+    _remove_generated_paths(repo_root, orphan_rels)
+
+
 def _remove_generated_paths(repo_root: Path, rel_paths: set[str]) -> None:
     """Delete generated artifact rel paths in stable order."""
     for rel in sorted(rel_paths):
@@ -784,6 +810,12 @@ async def pull_file(
                 if not comp_rel.startswith(f"figma/{file_slug}/components/"):
                     local_reconcile_needed = True
                     break
+            if set(page.component_schema_versions) - set(page.component_md_paths):
+                local_reconcile_needed = True
+                break
+            if page.md_path is None and not page.component_md_paths and page.frame_hashes:
+                local_reconcile_needed = True
+                break
             if local_reconcile_needed:
                 break
     if (
@@ -796,22 +828,12 @@ async def pull_file(
     ):
         # Even on file-level skip, optionally prune generated orphans under file slug.
         if prune:
-            expected_paths = _all_manifest_generated_paths(state)
-            previous_entry_paths = {
-                rel for page in stored.pages.values() for rel in entry_paths(page)
-            }
-            candidate_dirs = _build_prune_candidate_dirs(
+            _prune_generated_orphans_for_file(
+                state,
                 repo_root,
                 file_slug,
-                expected_paths=expected_paths,
-                previous_entry_paths=previous_entry_paths,
+                previous_pages=stored.pages,
             )
-            orphan_rels = set(
-                find_generated_orphans(
-                    repo_root, candidate_dirs=candidate_dirs, expected_paths=expected_paths
-                )
-            )
-            _remove_generated_paths(repo_root, orphan_rels)
         _progress(f"{file_name}: unchanged (version {api_version}), skipping all pages")
         result.skipped_file = True
         return result
@@ -823,6 +845,53 @@ async def pull_file(
     previous_pages: dict[str, PageEntry] = {}
     if stored is not None:
         previous_pages = {pid: p.model_copy(deep=True) for pid, p in stored.pages.items()}
+    page_stubs = meta.canvas_pages
+    current_page_ids = {stub.id for stub in page_stubs}
+
+    if (
+        not force
+        and schema_stale
+        and stored is not None
+        and stored.version == api_version
+        and stored.last_modified == api_last_modified
+        and not local_reconcile_needed
+        and set(stored.pages) == current_page_ids
+        and all(
+            state.should_skip_page(page_entry.page_name)
+            or page_schema_is_current(
+                stored,
+                page_entry,
+                current_pull_schema_version=CURRENT_PULL_SCHEMA_VERSION,
+            )
+            for page_entry in stored.pages.values()
+        )
+    ):
+        now = datetime.datetime.now(datetime.UTC).isoformat()
+        state.set_file_meta(
+            file_key,
+            version=api_version,
+            last_modified=api_last_modified,
+            last_checked_at=now,
+            file_name=file_name,
+        )
+        stored.pull_schema_version = CURRENT_PULL_SCHEMA_VERSION
+        state.save()
+        if prune:
+            _prune_generated_orphans_for_file(
+                state,
+                repo_root,
+                file_slug,
+                previous_pages=previous_pages,
+            )
+        result.pages_skipped = sum(
+            1
+            for page_entry in stored.pages.values()
+            if not state.should_skip_page(page_entry.page_name)
+        )
+        _progress(
+            f"{file_name}: page schemas current; repaired file schema version without refetching pages"
+        )
+        return result
 
     now = datetime.datetime.now(datetime.UTC).isoformat()
     state.set_file_meta(
@@ -881,8 +950,6 @@ async def pull_file(
         )
         component_sets = []
 
-    page_stubs = meta.canvas_pages
-    current_page_ids = {stub.id for stub in page_stubs}
     total_pages = len(page_stubs)
     pages_written_this_call = 0
 
@@ -1438,22 +1505,12 @@ async def pull_file(
             _remove_generated_paths(repo_root, stale_paths)
 
         # 3) Existing on-disk generated artifacts not referenced by manifest (legacy orphans).
-        expected_paths = _all_manifest_generated_paths(state)
-        previous_entry_paths = {
-            rel for previous_entry in previous_pages.values() for rel in entry_paths(previous_entry)
-        }
-        candidate_dirs = _build_prune_candidate_dirs(
+        _prune_generated_orphans_for_file(
+            state,
             repo_root,
             file_slug,
-            expected_paths=expected_paths,
-            previous_entry_paths=previous_entry_paths,
+            previous_pages=previous_pages,
         )
-        orphan_rels = set(
-            find_generated_orphans(
-                repo_root, candidate_dirs=candidate_dirs, expected_paths=expected_paths
-            )
-        )
-        _remove_generated_paths(repo_root, orphan_rels)
 
     if manifest_changed:
         state.save()
