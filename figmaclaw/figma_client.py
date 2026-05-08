@@ -490,6 +490,18 @@ class FigmaClient:
         result: list[dict[str, Any]] = data.get("meta", {}).get("component_sets", [])
         return result
 
+    async def get_component(self, component_key: str) -> dict[str, Any]:
+        """GET /v1/components/{key} — metadata for one published component."""
+        data = await self._get(f"/v1/components/{component_key}")
+        meta = data.get("meta")
+        return meta if isinstance(meta, dict) else {}
+
+    async def get_component_set(self, component_set_key: str) -> dict[str, Any]:
+        """GET /v1/component_sets/{key} — metadata for one published component set."""
+        data = await self._get(f"/v1/component_sets/{component_set_key}")
+        meta = data.get("meta")
+        return meta if isinstance(meta, dict) else {}
+
     async def list_team_component_sets(self, team_id: str) -> list[dict[str, Any]]:
         """GET /v1/teams/{team_id}/component_sets — published component sets by team.
 
