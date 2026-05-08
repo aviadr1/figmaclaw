@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from figmaclaw.audit import walk_nodes_with_context
-from figmaclaw.figma_js import READ_SPD_CHUNKS_JS
+from figmaclaw.figma_js import READ_SPD_CHUNKS_JS, WRITE_SPD_CHUNKS_JS
 
 JSONL_NODE_FIELDS = (
     "fills",
@@ -343,28 +343,9 @@ function walkPairs(src, dst, pairs) {
   }
 }
 
-function chunkString(value, size) {
-  const chunks = [];
-  for (let i = 0; i < value.length; i += size) {
-    chunks.push(value.slice(i, i + size));
-  }
-  return chunks;
-}
-
 __READ_SPD_CHUNKS_JS__
 
-function writeSPDChunks(prefix, countKey, value, size) {
-  const oldCount = Number(targetPage.getSharedPluginData(NAMESPACE, countKey) || "0");
-  const chunks = chunkString(value, size);
-  targetPage.setSharedPluginData(NAMESPACE, countKey, String(chunks.length));
-  for (let i = 0; i < chunks.length; i++) {
-    targetPage.setSharedPluginData(NAMESPACE, `${prefix}.${i}`, chunks[i]);
-  }
-  for (let i = chunks.length; i < oldCount; i++) {
-    targetPage.setSharedPluginData(NAMESPACE, `${prefix}.${i}`, "");
-  }
-  return chunks.length;
-}
+__WRITE_SPD_CHUNKS_JS__
 
 function existingIdMap() {
   const raw = readSPDChunks("idMap", "idMapChunkCount");
@@ -499,5 +480,6 @@ def render_clone_script(
         .replace("__TARGET_PAGE_NAME_JSON__", json.dumps(title))
         .replace("__NAMESPACE_JSON__", json.dumps(namespace))
         .replace("__READ_SPD_CHUNKS_JS__", READ_SPD_CHUNKS_JS)
+        .replace("__WRITE_SPD_CHUNKS_JS__", WRITE_SPD_CHUNKS_JS)
         .lstrip()
     )

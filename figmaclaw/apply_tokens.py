@@ -12,7 +12,6 @@ already been filtered for clean instance inheritance.
 from __future__ import annotations
 
 import json
-import re
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,12 +20,12 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from figmaclaw.figma_js import READ_SPD_CHUNKS_JS
-from figmaclaw.figma_utils import write_json_if_changed
 from figmaclaw.token_catalog import (
     AUTHORITATIVE_DEFINITION_SOURCES,
     CatalogVariable,
     TokenCatalog,
 )
+from figmaclaw.use_figma_batches import write_use_figma_batches
 
 APPLY_TOKENS_SCHEMA_VERSION = 1
 APPLY_BATCH_MANIFEST_SCHEMA_VERSION = 1
@@ -146,24 +145,35 @@ def load_apply_token_input(
     raise ValueError("expected a versioned apply-tokens manifest or a JSON list of compact rows")
 
 
-_COMPACT_ROW_RECOGNISED_KEYS: frozenset[str] = frozenset(
-    {
-        "n",
-        "p",
-        "t",
-        "v",
-        "node_id",
-        "property",
-        "token_name",
-        "value",
-        "variable_key",
-        "paint_index",
-    }
+# Canonical → accepted-aliases mapping for compact-row schema. The lint
+# uses this both to detect unrecognised keys and to tell the author which
+# canonical fields are missing — issue #167 review finding #5.
+_COMPACT_ROW_FIELD_ALIASES: dict[str, frozenset[str]] = {
+    "node_id": frozenset({"node_id", "n"}),
+    "property": frozenset({"property", "p"}),
+    "token_name": frozenset({"token_name", "t"}),
+}
+_COMPACT_ROW_OPTIONAL_KEYS: frozenset[str] = frozenset(
+    {"value", "v", "variable_key", "paint_index"}
+)
+_COMPACT_ROW_RECOGNISED_KEYS: frozenset[str] = (
+    frozenset(key for aliases in _COMPACT_ROW_FIELD_ALIASES.values() for key in aliases)
+    | _COMPACT_ROW_OPTIONAL_KEYS
 )
 
 
 def _unrecognised_compact_row_fields(raw: dict[str, Any]) -> list[str]:
     return sorted(key for key in raw if key not in _COMPACT_ROW_RECOGNISED_KEYS)
+
+
+def _missing_compact_row_canonical_fields(raw: dict[str, Any]) -> list[str]:
+    """Return canonical field names whose accepted aliases are all absent."""
+    keys = set(raw)
+    return [
+        canonical
+        for canonical, aliases in _COMPACT_ROW_FIELD_ALIASES.items()
+        if not (aliases & keys)
+    ]
 
 
 def _from_compact_rows(
@@ -189,12 +199,20 @@ def _from_compact_rows(
         token = raw.get("token_name") or raw.get("t")
         if not node_id or not prop or not token:
             unrecognised = _unrecognised_compact_row_fields(raw)
+            missing = _missing_compact_row_canonical_fields(raw)
             payload = dict(raw)
+            # Always surface BOTH diagnostics — the dominant footgun is a
+            # row that has unknown keys AND is missing the canonical ones.
+            # Reporting only one forces the author to debug iteratively.
             if unrecognised:
                 payload["unrecognised_compact_row_fields"] = unrecognised
-                reason = "unrecognised_compact_row_fields"
-            else:
-                reason = "missing_node_property_or_token"
+            if missing:
+                payload["missing_canonical_fields"] = missing
+            reason = (
+                "unrecognised_compact_row_fields"
+                if unrecognised
+                else "missing_node_property_or_token"
+            )
             refusals.append(Refusal(index, reason, payload))
             continue
         paint_index = _parse_paint_index(raw, index)
@@ -441,8 +459,6 @@ def write_apply_batches(
     """Write deterministic batch rows, JS files, and a batch manifest."""
     if not prepared.ok:
         raise ValueError("refusing to emit batches while apply-token refusals remain")
-    if batch_size <= 0:
-        raise ValueError("batch_size must be > 0")
     file_key = prepared.manifest.file_key
     page_node_id = prepared.manifest.page_node_id
     if not file_key:
@@ -450,58 +466,34 @@ def write_apply_batches(
     if not page_node_id:
         raise ValueError("page_node_id is required")
 
-    batch_dir.mkdir(parents=True, exist_ok=True)
-    _clean_generated_batch_dir(batch_dir)
     fixes = prepared.manifest.fixes
-    batches: list[dict[str, Any]] = []
-    calls: list[dict[str, str]] = []
-
-    for batch_index, start in enumerate(range(0, len(fixes), batch_size), start=1):
-        batch_fixes = fixes[start : start + batch_size]
-        rows = [_fix_to_writer_row(fix) for fix in batch_fixes]
-        rows_path = batch_dir / f"batch-{batch_index:04d}.json"
-        js_path = batch_dir / f"batch-{batch_index:04d}.use_figma.js"
-        write_json_if_changed(rows_path, rows)
-        js = render_apply_tokens_script(
+    return write_use_figma_batches(
+        fixes,
+        batch_dir=batch_dir,
+        batch_size=batch_size,
+        file_name_prefix="batch",
+        file_key=file_key,
+        row_to_dict=_fix_to_writer_row,
+        render_js=lambda rows: render_apply_tokens_script(
             page_node_id=page_node_id,
             namespace=namespace,
             rows=rows,
             node_map=node_map,
-        )
-        js_path.write_bytes(js.encode("utf-8"))
-        description = f"apply design token bindings batch {batch_index:04d}"
-        batches.append(
-            {
-                "index": batch_index,
-                "rows": len(rows),
-                "rows_path": rows_path.name,
-                "js_path": js_path.name,
-                "description": description,
-            }
-        )
-        calls.append({"file_key": file_key, "code": js, "description": description})
-
-    manifest = {
-        "schema_version": APPLY_BATCH_MANIFEST_SCHEMA_VERSION,
-        "kind": "figmaclaw.apply_tokens.batch_manifest",
-        "file_key": file_key,
-        "page_node_id": page_node_id,
-        "namespace": namespace,
-        "node_map": node_map,
-        "batch_size": batch_size,
-        "total_fixes": len(fixes),
-        "batch_count": len(batches),
-        "batches": batches,
-    }
-    write_json_if_changed(batch_dir / "manifest.json", manifest)
-    return {"manifest": manifest, "calls": calls}
-
-
-def _clean_generated_batch_dir(batch_dir: Path) -> None:
-    batch_file_pattern = re.compile(r"^batch-\d{4}\.(json|use_figma\.js)$")
-    for path in batch_dir.iterdir():
-        if path.is_file() and (path.name == "manifest.json" or batch_file_pattern.match(path.name)):
-            path.unlink()
+        ),
+        description_prefix="apply design token bindings batch",
+        manifest_extras={
+            "schema_version": APPLY_BATCH_MANIFEST_SCHEMA_VERSION,
+            "kind": "figmaclaw.apply_tokens.batch_manifest",
+            "file_key": file_key,
+            "page_node_id": page_node_id,
+            "namespace": namespace,
+            "node_map": node_map,
+            # Apply-tokens has historically called the row-count `total_fixes`;
+            # keep the key so existing batch-manifest consumers don't break.
+            # The shared writer also adds `total_rows` for the new convention.
+            "total_fixes": len(fixes),
+        },
+    )
 
 
 def _fix_to_writer_row(fix: ApplyTokenFix) -> dict[str, Any]:

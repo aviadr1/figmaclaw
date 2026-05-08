@@ -250,8 +250,29 @@ FlatRuleAdapter: TypeAdapter[FlatRule] = TypeAdapter(FlatRule)
 
 
 def parse_flat_rule(payload: dict[str, Any]) -> FlatRule:
-    """Parse a single flat-shape rule, raising :class:`ValidationError`."""
-    return FlatRuleAdapter.validate_python(payload)
+    """Parse a single flat-shape rule.
+
+    Re-raises pydantic's discriminator-extraction error with an
+    author-friendly message that lists the accepted ``swap_strategy`` values
+    — by default the user sees ``Unable to extract tag using discriminator
+    'swap_strategy'``, which is opaque if you don't know it's a discriminated
+    union under the hood. (Issue #167 review finding, parse_flat_rule.)
+    """
+    try:
+        return FlatRuleAdapter.validate_python(payload)
+    except ValidationError as exc:
+        # Walk the errors to find a discriminator failure; if there is one,
+        # raise a fresh ValidationError-like error with FLAT_SWAP_STRATEGIES.
+        for err in exc.errors(include_url=False):
+            if err.get("type") in {"union_tag_invalid", "union_tag_not_found"}:
+                got = payload.get("swap_strategy")
+                raise ValueError(
+                    f"v3-flat rule swap_strategy must be one of "
+                    f"{sorted(FLAT_SWAP_STRATEGIES)}; got {got!r}. "
+                    "If this rule is meant to use the v3-nested schema, add a "
+                    "`target` block (then it will be validated as nested)."
+                ) from exc
+        raise
 
 
 # Variant taxonomy sidecar ---------------------------------------------------

@@ -35,7 +35,8 @@ from figmaclaw.audit_page_swap import (
     AUDIT_PAGE_SWAP_SCHEMA_VERSION,
     SwapRow,
     load_swap_manifest,
-    render_swap_script,
+    render_swap_script_from_writer_rows,
+    row_to_writer_dict,
 )
 from figmaclaw.commands._shared import require_figma_api_key
 from figmaclaw.commands.reporting import (
@@ -48,6 +49,7 @@ from figmaclaw.commands.reporting import (
 )
 from figmaclaw.figma_client import FigmaClient, normalize_node_id
 from figmaclaw.figma_utils import write_json_if_changed
+from figmaclaw.use_figma_batches import use_figma_batch_options, write_use_figma_batches
 from figmaclaw.use_figma_exec import execute_use_figma_calls
 
 
@@ -682,41 +684,7 @@ async def _run_diagnose(
     show_default=True,
     help="SharedPluginData namespace where the audit page's idMap lives.",
 )
-@click.option(
-    "--batch-dir",
-    "batch_dir",
-    type=click.Path(file_okay=False, path_type=Path),
-    help="Directory for emitted batch JSON, JS, and manifest files.",
-)
-@click.option("--batch-size", type=int, default=50, show_default=True)
-@click.option(
-    "--dry-run",
-    "mode",
-    flag_value="dry-run",
-    default="dry-run",
-    help="Plan only — print row count, unique newKeys, OLD componentIds.",
-)
-@click.option(
-    "--emit-only",
-    "mode",
-    flag_value="emit-only",
-    help="Write deterministic batches but do not run them.",
-)
-@click.option(
-    "--execute",
-    "mode",
-    flag_value="execute",
-    help="Write batches and run them through the use_figma executor.",
-)
-@click.option(
-    "--resume-from",
-    type=int,
-    default=1,
-    show_default=True,
-    help="1-based batch number to start from in --execute mode.",
-)
-@click.option("--continue-on-error", is_flag=True, help="Keep executing after a failed batch.")
-@click.option("--json", "json_output", is_flag=True, help="Output structured JSON.")
+@use_figma_batch_options(default_batch_size=50)
 @click.pass_context
 def audit_page_swap_cmd(
     ctx: click.Context,
@@ -822,6 +790,33 @@ def audit_page_swap_cmd(
     emit_json_value(report)
 
 
+def _swap_plan_warnings(rows: list[SwapRow]) -> list[str]:
+    """Collect manifest-shape warnings the operator should see at dry-run time.
+
+    These are not lint *errors* — the rules are still runnable — but they
+    flag patterns that almost always indicate misuse:
+
+    * rows missing ``oldCid`` (the resolver couldn't identify the OLD
+      componentId, so the rule's variant axes can't be cross-checked)
+    * rows whose ``variants`` mapping is empty (the swap will fall back to
+      ``defaultVariant``, which is rarely what the operator intended)
+    """
+    warnings: list[str] = []
+    missing_old = sum(1 for row in rows if not row.old_component_id)
+    if missing_old:
+        warnings.append(
+            f"{missing_old} row(s) have no oldCid; resolver couldn't link them "
+            "back to a published OLD componentId"
+        )
+    no_variants = sum(1 for row in rows if not row.variants)
+    if no_variants:
+        warnings.append(
+            f"{no_variants} row(s) have an empty variants mapping; the swap "
+            "will fall back to defaultVariant — verify that's intended"
+        )
+    return warnings
+
+
 def _swap_plan_report(
     rows: list[SwapRow],
     *,
@@ -842,6 +837,7 @@ def _swap_plan_report(
         "unique_old_component_ids": len(old_cids),
         "by_new_key": dict(new_keys),
         "by_old_component_id": dict(old_cids),
+        "warnings": _swap_plan_warnings(rows),
     }
 
 
@@ -854,6 +850,11 @@ def _emit_human_swap_plan(report: dict[str, Any]) -> None:
     click.echo(f"unique OLD componentIds: {report['unique_old_component_ids']}")
     for key, count in sorted(report["by_new_key"].items(), key=lambda x: -x[1])[:5]:
         click.echo(f"  {key}: {count}")
+    warnings = report.get("warnings") or []
+    if warnings:
+        click.echo("warnings:", err=True)
+        for warning in warnings:
+            click.echo(f"  {warning}", err=True)
 
 
 def _write_swap_batches(
@@ -865,43 +866,24 @@ def _write_swap_batches(
     file_key: str,
     audit_page_id: str,
 ) -> dict[str, Any]:
-    batch_dir.mkdir(parents=True, exist_ok=True)
-    batches: list[dict[str, Any]] = []
-    calls: list[dict[str, str]] = []
-
-    for batch_index, start in enumerate(range(0, len(rows), batch_size), start=1):
-        batch_rows = rows[start : start + batch_size]
-        rows_path = batch_dir / f"swap-batch-{batch_index:04d}.json"
-        js_path = batch_dir / f"swap-batch-{batch_index:04d}.use_figma.js"
-        write_json_if_changed(rows_path, [row.model_dump(by_alias=True) for row in batch_rows])
-        js = render_swap_script(
+    return write_use_figma_batches(
+        rows,
+        batch_dir=batch_dir,
+        batch_size=batch_size,
+        file_name_prefix="swap-batch",
+        file_key=file_key,
+        row_to_dict=row_to_writer_dict,
+        render_js=lambda writer_rows: render_swap_script_from_writer_rows(
             page_node_id=audit_page_id,
             namespace=namespace,
-            rows=batch_rows,
-        )
-        js_path.write_bytes(js.encode("utf-8"))
-        description = f"audit-page swap batch {batch_index:04d}"
-        batches.append(
-            {
-                "index": batch_index,
-                "rows": len(batch_rows),
-                "rows_path": rows_path.name,
-                "js_path": js_path.name,
-                "description": description,
-            }
-        )
-        calls.append({"file_key": file_key, "code": js, "description": description})
-
-    manifest = {
-        "schema_version": AUDIT_PAGE_SWAP_SCHEMA_VERSION,
-        "kind": "figmaclaw.audit_page_swap.batch_manifest",
-        "file_key": file_key,
-        "page_node_id": audit_page_id,
-        "namespace": namespace,
-        "batch_size": batch_size,
-        "total_rows": len(rows),
-        "batch_count": len(batches),
-        "batches": batches,
-    }
-    write_json_if_changed(batch_dir / "manifest.json", manifest)
-    return {"manifest": manifest, "calls": calls}
+            writer_rows=writer_rows,
+        ),
+        description_prefix="audit-page swap batch",
+        manifest_extras={
+            "schema_version": AUDIT_PAGE_SWAP_SCHEMA_VERSION,
+            "kind": "figmaclaw.audit_page_swap.batch_manifest",
+            "file_key": file_key,
+            "page_node_id": audit_page_id,
+            "namespace": namespace,
+        },
+    )

@@ -122,7 +122,11 @@ def _rule_target_summary(rule: FlatRule | NestedRule) -> tuple[str, str | None, 
     """Return ``(intent, new_key, expected_new_name)`` for any parsed rule.
 
     ``intent`` is one of the nested target statuses so the census check can be
-    shared between schemas.
+    shared between schemas. A ``recompose_local`` rule that nevertheless
+    names a concrete ``new_key`` (the recomposition reuses an existing TapIn
+    primitive as the foundation) is treated as a census-checkable replacement
+    so a typo in that key still surfaces — the lint shouldn't punish authors
+    who include extra detail. (Issue #167 review finding #6.)
     """
     if isinstance(rule, NestedRule):
         return (
@@ -132,14 +136,16 @@ def _rule_target_summary(rule: FlatRule | NestedRule) -> tuple[str, str | None, 
         )
     if isinstance(rule, FlatDirectRule):
         return ("replace_with_new_component", rule.new_key, rule.new_component_set)
-    # FlatRecomposeLocalRule / FlatAuditOnlyRule have no concrete new_key
-    # registered against the census.
-    intent = (
-        "compose_from_primitives"
-        if rule.swap_strategy == "recompose_local"
-        else "designer_audit_required"
-    )
-    return (intent, None, None)
+    if rule.swap_strategy == "recompose_local":
+        # Even though the canonical "intent" is compose_from_primitives, a
+        # supplied new_key should be census-validated.
+        return (
+            "replace_with_new_component" if rule.new_key else "compose_from_primitives",
+            rule.new_key,
+            rule.new_component_set,
+        )
+    # FlatAuditOnlyRule never carries a new_key.
+    return ("designer_audit_required", None, None)
 
 
 class PipelineLintReport(BaseModel):
@@ -519,7 +525,11 @@ def build_pipeline_lint_report(
         except ValidationError as exc:
             for error in format_validation_error(prefix, exc):
                 findings.append(AuditFinding(status="error", message=error))
-            # Validation failed; skip semantic checks that need a parsed rule.
+            continue
+        except ValueError as exc:
+            # parse_flat_rule re-raises discriminator failures as a plain
+            # ValueError with an author-friendly message — surface as-is.
+            findings.append(AuditFinding(status="error", message=f"{prefix}: {exc}"))
             continue
         findings.extend(validate_rule_against_census(parsed, idx, census, target_registry_state))
         findings.extend(validate_rule_variant_mapping(parsed, idx, variants))

@@ -29,6 +29,7 @@ from figmaclaw.token_catalog import (
     catalog_staleness_errors,
     load_catalog,
 )
+from figmaclaw.use_figma_batches import use_figma_batch_options
 from figmaclaw.use_figma_exec import execute_use_figma_calls
 
 
@@ -51,13 +52,7 @@ from figmaclaw.use_figma_exec import execute_use_figma_calls
         "contains this substring. Repeatable."
     ),
 )
-@click.option(
-    "--batch-dir",
-    "batch_dir",
-    type=click.Path(file_okay=False, path_type=Path),
-    help="Directory for emitted batch JSON, JS, and manifest files.",
-)
-@click.option("--batch-size", type=int, default=100, show_default=True)
+@use_figma_batch_options(default_batch_size=100)
 @click.option("--namespace", default=DEFAULT_NAMESPACE, show_default=True)
 @click.option(
     "--remaining-out",
@@ -72,23 +67,6 @@ from figmaclaw.use_figma_exec import execute_use_figma_calls
     show_default=True,
     help="Resolve source node ids through audit-page idMap, or apply node ids directly.",
 )
-@click.option(
-    "--dry-run",
-    "mode",
-    flag_value="dry-run",
-    default="dry-run",
-    help="Plan only.",
-)
-@click.option("--emit-only", "mode", flag_value="emit-only", help="Write deterministic batches.")
-@click.option("--execute", "mode", flag_value="execute", help="Write batches and run them.")
-@click.option(
-    "--resume-from",
-    type=int,
-    default=1,
-    show_default=True,
-    help="1-based batch number to start from in --execute mode.",
-)
-@click.option("--continue-on-error", is_flag=True, help="Keep executing after a failed batch.")
 @click.option(
     "--allow-stale-catalog",
     is_flag=True,
@@ -112,7 +90,6 @@ from figmaclaw.use_figma_exec import execute_use_figma_calls
         "allows variable-id fallback. Pair with --library to match the legacy target library."
     ),
 )
-@click.option("--json", "json_output", is_flag=True, help="Output structured JSON.")
 @click.pass_context
 def apply_tokens_cmd(
     ctx: click.Context,

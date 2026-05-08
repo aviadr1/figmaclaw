@@ -56,7 +56,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from figmaclaw.figma_js import READ_SPD_CHUNKS_JS
+from figmaclaw.figma_js import READ_SPD_CHUNKS_JS, WRITE_SPD_CHUNKS_JS
 
 AUDIT_PAGE_SWAP_SCHEMA_VERSION = 1
 
@@ -114,12 +114,41 @@ class SwapManifest(BaseModel):
 
 
 def load_swap_manifest(payload: Any) -> SwapManifest:
-    """Load a versioned manifest or a bare list of rows."""
+    """Load a versioned manifest or a bare list of rows.
+
+    Refuses on duplicate ``src`` values: a swap that ran once removed the
+    OLD instance, so a re-run with the same ``src`` would silently report
+    ``skipped_no_clone`` and the operator would see ``applied: 0`` without a
+    clear cause. Catching duplicates at load time makes the failure
+    actionable. (Issue #167 review finding #4.)
+    """
     if isinstance(payload, dict) and "rows" in payload:
-        return SwapManifest.model_validate(payload)
-    if isinstance(payload, list):
-        return SwapManifest(rows=[SwapRow.model_validate(row) for row in payload])
-    raise ValueError("expected a versioned audit-page swap manifest or a JSON list of swap rows")
+        manifest = SwapManifest.model_validate(payload)
+    elif isinstance(payload, list):
+        manifest = SwapManifest(rows=[SwapRow.model_validate(row) for row in payload])
+    else:
+        raise ValueError(
+            "expected a versioned audit-page swap manifest or a JSON list of swap rows"
+        )
+    _reject_duplicate_src(manifest.rows)
+    return manifest
+
+
+def _reject_duplicate_src(rows: list[SwapRow]) -> None:
+    seen: dict[str, int] = {}
+    duplicates: dict[str, list[int]] = {}
+    for index, row in enumerate(rows):
+        if row.src in seen:
+            duplicates.setdefault(row.src, [seen[row.src]]).append(index)
+        else:
+            seen[row.src] = index
+    if duplicates:
+        offenders = ", ".join(f"{src}@rows{idxs}" for src, idxs in sorted(duplicates.items()))
+        raise ValueError(
+            f"swap manifest contains duplicate src values: {offenders}; "
+            "the second occurrence would silently skip after the first row "
+            "removed the OLD instance"
+        )
 
 
 def _row_to_writer(row: SwapRow) -> dict[str, Any]:
@@ -162,25 +191,19 @@ if (typeof targetPage.loadAsync === "function") await targetPage.loadAsync();
 
 __READ_SPD_CHUNKS_JS__
 
-function writeSPDChunks(prefix, countKey, value, size) {
-  const oldCount = Number(targetPage.getSharedPluginData(NAMESPACE, countKey) || "0");
-  const chunks = [];
-  for (let i = 0; i < value.length; i += size) chunks.push(value.slice(i, i + size));
-  targetPage.setSharedPluginData(NAMESPACE, countKey, String(chunks.length));
-  for (let i = 0; i < chunks.length; i++) {
-    targetPage.setSharedPluginData(NAMESPACE, `${prefix}.${i}`, chunks[i]);
-  }
-  for (let i = chunks.length; i < oldCount; i++) {
-    targetPage.setSharedPluginData(NAMESPACE, `${prefix}.${i}`, "");
-  }
-  return chunks.length;
-}
+__WRITE_SPD_CHUNKS_JS__
 
 const rawIdMap = readSPDChunks("idMap", "idMapChunkCount");
 if (!rawIdMap) {
   throw new Error(`missing idMap SharedPluginData in namespace ${NAMESPACE}`);
 }
 const idMap = JSON.parse(rawIdMap);
+// An empty idMap is an init-failure condition (audit page wasn't cloned
+// against this namespace, or operator pointed at the wrong page). Hard-fail
+// here rather than silently skipping every row downstream — see #167 review.
+if (!idMap || typeof idMap !== "object" || Object.keys(idMap).length === 0) {
+  throw new Error(`empty idMap in namespace ${NAMESPACE}; clone the source page first or check the audit page id`);
+}
 
 // Cache imported component_sets per newKey to avoid duplicate imports.
 const componentSetCache = {};
@@ -225,27 +248,39 @@ const stats = {
   skipped_no_clone: 0,
   skipped_no_set: 0,
   skipped_no_variant: 0,
+  skipped_no_parent: 0,
   errors: 0,
 };
 const errorsSample = [];
+const skipsSample = [];
+function recordSkip(reason, row) {
+  if (skipsSample.length < 20) {
+    skipsSample.push({
+      reason,
+      src: row && row.src,
+      newKey: row && row.newKey,
+      oldCid: row && row.oldCid,
+    });
+  }
+}
 const newIdMapAdditions = {};
 
 for (const row of ROWS) {
   try {
     const cloneId = idMap[row.src];
-    if (!cloneId) { stats.skipped_no_clone++; continue; }
+    if (!cloneId) { stats.skipped_no_clone++; recordSkip("no_clone", row); continue; }
     const oldInstance = await figma.getNodeByIdAsync(cloneId);
-    if (!oldInstance) { stats.skipped_no_clone++; continue; }
+    if (!oldInstance) { stats.skipped_no_clone++; recordSkip("no_clone", row); continue; }
     const componentSet = await importNewSet(row.newKey);
-    if (!componentSet) { stats.skipped_no_set++; continue; }
+    if (!componentSet) { stats.skipped_no_set++; recordSkip("no_set", row); continue; }
 
     const variantChild = pickVariantChild(componentSet, row.variants || {});
-    if (!variantChild) { stats.skipped_no_variant++; continue; }
+    if (!variantChild) { stats.skipped_no_variant++; recordSkip("no_variant", row); continue; }
 
     const newInstance = variantChild.createInstance();
     const parent = oldInstance.parent;
     const oldIdx = parent && parent.children ? parent.children.indexOf(oldInstance) : -1;
-    if (!parent || oldIdx < 0) { stats.errors++; continue; }
+    if (!parent || oldIdx < 0) { stats.skipped_no_parent++; recordSkip("no_parent", row); continue; }
 
     // Place the new instance at the old position.
     if (typeof parent.insertChild === "function") {
@@ -323,13 +358,46 @@ if (Object.keys(newIdMapAdditions).length > 0) {
   writeSPDChunks("idMap", "idMapChunkCount", payload, 85000);
 }
 
+// `ok` mirrors apply-tokens' hardFailures discipline: a batch that skipped
+// every row (e.g. wrong audit page, missing component_set, no variant match)
+// is NOT a successful run, even though no exception was thrown. Only when
+// every row's outcome was `applied` does the batch report ok=true.
+const hardFailures =
+  stats.skipped_no_clone +
+  stats.skipped_no_set +
+  stats.skipped_no_variant +
+  stats.skipped_no_parent +
+  stats.errors;
+
 return {
-  ok: stats.errors === 0,
+  ok: hardFailures === 0,
   rows: ROWS.length,
   stats,
   errorsSample,
+  skipsSample,
 };
 """
+
+
+def render_swap_script_from_writer_rows(
+    *,
+    page_node_id: str,
+    namespace: str,
+    writer_rows: list[dict[str, Any]],
+) -> str:
+    """Render the swap JS from already-aliased writer-shape dicts.
+
+    Used by the shared use_figma batch writer, which has already invoked
+    :func:`row_to_writer_dict` to produce per-row dicts.
+    """
+    return (
+        AUDIT_PAGE_SWAP_JS_TEMPLATE.replace("__TARGET_PAGE_ID__", json.dumps(page_node_id))
+        .replace("__NAMESPACE__", json.dumps(namespace))
+        .replace("__ROWS__", json.dumps(writer_rows, separators=(",", ":"), ensure_ascii=True))
+        .replace("__READ_SPD_CHUNKS_JS__", READ_SPD_CHUNKS_JS)
+        .replace("__WRITE_SPD_CHUNKS_JS__", WRITE_SPD_CHUNKS_JS)
+        .lstrip()
+    )
 
 
 def render_swap_script(
@@ -338,14 +406,17 @@ def render_swap_script(
     namespace: str,
     rows: list[SwapRow],
 ) -> str:
-    writer_rows = [_row_to_writer(row) for row in rows]
-    return (
-        AUDIT_PAGE_SWAP_JS_TEMPLATE.replace("__TARGET_PAGE_ID__", json.dumps(page_node_id))
-        .replace("__NAMESPACE__", json.dumps(namespace))
-        .replace("__ROWS__", json.dumps(writer_rows, separators=(",", ":"), ensure_ascii=True))
-        .replace("__READ_SPD_CHUNKS_JS__", READ_SPD_CHUNKS_JS)
-        .lstrip()
+    """Render the swap JS for a list of typed :class:`SwapRow` objects."""
+    return render_swap_script_from_writer_rows(
+        page_node_id=page_node_id,
+        namespace=namespace,
+        writer_rows=[_row_to_writer(row) for row in rows],
     )
+
+
+def row_to_writer_dict(row: SwapRow) -> dict[str, Any]:
+    """Public alias for the writer-shape row dict (used by the batch writer)."""
+    return _row_to_writer(row)
 
 
 __all__ = [
@@ -354,5 +425,7 @@ __all__ = [
     "SwapManifest",
     "SwapRow",
     "load_swap_manifest",
+    "render_swap_script_from_writer_rows",
+    "row_to_writer_dict",
     "render_swap_script",
 ]

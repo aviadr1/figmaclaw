@@ -72,7 +72,11 @@ def test_issue_161_apply_tokens_js_template_never_throws_on_hard_failures() -> N
     # Only init-failure throws are allowed.
     init_throws = re.findall(r"throw new Error\(`[^`]+`\)", js_no_comments)
     for thrown in init_throws:
-        assert "target page not found" in thrown or "missing idMap" in thrown, (
+        assert (
+            "target page not found" in thrown
+            or "missing idMap" in thrown
+            or "empty idMap" in thrown
+        ), (
             f"emitted JS contains a non-init throw: {thrown!r}; F30 forbids "
             "throwing on aggregate stats because the runtime would roll back "
             "every successful per-row write in this batch"
@@ -141,9 +145,11 @@ def test_issue_162_swap_js_template_satisfies_F17_F22_F30() -> None:
     # F30
     init_throws = re.findall(r"throw new Error\(`[^`]+`\)", js_no_comments)
     for thrown in init_throws:
-        assert "target page not found" in thrown or "missing idMap" in thrown, (
-            f"swap JS contains a non-init throw: {thrown!r}"
-        )
+        assert (
+            "target page not found" in thrown
+            or "missing idMap" in thrown
+            or "empty idMap" in thrown
+        ), f"swap JS contains a non-init throw: {thrown!r}"
     # Core swap operations must be present.
     assert "importComponentSetByKeyAsync" in js_no_comments
     assert "createInstance" in js_no_comments
