@@ -593,6 +593,27 @@ def test_safety_net_commit_push_race_retries_without_aborting(tmp_path: Path) ->
     assert "warning: safety-net commit push failed" not in out
 
 
+def test_safety_net_commit_push_retry_failure_does_not_errexit(tmp_path: Path) -> None:
+    """If both safety-net push attempts fail, the wrapper reports false progress
+    and still writes observability instead of exiting through Bash errexit."""
+    obs_dir = tmp_path / "obs"
+    out = _run_loop(
+        tmp_path,
+        scenario="single_done",
+        git_dirty="1",
+        timeout_mode="pass",
+        FIGMACLAW_SYNC_OBS_DIR=str(obs_dir),
+        GIT_PUSH_FAIL="1",
+    )
+
+    trace = (tmp_path / "git-trace.txt").read_text()
+    summary_text = (obs_dir / "checkpoint_summary.txt").read_text()
+    assert trace.count("git push") >= 2
+    assert "warning: safety-net commit push failed after retry" in out
+    assert "total_safety_net_commits=0" in summary_text
+    assert "final_reason=has_more_false" in summary_text
+
+
 def test_exit_trap_flushes_any_unpushed_commits_on_normal_exit(tmp_path: Path) -> None:
     """Normal-exit path must still `git push` once via the EXIT trap. With
     --auto-commit this drains any per-page commits that weren't pushed (e.g.

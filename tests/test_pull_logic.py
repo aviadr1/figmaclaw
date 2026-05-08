@@ -281,6 +281,32 @@ async def test_pull_file_writes_component_md_for_component_section(pull_env: Pul
 
 
 @pytest.mark.asyncio
+async def test_schema_only_component_page_counts_as_schema_upgraded(pull_env: PullEnv):
+    """INVARIANT: component-only schema refreshes report one upgraded page."""
+    state, mock_client, tmp_path = pull_env.state, pull_env.client, pull_env.tmp_path
+    mock_client.get_page = AsyncMock(return_value=fake_component_page_node())
+
+    first = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+    assert first.component_sections_written == 1
+    assert first.pages_schema_upgraded == 0
+
+    file_entry = state.manifest.files["abc123"]
+    page_entry = file_entry.pages["7741:45837"]
+    file_entry.pull_schema_version = max(0, CURRENT_PULL_SCHEMA_VERSION - 1)
+    page_entry.pull_schema_version = max(0, CURRENT_PULL_SCHEMA_VERSION - 1)
+    page_entry.component_schema_versions = {
+        rel: max(0, CURRENT_PULL_SCHEMA_VERSION - 1) for rel in page_entry.component_md_paths
+    }
+    state.save()
+
+    result = await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+
+    assert result.pages_written == 0
+    assert result.component_sections_written == 1
+    assert result.pages_schema_upgraded == 1
+
+
+@pytest.mark.asyncio
 async def test_pull_file_skips_screen_md_when_all_sections_are_components(pull_env: PullEnv):
     """INVARIANT: No pages/*.md is written when a page has only component library sections."""
     state, mock_client, tmp_path = pull_env.state, pull_env.client, pull_env.tmp_path

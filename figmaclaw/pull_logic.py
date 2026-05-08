@@ -1440,6 +1440,8 @@ async def pull_file(
             if written_component_rels:
                 result.component_paths.extend(written_component_rels)
                 result.component_sections_written += len(written_component_rels)
+                if schema_only and not screen_sections:
+                    result.pages_schema_upgraded += 1
 
             n_comps = len(written_component_rels)
             suffix = f" + {n_comps} component(s)" if n_comps else ""

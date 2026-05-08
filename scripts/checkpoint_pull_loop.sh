@@ -136,7 +136,10 @@ push_with_ff_retry() {
     return 0
   fi
   git pull --no-rebase --ff-only origin "$TARGET_REF" >&2 || true
-  git push >&2
+  if git push >&2; then
+    return 0
+  fi
+  return 1
 }
 
 count_auto_commits_in_output() {
