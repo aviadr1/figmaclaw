@@ -103,6 +103,14 @@ from figmaclaw.use_figma_exec import execute_use_figma_calls
     is_flag=True,
     help="Allow emitted JS to fall back to getVariableByIdAsync when variable_key is unavailable.",
 )
+@click.option(
+    "--legacy-bindings-for-figma",
+    is_flag=True,
+    help=(
+        "Compatibility mode for migration-generated bindings_for_figma.json rows: "
+        "allows variable-id fallback. Pair with --library to match the legacy target library."
+    ),
+)
 @click.option("--json", "json_output", is_flag=True, help="Output structured JSON.")
 @click.pass_context
 def apply_tokens_cmd(
@@ -123,6 +131,7 @@ def apply_tokens_cmd(
     allow_stale_catalog: bool,
     allow_non_authoritative: bool,
     allow_variable_id_fallback: bool,
+    legacy_bindings_for_figma: bool,
     json_output: bool,
 ) -> None:
     """Apply authoritative, pre-filtered token fixes back into Figma.
@@ -135,6 +144,9 @@ def apply_tokens_cmd(
     This command does not enforce migration policy or F16 inheritance
     preservation. Inputs must already be filtered by an upstream resolver such
     as the planned ``figmaclaw bindings prepare`` stage.
+
+    Legacy ``bindings_for_figma.json`` rows only carry token names, so use
+    ``--library`` when those names can exist in multiple catalog libraries.
     """
     repo_dir = Path(ctx.obj["repo_dir"])
     if catalog_path is not None:
@@ -154,7 +166,7 @@ def apply_tokens_cmd(
             page_node_id=page_node_id,
             catalog=catalog,
             allow_non_authoritative=allow_non_authoritative,
-            allow_variable_id_fallback=allow_variable_id_fallback,
+            allow_variable_id_fallback=(allow_variable_id_fallback or legacy_bindings_for_figma),
             allow_catalog_source_mismatch=allow_stale_catalog,
             library_hashes=library_hashes,
         )

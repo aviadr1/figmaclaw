@@ -12,6 +12,7 @@ already been filtered for clean instance inheritance.
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +20,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from figmaclaw.figma_js import READ_SPD_CHUNKS_JS
 from figmaclaw.figma_utils import write_json_if_changed
 from figmaclaw.token_catalog import (
     AUTHORITATIVE_DEFINITION_SOURCES,
@@ -47,7 +49,7 @@ class ApplyTokenFix(BaseModel):
     source: str
     catalog_source_version: str | None = None
     value: Any | None = None
-    paint_index: int = 0
+    paint_index: int = Field(default=0, ge=0)
 
 
 class ApplyTokensManifest(BaseModel):
@@ -98,10 +100,12 @@ def load_apply_token_input(
     payload = json.loads(input_path.read_text(encoding="utf-8"))
     if isinstance(payload, dict) and "fixes" in payload:
         manifest = ApplyTokensManifest.model_validate(payload)
-        if file_key is not None:
-            manifest.file_key = file_key
-        if page_node_id is not None:
-            manifest.page_node_id = page_node_id
+        if manifest.schema_version != APPLY_TOKENS_SCHEMA_VERSION:
+            raise ValueError(
+                f"unsupported apply-tokens schema_version {manifest.schema_version}; "
+                f"expected {APPLY_TOKENS_SCHEMA_VERSION}"
+            )
+        _merge_manifest_target(manifest, file_key=file_key, page_node_id=page_node_id)
         refusals = _validate_manifest_fixes(
             manifest,
             catalog=catalog,
@@ -161,6 +165,10 @@ def _from_compact_rows(
         if not node_id or not prop or not token:
             refusals.append(Refusal(index, "missing_node_property_or_token", dict(raw)))
             continue
+        paint_index = _parse_paint_index(raw, index)
+        if isinstance(paint_index, Refusal):
+            refusals.append(paint_index)
+            continue
         candidates = token_index.get(str(token), [])
         if len(candidates) != 1:
             reason = "token_not_in_catalog" if not candidates else "ambiguous_token_name"
@@ -188,7 +196,7 @@ def _from_compact_rows(
                 variable_key=variable.key,
                 source=variable.source,
                 catalog_source_version=_catalog_source_version(catalog, variable),
-                paint_index=int(raw.get("paint_index", 0) or 0),
+                paint_index=paint_index,
             )
         )
 
@@ -251,6 +259,40 @@ def _validate_manifest_fixes(
         ):
             refusals.append(Refusal(index, "variable_key_mismatch", row))
     return refusals
+
+
+def _merge_manifest_target(
+    manifest: ApplyTokensManifest,
+    *,
+    file_key: str | None,
+    page_node_id: str | None,
+) -> None:
+    if file_key is not None:
+        if manifest.file_key is not None and manifest.file_key != file_key:
+            raise ValueError(
+                f"manifest file_key {manifest.file_key!r} does not match --file {file_key!r}"
+            )
+        manifest.file_key = file_key
+    if page_node_id is not None:
+        if manifest.page_node_id is not None and manifest.page_node_id != page_node_id:
+            raise ValueError(
+                "manifest page_node_id "
+                f"{manifest.page_node_id!r} does not match --page {page_node_id!r}"
+            )
+        manifest.page_node_id = page_node_id
+
+
+def _parse_paint_index(raw: dict[str, Any], row_index: int) -> int | Refusal:
+    value = raw.get("paint_index", 0)
+    if value in (None, ""):
+        return 0
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return Refusal(row_index, "invalid_paint_index", dict(raw))
+    if parsed < 0:
+        return Refusal(row_index, "invalid_paint_index", dict(raw))
+    return parsed
 
 
 def _catalog_by_token_name(
@@ -364,6 +406,7 @@ def write_apply_batches(
         raise ValueError("page_node_id is required")
 
     batch_dir.mkdir(parents=True, exist_ok=True)
+    _clean_generated_batch_dir(batch_dir)
     fixes = prepared.manifest.fixes
     batches: list[dict[str, Any]] = []
     calls: list[dict[str, str]] = []
@@ -409,6 +452,13 @@ def write_apply_batches(
     return {"manifest": manifest, "calls": calls}
 
 
+def _clean_generated_batch_dir(batch_dir: Path) -> None:
+    batch_file_pattern = re.compile(r"^batch-\d{4}\.(json|use_figma\.js)$")
+    for path in batch_dir.iterdir():
+        if path.is_file() and (path.name == "manifest.json" or batch_file_pattern.match(path.name)):
+            path.unlink()
+
+
 def _fix_to_writer_row(fix: ApplyTokenFix) -> dict[str, Any]:
     return {
         "node_id": fix.node_id,
@@ -433,14 +483,7 @@ const targetPage = await figma.getNodeByIdAsync(TARGET_PAGE_ID);
 if (!targetPage) throw new Error(`target page not found: ${TARGET_PAGE_ID}`);
 if (typeof targetPage.loadAsync === "function") await targetPage.loadAsync();
 
-function readSPDChunks(prefix, countKey) {
-  const count = Number(targetPage.getSharedPluginData(NAMESPACE, countKey) || "0");
-  const parts = [];
-  for (let i = 0; i < count; i++) {
-    parts.push(targetPage.getSharedPluginData(NAMESPACE, `${prefix}.${i}`) || "");
-  }
-  return parts.join("");
-}
+__READ_SPD_CHUNKS_JS__
 
 let idMap = {};
 if (NODE_MAP === "shared-plugin-data") {
@@ -548,8 +591,17 @@ for (const row of ROWS) {
   }
 }
 
-return {
-  ok: stats.errors === 0 && stats.missing_variable === 0 && stats.node_not_found === 0,
+const hardFailures =
+  stats.missing_idmap +
+  stats.node_not_found +
+  stats.missing_variable +
+  stats.paint_mixed +
+  stats.paint_no_solid +
+  stats.unsupported_property +
+  stats.errors;
+
+const summary = {
+  ok: hardFailures === 0,
   targetPageId: targetPage.id,
   nodeMap: NODE_MAP,
   rows: ROWS.length,
@@ -557,6 +609,12 @@ return {
   variableErrors,
   errorsSample: errors,
 };
+
+if (!summary.ok) {
+  throw new Error(`apply-tokens batch incomplete: ${JSON.stringify(summary)}`);
+}
+
+return summary;
 """
 
 
@@ -572,5 +630,6 @@ def render_apply_tokens_script(
         .replace("__NAMESPACE__", json.dumps(namespace))
         .replace("__NODE_MAP__", json.dumps(node_map))
         .replace("__ROWS__", json.dumps(rows, separators=(",", ":"), ensure_ascii=True))
+        .replace("__READ_SPD_CHUNKS_JS__", READ_SPD_CHUNKS_JS)
         .lstrip()
     )
