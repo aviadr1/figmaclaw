@@ -195,6 +195,7 @@ def test_variables_command_refreshes_catalog(tmp_path: Path, monkeypatch) -> Non
     assert data["schema_version"] == 2
     assert data["libraries"]["libabc"]["source_version"] == "v1"
     assert data["variables"]["VariableID:libabc/1:1"]["name"] == "fg/primary"
+    assert data["variables"]["VariableID:libabc/1:1"]["key"] == "fg-primary"
     assert data["variables"]["VariableID:libabc/1:1"]["source"] == "figma_api"
 
 

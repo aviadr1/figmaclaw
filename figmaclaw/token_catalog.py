@@ -151,6 +151,7 @@ class CatalogVariable(BaseModel):
     library_hash: str | None = None
     collection_id: str | None = None
     name: str | None = None
+    key: str | None = None
     resolved_type: str | None = None  # COLOR / FLOAT / STRING / BOOLEAN
 
     # Values
@@ -452,6 +453,7 @@ def merge_local_variables(
             library_hash=lib_hash,
             collection_id=var_entry.variableCollectionId or None,
             name=var_entry.name,
+            key=var_entry.key or None,
             resolved_type=var_entry.resolvedType or None,
             values_by_mode=_build_values_by_mode(var_entry),
             scopes=list(var_entry.scopes),

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from figmaclaw.audit import walk_nodes_with_context
+from figmaclaw.figma_js import READ_SPD_CHUNKS_JS
 
 JSONL_NODE_FIELDS = (
     "fills",
@@ -218,14 +219,7 @@ function chunkString(value, size) {
   return chunks;
 }
 
-function readSPDChunks(prefix, countKey) {
-  const count = Number(targetPage.getSharedPluginData(NAMESPACE, countKey) || "0");
-  let value = "";
-  for (let i = 0; i < count; i++) {
-    value += targetPage.getSharedPluginData(NAMESPACE, `${prefix}.${i}`) || "";
-  }
-  return value;
-}
+__READ_SPD_CHUNKS_JS__
 
 function writeSPDChunks(prefix, countKey, value, size) {
   const oldCount = Number(targetPage.getSharedPluginData(NAMESPACE, countKey) || "0");
@@ -372,5 +366,6 @@ def render_clone_script(
         .replace("__DESTINATION_PAGE_ID_JSON__", json.dumps(destination_page_id))
         .replace("__TARGET_PAGE_NAME_JSON__", json.dumps(title))
         .replace("__NAMESPACE_JSON__", json.dumps(namespace))
+        .replace("__READ_SPD_CHUNKS_JS__", READ_SPD_CHUNKS_JS)
         .lstrip()
     )
