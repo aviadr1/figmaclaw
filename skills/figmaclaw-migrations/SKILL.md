@@ -97,11 +97,11 @@ The current port roadmap is [issue
 
 ## Instance/master override inspection
 
-Use `figmaclaw inspect-instance --file-key "$FILE" --node "$INSTANCE" --current-ds-hash "$TARGET_COMPONENT_SET_KEY"` to audit one INSTANCE after a component swap.
+Use `figmaclaw inspect-instance --file-key "$FILE" --node "$INSTANCE" --current-ds-hash "$TARGET_COMPONENT_SET_KEY"` to audit one INSTANCE after a component swap. For migration pages, prefer batch mode: `--nodes-from audit_nodes.jsonl --filter type=INSTANCE`.
 
 - `override_properties != []` is the structural Rule B signal: the instance points at the target master, but still carries detached overrides, so the writer missed `resetOverrides()`.
 - `master.is_current_ds == false` is the complementary Rule A signal when published identity is available: the instance still points at a legacy master.
-- `master.published_key` prefers the component-set key over the component key, so pass the target component-set key when validating a published variant family.
+- `master.published_key` prefers the component-set key over the component key. `--current-ds-hash` accepts that component-set key, a component key, a library hash, or the target DS file key.
 
 ## Don't-do list
 
@@ -157,10 +157,11 @@ figmaclaw audit-page check "$FILE" "$AUDIT_PAGE" \
 figmaclaw audit-page diagnose "$FILE" "$AUDIT_PAGE" \
     --old-palette palettes/old.json --new-palette palettes/new.json
 
-# Single-instance swap audit
+# Batch swap audit
 figmaclaw inspect-instance \
     --file-key "$FILE" \
-    --node "$INSTANCE" \
+    --nodes-from audit_nodes.jsonl \
+    --filter type=INSTANCE \
     --current-ds-hash "$TARGET_COMPONENT_SET_KEY"
 ```
 

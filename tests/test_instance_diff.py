@@ -8,7 +8,9 @@ import pytest
 from click.testing import CliRunner
 
 from figmaclaw.instance_diff import (
+    _metadata_for_node,
     diff_instance_against_master,
+    diff_instances_against_masters,
     diff_nodes_against_master,
 )
 from figmaclaw.main import cli
@@ -496,6 +498,86 @@ async def test_diff_instance_against_master_reads_master_components_and_componen
     assert diff.master.is_current_ds is True
 
 
+def test_metadata_for_node_reads_figma_nested_nodes_envelope() -> None:
+    payload = {
+        "nodes": {
+            "9451:314": {
+                "document": {"id": "9451:314", "type": "INSTANCE"},
+                "components": {
+                    "9465:2130": {
+                        "key": COMPONENT_KEY,
+                        "remote": True,
+                        "componentSetId": "9465:2033",
+                    }
+                },
+                "componentSets": {
+                    "9465:2033": {
+                        "key": COMPONENT_SET_KEY,
+                        "remote": True,
+                    }
+                },
+            }
+        }
+    }
+
+    component = _metadata_for_node(payload, "components", "9465:2130")
+    component_set = _metadata_for_node(payload, "componentSets", "9465:2033")
+
+    assert component["key"] == COMPONENT_KEY
+    assert component_set["key"] == COMPONENT_SET_KEY
+
+
+@pytest.mark.asyncio
+async def test_diff_instances_against_masters_batches_instance_and_master_fetches() -> None:
+    first = _overridden_instance()
+    first["id"] = "10:2"
+    second = _matching_instance()
+    second["id"] = "10:3"
+    client = MagicMock()
+    client.get_nodes_response = AsyncMock(
+        side_effect=[
+            {
+                "nodes": {
+                    "10:2": {"document": first},
+                    "10:3": {"document": second},
+                },
+                "components": {
+                    "99:1": {
+                        "key": COMPONENT_KEY,
+                        "file_key": "ds-file",
+                        "node_id": "99:1",
+                        "library_hash": CURRENT_HASH,
+                    }
+                },
+            },
+            {
+                "nodes": {"99:1": {"document": _master_node()}},
+            },
+        ]
+    )
+
+    diffs = await diff_instances_against_masters(
+        client,
+        "file123",
+        ["10:2", "10:3"],
+        current_ds_library_hashes={CURRENT_HASH},
+    )
+
+    assert [diff.instance.node_id for diff in diffs] == ["10:2", "10:3"]
+    assert diffs[0].override_properties == [
+        "cornerRadius",
+        "fills",
+        "itemSpacing",
+        "paddingLeft",
+    ]
+    assert diffs[1].override_properties == []
+    assert client.get_nodes_response.await_args_list[0].args == (
+        "file123",
+        ["10:2", "10:3"],
+    )
+    assert client.get_nodes_response.await_args_list[1].args == ("ds-file", ["99:1"])
+
+
 def test_inspect_instance_cli_reports_usage_error_for_non_instance(tmp_path, monkeypatch) -> None:
     fake = MagicMock()
     fake.__aenter__ = AsyncMock(return_value=fake)
@@ -525,3 +607,118 @@ def test_inspect_instance_cli_reports_usage_error_for_non_instance(tmp_path, mon
 
     assert result.exit_code == 2
     assert "expected INSTANCE, got FRAME" in result.output
+
+
+def test_inspect_instance_cli_accepts_current_ds_file_key(tmp_path, monkeypatch) -> None:
+    fake = MagicMock()
+    fake.__aenter__ = AsyncMock(return_value=fake)
+    fake.__aexit__ = AsyncMock(return_value=False)
+    fake.get_component_sets = AsyncMock(return_value=[{"key": COMPONENT_SET_KEY}])
+    fake.get_component = AsyncMock(return_value={"file_key": "remote-ds-file", "node_id": "99:1"})
+    fake.get_component_set = AsyncMock(return_value={})
+    fake.get_nodes_response = AsyncMock(
+        side_effect=[
+            {
+                "nodes": {"10:2": {"document": _matching_instance()}},
+                "components": {
+                    "99:1": {
+                        "key": COMPONENT_KEY,
+                        "componentSetKey": COMPONENT_SET_KEY,
+                    }
+                },
+            },
+            {
+                "nodes": {"99:1": {"document": _master_node()}},
+            },
+        ]
+    )
+    monkeypatch.setenv("FIGMA_API_KEY", "figd_test")
+
+    with patch("figmaclaw.commands.inspect_instance.FigmaClient", return_value=fake):
+        result = CliRunner().invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "inspect-instance",
+                "--file-key",
+                "file123",
+                "--node",
+                "10:2",
+                "--current-ds-hash",
+                "dcDETwKMNGpK39FfApg7Ki",
+            ],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0
+    assert json.loads(result.output)["master"]["is_current_ds"] is True
+    fake.get_component_sets.assert_awaited_once_with("dcDETwKMNGpK39FfApg7Ki")
+
+
+def test_inspect_instance_cli_outputs_jsonl_for_nodes_from_file(tmp_path, monkeypatch) -> None:
+    nodes_path = tmp_path / "audit_nodes.jsonl"
+    nodes_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"id": "10:2", "type": "INSTANCE"}),
+                json.dumps({"id": "10:99", "type": "FRAME"}),
+                json.dumps({"id": "10:3", "type": "INSTANCE"}),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    first = _overridden_instance()
+    first["id"] = "10:2"
+    second = _matching_instance()
+    second["id"] = "10:3"
+    fake = MagicMock()
+    fake.__aenter__ = AsyncMock(return_value=fake)
+    fake.__aexit__ = AsyncMock(return_value=False)
+    fake.get_nodes_response = AsyncMock(
+        side_effect=[
+            {
+                "nodes": {
+                    "10:2": {"document": first},
+                    "10:3": {"document": second},
+                },
+                "components": {
+                    "99:1": {
+                        "key": COMPONENT_KEY,
+                        "file_key": "ds-file",
+                        "node_id": "99:1",
+                        "library_hash": CURRENT_HASH,
+                    }
+                },
+            },
+            {
+                "nodes": {"99:1": {"document": _master_node()}},
+            },
+        ]
+    )
+    monkeypatch.setenv("FIGMA_API_KEY", "figd_test")
+
+    with patch("figmaclaw.commands.inspect_instance.FigmaClient", return_value=fake):
+        result = CliRunner().invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "inspect-instance",
+                "--file-key",
+                "file123",
+                "--nodes-from",
+                str(nodes_path),
+                "--filter",
+                "type=INSTANCE",
+                "--current-ds-hash",
+                CURRENT_HASH,
+            ],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0
+    rows = [json.loads(line) for line in result.output.splitlines()]
+    assert [row["instance"]["node_id"] for row in rows] == ["10:2", "10:3"]
+    assert rows[0]["override_properties"]
+    assert rows[1]["override_properties"] == []
