@@ -9,7 +9,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 from figmaclaw.figma_client import FigmaClient, normalize_node_id
-from figmaclaw.token_scan import bound_variable_id, paint_bound_variable_id
+from figmaclaw.token_scan import bound_variable_id, paint_bound_variable_id, variable_library_hash
 
 OverrideKind = Literal["none", "value", "binding", "both"]
 
@@ -55,6 +55,8 @@ class MasterRef(BaseModel):
     node_id: str | None = None
     library_hash: str | None = None
     published_key: str | None = None
+    component_key: str | None = None
+    component_set_key: str | None = None
     is_current_ds: bool = False
     is_resolvable: bool = False
 
@@ -85,6 +87,7 @@ class InstanceDiff(BaseModel):
     master: MasterRef
     variant: VariantInfo = Field(default_factory=VariantInfo)
     properties: list[PropertyDiff] = Field(default_factory=list)
+    override_properties: list[str] = Field(default_factory=list)
 
 
 async def diff_instance_against_master(
@@ -120,12 +123,28 @@ async def diff_instance_against_master(
             component_set_node = await _fetch_optional_node(
                 client, master_ref.file_key, component_set_id
             )
+        if component_set_node is None and master_ref.component_set_key:
+            component_set_meta = await _fetch_component_set_meta(
+                client,
+                master_ref.component_set_key,
+            )
+            component_set_file_key = _first_str(component_set_meta, "file_key", "fileKey")
+            component_set_node_id = _first_str(component_set_meta, "node_id", "nodeId")
+            if component_set_file_key and component_set_node_id:
+                component_set_node = await _fetch_optional_node(
+                    client,
+                    component_set_file_key,
+                    component_set_node_id,
+                )
+            elif component_set_meta:
+                component_set_node = component_set_meta
 
-    return InstanceDiff(
+    return _build_instance_diff(
         instance=InstanceRef(file_key=file_key, node_id=normalized_instance_id),
         master=master_ref,
-        variant=_variant_info(instance_node, master_node, component_set_node),
-        properties=_property_diffs(master_node, instance_node),
+        instance_node=instance_node,
+        master_node=master_node,
+        component_set_node=component_set_node,
     )
 
 
@@ -144,18 +163,39 @@ def diff_nodes_against_master(
     """Pure helper for tests and callers that already have both node payloads."""
     hashes = current_ds_library_hashes or set()
     node_id = str(instance_node.get("id") or "")
-    return InstanceDiff(
+    return _build_instance_diff(
         instance=InstanceRef(file_key=file_key, node_id=normalize_node_id(node_id)),
         master=MasterRef(
             file_key=master_file_key,
             node_id=normalize_node_id(master_node_id) if master_node_id else None,
             library_hash=master_library_hash,
             published_key=master_published_key,
+            component_set_key=master_published_key,
             is_current_ds=bool(master_library_hash and master_library_hash in hashes),
             is_resolvable=master_node is not None,
         ),
+        instance_node=instance_node,
+        master_node=master_node,
+        component_set_node=component_set_node,
+    )
+
+
+def _build_instance_diff(
+    *,
+    instance: InstanceRef,
+    master: MasterRef,
+    instance_node: dict[str, Any],
+    master_node: dict[str, Any] | None,
+    component_set_node: dict[str, Any] | None,
+) -> InstanceDiff:
+    properties = _property_diffs(master_node, instance_node)
+    override_properties = [row.property for row in properties if row.is_override]
+    return InstanceDiff(
+        instance=instance,
+        master=master,
         variant=_variant_info(instance_node, master_node, component_set_node),
-        properties=_property_diffs(master_node, instance_node),
+        properties=properties,
+        override_properties=override_properties,
     )
 
 
@@ -197,26 +237,27 @@ async def _resolve_master_ref(
     current_ds_library_hashes: set[str],
 ) -> MasterRef:
     component_id = _str_or_none(instance_node.get("componentId"))
-    published_key = _first_str(
-        component_meta,
-        "componentSetKey",
-        "component_set_key",
-        "key",
-    ) or _str_or_none(instance_node.get("componentKey"))
+    component_key = _first_str(component_meta, "key") or _str_or_none(
+        instance_node.get("componentKey")
+    )
+    component_set_key = _first_str(component_meta, "componentSetKey", "component_set_key")
     meta = dict(component_meta)
-    if published_key and (not meta.get("file_key") or not meta.get("node_id")):
-        remote_meta = await _fetch_component_meta(client, published_key)
+    if component_key and (not meta.get("file_key") or not meta.get("node_id")):
+        remote_meta = await _fetch_component_meta(client, component_key)
         if remote_meta:
             meta = {**remote_meta, **meta}
 
     master_file_key = _first_str(meta, "file_key", "fileKey") or file_key
     master_node_id = _first_str(meta, "node_id", "nodeId") or component_id
-    library_hash = _first_str(meta, "library_hash", "libraryHash") or published_key
+    library_hash = _first_str(meta, "library_hash", "libraryHash")
+    published_key = component_set_key or component_key
     return MasterRef(
         file_key=master_file_key,
         node_id=normalize_node_id(master_node_id) if master_node_id else None,
         library_hash=library_hash,
         published_key=published_key,
+        component_key=component_key,
+        component_set_key=component_set_key,
         is_current_ds=bool(library_hash and library_hash in current_ds_library_hashes),
         is_resolvable=False,
     )
@@ -225,6 +266,18 @@ async def _resolve_master_ref(
 async def _fetch_component_meta(client: FigmaClient, component_key: str) -> dict[str, Any]:
     try:
         return await client.get_component(component_key)
+    except httpx.HTTPStatusError:
+        return {}
+
+
+async def _fetch_component_set_meta(
+    client: FigmaClient,
+    component_set_key: str | None,
+) -> dict[str, Any]:
+    if not component_set_key:
+        return {}
+    try:
+        return await client.get_component_set(component_set_key)
     except httpx.HTTPStatusError:
         return {}
 
@@ -248,17 +301,17 @@ def _property_diffs(
 ) -> list[PropertyDiff]:
     if master_node is None:
         return []
-    properties = sorted(
-        set(_extract_property_values(master_node)) | set(_extract_property_values(instance_node))
-    )
+    master_values = _extract_property_values(master_node)
+    instance_values = _extract_property_values(instance_node)
+    properties = sorted(set(master_values) | set(instance_values))
     diffs = []
     for prop in properties:
-        master_value = _extract_property_value(master_node, prop)
-        instance_value = _extract_property_value(instance_node, prop)
+        master_value = master_values.get(prop)
+        instance_value = instance_values.get(prop)
         master_binding = _binding_for_property(master_node, prop)
         instance_binding = _binding_for_property(instance_node, prop)
         value_changed = master_value != instance_value
-        binding_changed = master_binding != instance_binding
+        binding_changed = _binding_identity(master_binding) != _binding_identity(instance_binding)
         if value_changed and binding_changed:
             kind: OverrideKind = "both"
         elif value_changed:
@@ -307,10 +360,6 @@ def _extract_property_values(node: Mapping[str, Any]) -> dict[str, Any]:
         if prop in node or prop in (node.get("boundVariables") or {}):
             values[prop] = _json_clean(node.get(prop))
     return values
-
-
-def _extract_property_value(node: Mapping[str, Any], prop: str) -> Any:
-    return _extract_property_values(node).get(prop)
 
 
 def _paint_values(value: Any) -> list[Any] | None:
@@ -424,11 +473,21 @@ def _coalesce_bindings(bindings: list[dict[str, Any]]) -> dict[str, Any] | None:
     return {"bindings": bindings}
 
 
-def _library_hash(var_id: str) -> str | None:
-    inner = var_id.removeprefix("VariableID:")
-    if "/" not in inner:
+def _binding_identity(binding: dict[str, Any] | None) -> Any:
+    if binding is None:
         return None
-    return inner.split("/", 1)[0]
+    children = binding.get("bindings")
+    if isinstance(children, list):
+        return tuple(_binding_identity(child) for child in children if isinstance(child, dict))
+    return (
+        binding.get("source"),
+        binding.get("variable_id"),
+        binding.get("library_hash"),
+    )
+
+
+def _library_hash(var_id: str) -> str | None:
+    return variable_library_hash(var_id)
 
 
 def _variant_info(

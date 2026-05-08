@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 import click
+import httpx
 
 from figmaclaw.commands._shared import require_figma_api_key
 from figmaclaw.config import load_config
@@ -21,7 +22,7 @@ from figmaclaw.instance_diff import InstanceDiff, diff_instance_against_master
     "--current-ds-hash",
     "current_ds_hashes",
     multiple=True,
-    help="Current design-system library/component hash. Repeatable.",
+    help="Current design-system library hash. Repeatable.",
 )
 @click.pass_context
 def inspect_instance_cmd(
@@ -38,7 +39,12 @@ def inspect_instance_cmd(
         *config.design_system_library_hashes,
         *(value.strip() for value in current_ds_hashes if value.strip()),
     }
-    result = asyncio.run(_run(api_key, file_key, node_id, current_hashes))
+    try:
+        result = asyncio.run(_run(api_key, file_key, node_id, current_hashes))
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+    except httpx.HTTPStatusError as exc:
+        raise click.ClickException(f"Figma API request failed: {exc}") from exc
     click.echo(json.dumps(result.model_dump(mode="json"), indent=2, sort_keys=True))
 
 

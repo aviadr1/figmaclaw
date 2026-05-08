@@ -15,6 +15,8 @@ from figmaclaw.main import cli
 
 CURRENT_HASH = "current-ds-hash"
 OLD_HASH = "old-ds-hash"
+COMPONENT_KEY = "component-published-key"
+COMPONENT_SET_KEY = "component-set-published-key"
 
 
 def _var(library_hash: str, name: str) -> dict:
@@ -75,6 +77,7 @@ def test_instance_diff_same_ds_no_override() -> None:
 
     assert diff.master.is_current_ds is True
     assert diff.master.is_resolvable is True
+    assert diff.override_properties == []
     assert all(row.override_kind == "none" for row in diff.properties)
 
 
@@ -91,6 +94,7 @@ def test_instance_diff_same_ds_with_overrides() -> None:
 
     by_property = {row.property: row for row in diff.properties}
     assert diff.master.is_current_ds is True
+    assert diff.override_properties == ["cornerRadius", "fills", "itemSpacing", "paddingLeft"]
     assert by_property["cornerRadius"].override_kind == "both"
     assert by_property["fills"].override_kind == "both"
     assert by_property["paddingLeft"].override_kind == "both"
@@ -126,6 +130,58 @@ def test_instance_diff_unresolvable_master() -> None:
     assert diff.master.is_current_ds is True
     assert diff.master.is_resolvable is False
     assert diff.properties == []
+    assert diff.override_properties == []
+
+
+def test_instance_diff_local_draft_master_uses_overrides_as_structural_signal() -> None:
+    diff = diff_nodes_against_master(
+        file_key="audit-file",
+        instance_node=_overridden_instance(),
+        master_node=_master_node(),
+        master_file_key="audit-file",
+        master_node_id="99:1",
+        master_library_hash=None,
+        current_ds_library_hashes={CURRENT_HASH},
+    )
+
+    assert diff.master.is_current_ds is False
+    assert diff.master.library_hash is None
+    assert diff.master.published_key is None
+    assert diff.override_properties == ["cornerRadius", "fills", "itemSpacing", "paddingLeft"]
+
+
+def test_instance_diff_override_kind_is_identity_triage_signal() -> None:
+    master = _master_node()
+    master["cornerRadius"] = 999
+    master["fills"] = [{"type": "SOLID", "color": {"r": 1, "g": 1, "b": 1}}]
+    master["itemSpacing"] = 8
+    master["boundVariables"] = {
+        "fills": [_var(CURRENT_HASH, "surface")],
+        "itemSpacing": _var(CURRENT_HASH, "spacing-8"),
+    }
+    instance = _matching_instance()
+    instance["cornerRadius"] = 6
+    instance["fills"] = [{"type": "SOLID", "color": {"r": 1, "g": 1, "b": 1}}]
+    instance["itemSpacing"] = 10
+    instance["boundVariables"] = {
+        "fills": [_var(OLD_HASH, "surface")],
+        "itemSpacing": _var(OLD_HASH, "spacing-10"),
+    }
+
+    diff = diff_nodes_against_master(
+        file_key="file123",
+        instance_node=instance,
+        master_node=master,
+        master_file_key="ds-file",
+        master_node_id="99:1",
+        master_library_hash=CURRENT_HASH,
+        current_ds_library_hashes={CURRENT_HASH},
+    )
+
+    by_property = {row.property: row for row in diff.properties}
+    assert by_property["cornerRadius"].override_kind == "value"
+    assert by_property["fills"].override_kind == "binding"
+    assert by_property["itemSpacing"].override_kind == "both"
 
 
 def test_instance_diff_variant_set_metadata() -> None:
@@ -170,14 +226,17 @@ async def test_diff_instance_against_master_resolves_from_component_metadata() -
             "nodes": {"10:2": {"document": instance}},
             "components": {
                 "99:1": {
-                    "key": CURRENT_HASH,
+                    "key": COMPONENT_KEY,
+                    "componentSetKey": COMPONENT_SET_KEY,
                     "file_key": "ds-file",
                     "node_id": "99:1",
+                    "library_hash": CURRENT_HASH,
                 }
             },
         }
     )
     client.get_nodes = AsyncMock(return_value={"99:1": master})
+    client.get_component_set = AsyncMock(return_value={})
 
     diff = await diff_instance_against_master(
         client,
@@ -187,7 +246,10 @@ async def test_diff_instance_against_master_resolves_from_component_metadata() -
     )
 
     assert diff.master.file_key == "ds-file"
-    assert diff.master.published_key == CURRENT_HASH
+    assert diff.master.published_key == COMPONENT_SET_KEY
+    assert diff.master.component_key == COMPONENT_KEY
+    assert diff.master.component_set_key == COMPONENT_SET_KEY
+    assert diff.master.library_hash == CURRENT_HASH
     assert diff.master.is_current_ds is True
     assert diff.master.is_resolvable is True
     client.get_nodes.assert_awaited_once_with("ds-file", ["99:1"], depth=1)
@@ -202,9 +264,10 @@ async def test_diff_instance_against_master_marks_fetch_failure_unresolvable() -
             "nodes": {"10:2": {"document": instance}},
             "components": {
                 "99:1": {
-                    "key": CURRENT_HASH,
+                    "key": COMPONENT_KEY,
                     "file_key": "ds-file",
                     "node_id": "99:1",
+                    "library_hash": CURRENT_HASH,
                 }
             },
         }
@@ -235,9 +298,10 @@ def test_inspect_instance_cli_prints_instance_diff_json(tmp_path, monkeypatch) -
             "nodes": {"10:2": {"document": _overridden_instance()}},
             "components": {
                 "99:1": {
-                    "key": CURRENT_HASH,
+                    "key": COMPONENT_KEY,
                     "file_key": "ds-file",
                     "node_id": "99:1",
+                    "library_hash": CURRENT_HASH,
                 }
             },
         }
@@ -266,9 +330,91 @@ def test_inspect_instance_cli_prints_instance_diff_json(tmp_path, monkeypatch) -
     data = json.loads(result.output)
     assert data["instance"] == {"file_key": "file123", "node_id": "10:2"}
     assert data["master"]["is_current_ds"] is True
+    assert data["override_properties"] == [
+        "cornerRadius",
+        "fills",
+        "itemSpacing",
+        "paddingLeft",
+    ]
     assert {row["property"] for row in data["properties"] if row["is_override"]} >= {
         "cornerRadius",
         "fills",
         "itemSpacing",
         "paddingLeft",
     }
+
+
+@pytest.mark.asyncio
+async def test_diff_instance_against_master_uses_component_key_for_remote_master() -> None:
+    instance = _matching_instance()
+    client = MagicMock()
+    client.get_nodes_response = AsyncMock(
+        return_value={
+            "nodes": {"10:2": {"document": instance}},
+            "components": {
+                "99:1": {
+                    "key": COMPONENT_KEY,
+                    "componentSetKey": COMPONENT_SET_KEY,
+                }
+            },
+        }
+    )
+    client.get_component = AsyncMock(
+        return_value={
+            "file_key": "ds-file",
+            "node_id": "99:1",
+            "library_hash": CURRENT_HASH,
+        }
+    )
+    client.get_component_set = AsyncMock(
+        return_value={
+            "componentPropertyDefinitions": {
+                "size": {"type": "VARIANT", "variantOptions": ["sm", "lg"]}
+            }
+        }
+    )
+    client.get_nodes = AsyncMock(return_value={"99:1": _master_node()})
+
+    diff = await diff_instance_against_master(
+        client,
+        "file123",
+        "10:2",
+        current_ds_library_hashes={CURRENT_HASH},
+    )
+
+    client.get_component.assert_awaited_once_with(COMPONENT_KEY)
+    client.get_component_set.assert_awaited_once_with(COMPONENT_SET_KEY)
+    assert diff.master.published_key == COMPONENT_SET_KEY
+    assert diff.master.is_current_ds is True
+    assert diff.variant.available[0]["property"] == "size"
+
+
+def test_inspect_instance_cli_reports_usage_error_for_non_instance(tmp_path, monkeypatch) -> None:
+    fake = MagicMock()
+    fake.__aenter__ = AsyncMock(return_value=fake)
+    fake.__aexit__ = AsyncMock(return_value=False)
+    fake.get_nodes_response = AsyncMock(
+        return_value={
+            "nodes": {"10:2": {"document": {"id": "10:2", "type": "FRAME"}}},
+            "components": {},
+        }
+    )
+    monkeypatch.setenv("FIGMA_API_KEY", "figd_test")
+
+    with patch("figmaclaw.commands.inspect_instance.FigmaClient", return_value=fake):
+        result = CliRunner().invoke(
+            cli,
+            [
+                "--repo-dir",
+                str(tmp_path),
+                "inspect-instance",
+                "--file-key",
+                "file123",
+                "--node",
+                "10:2",
+            ],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 2
+    assert "expected INSTANCE, got FRAME" in result.output
