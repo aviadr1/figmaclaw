@@ -11,6 +11,7 @@ from urllib.parse import unquote, urlparse
 
 import click
 
+from figmaclaw.commands.apply_tokens import apply_tokens_cmd
 from figmaclaw.commands.apply_webhook import apply_webhook_cmd
 from figmaclaw.commands.audit_page import audit_page_group
 from figmaclaw.commands.audit_pipeline import audit_pipeline_group
@@ -157,6 +158,7 @@ def cli(ctx: click.Context, json_mode: bool, verbose: int, quiet: int, repo_dir:
 
 
 cli.add_command(apply_webhook_cmd)
+cli.add_command(apply_tokens_cmd)
 cli.add_command(audit_page_group)
 cli.add_command(audit_pipeline_group)
 cli.add_command(build_context_cmd)

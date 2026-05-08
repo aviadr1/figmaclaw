@@ -46,7 +46,7 @@ def parse_since(since: str) -> datetime | None:
 
 def write_json_if_changed(
     path: Path,
-    data: dict,
+    data: Any,
     *,
     ignore_keys: frozenset[str] = frozenset(),
 ) -> bool:
