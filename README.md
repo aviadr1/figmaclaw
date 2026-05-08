@@ -128,6 +128,7 @@ Designer saves in Figma
 - `figmaclaw pull`: bulk sync all tracked files.
 - `figmaclaw sync`: re-sync one markdown page file.
 - `figmaclaw inspect`: report structure + enrichment state.
+- `figmaclaw inspect-instance`: diff one INSTANCE against its master.
 - `figmaclaw screenshots`: download frame screenshots.
 - `figmaclaw write-body`: write prose body while preserving frontmatter.
 - `figmaclaw mark-enriched`: record enrichment completion state.
