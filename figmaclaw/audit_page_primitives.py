@@ -106,7 +106,6 @@ _INACTIVE_NAME_KEYWORD = re.compile(
       | backup
       | nope
       | delete[d]?
-      | obsolete
     )
     (?=[\s\-—–_/|()\[\]:.,!?]|$)               # right boundary
     """,

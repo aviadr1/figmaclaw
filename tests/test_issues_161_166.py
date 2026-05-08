@@ -211,7 +211,12 @@ def test_issue_162_swap_dry_run_reports_unique_new_keys_and_old_cids(
 def test_issue_162_swap_emit_only_writes_deterministic_batches(tmp_path: Path) -> None:
     manifest = tmp_path / "swap.json"
     manifest.write_text(
-        json.dumps([{"src": str(i), "newKey": "K", "variants": {"X": "y"}} for i in range(3)]),
+        json.dumps(
+            [
+                {"src": str(i), "oldCid": "OLD", "newKey": "K", "variants": {"X": "y"}}
+                for i in range(3)
+            ]
+        ),
         encoding="utf-8",
     )
 

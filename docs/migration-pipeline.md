@@ -113,8 +113,74 @@ substrate is [issue
 | `figmaclaw audit-page emit-clone-script <file_key> <source_node_id>` | Generate `use_figma`-clean Plugin API JS that clones a page, frame, or section into a new audit page (or merges into an existing one). |
 | `figmaclaw audit-page check <file_key> <audit_page_id>` | Compare a binding-intent manifest against what's actually bound on the audit page; emit per-row findings with status taxonomy. |
 | `figmaclaw audit-page diagnose <file_key> <audit_page_id>` | Classify unbound literal paints (old-palette / new-palette / unclassified) on the audit page. |
-| `figmaclaw audit-pipeline lint --component-map ... --census ...` | Validate the v3 component-migration-map shape and cross-reference each `new_key` against the published `_census.md`. |
+| `figmaclaw audit-page swap <file_key> <audit_page_id> --manifest swap.json` | Emit / execute component-instance swaps on an audit page. F17/F22/F30-compliant: never `.detach()`, never `throw` on partial failure, returns aggregate per-row stats. Three modes (`--dry-run` / `--emit-only` / `--execute`) match `apply-tokens`. |
+| `figmaclaw audit-pipeline lint --component-map ... [--census ...] [--variants ...]` | Validate the v3 component-migration-map shape (nested or flat). With `--census` cross-references each `new_key` against the published `_census.md`. With `--variants <taxonomy.json>` validates `variant_mapping` axis names + values against the published variant taxonomy and enforces OLD-axis coverage. |
 | `figmaclaw apply-tokens <fix-manifest> --file ... --page ...` | Take a versioned fix manifest (or legacy compact rows) and apply variable bindings. Three modes: `--dry-run` plans, `--emit-only` writes deterministic batches, `--execute` runs them through the shared MCP executor. |
+
+### v3 component-migration-map schema
+
+The `component_migration_map.v3.json` artifact has two compatible rule shapes:
+
+* **Nested v3** — original schema, has a `target` block and four sibling
+  keys (`swap_strategy`, `parent_handling`, `property_translation`,
+  `validation`). `swap_strategy` ∈ `{create-instance-and-translate,
+  swap-with-translation, swap-direct, none}`.
+
+* **Flat v3** — introduced for instance-swap migrations driven by
+  `audit-page swap`. Carries swap intent at the top level. `swap_strategy`
+  ∈ `{direct, recompose_local, audit_only}`.
+
+Both forms coexist in the same map; the lint detects shape per-rule and
+validates accordingly. See `figmaclaw/component_map.py` for the
+authoritative pydantic models.
+
+Example flat-direct rule:
+
+```json
+{
+  "old_component_set": "logo",
+  "old_key": "a81dce8b...",
+  "new_component_set": "Brand Logo",
+  "new_key": "e81fbd3e...",
+  "confidence": "needs_variant_validation",
+  "swap_strategy": "direct",
+  "variant_mapping": { "Type": "Logo", "Colored": "True" },
+  "preserve": ["size"]
+}
+```
+
+`variant_mapping` accepts two shapes:
+
+* **fixed** — keys are NEW axis names: `{NEW_axis: NEW_value}`. Apply once
+  to every OLD instance regardless of OLD variant.
+* **branching** — keys are OLD axis values: `{OLD_value: "axis=value, axis=value"}`.
+  Per-OLD-variant assignments. Both string (`"color=primary, style=filled"`)
+  and dict (`{"color": "primary"}`) right-hand sides are accepted.
+
+`recompose_local` rules require a `recomposition_plan` block; `audit_only`
+rules require `audit_required: true` + `audit_kind ∈ {recomposition_proposal,
+missing_tapin_primitive, needs_variant_validation, manual_review}`.
+
+### Variant taxonomy sidecar (for `--variants`)
+
+The lint's variant-axis check needs an external taxonomy because the Figma
+REST `/component_sets` endpoint doesn't expose `componentPropertyDefinitions`.
+Produce a sidecar JSON via a `use_figma` call:
+
+```json
+{
+  "e81fbd3e...": {
+    "name": "Brand Logo",
+    "axes": {
+      "Type":    { "values": ["Logo", "Mono", "On Shape"] },
+      "Colored": { "values": ["True", "False"] }
+    }
+  }
+}
+```
+
+Pass via `--variants <path>`, repeatable. The flat-form (key→taxonomy) and
+the wrapped form (`{"component_sets": {key: taxonomy}}`) are both accepted.
 
 ## What's in flight
 

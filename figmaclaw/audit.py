@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from figmaclaw.commands.census import load_census_registry
 from figmaclaw.component_map import (
+    FLAT_RULE_DISCRIMINATOR_ERROR_PREFIX,
     FLAT_SWAP_STRATEGIES,
     ComponentSetTaxonomy,
     FlatDirectRule,
@@ -92,10 +93,13 @@ from typing import get_args as _get_args  # noqa: E402
 TARGET_STATUSES = set(_get_args(NestedRuleTarget.model_fields["status"].annotation))
 SWAP_STRATEGIES = set(_get_args(NestedRule.model_fields["swap_strategy"].annotation))
 PARENT_HANDLING = set(_get_args(NestedRule.model_fields["parent_handling"].annotation))
-# expected_type is `NestedExpectedType | None`; first arg holds the Literal.
-EXPECTED_TYPES = set(
+# expected_type is `NestedExpectedType | None`; first arg holds the Literal,
+# and we re-include None to match the historical contract — pre-pydantic, the
+# constant was used to validate a target's expected_type and accepted None
+# as a valid omission. (Issue #167 review finding #8 / Copilot L98.)
+EXPECTED_TYPES: set[str | None] = set(
     _get_args(_get_args(NestedRuleTarget.model_fields["expected_type"].annotation)[0])
-)
+) | {None}
 VALIDATION_BOOLS = {
     "assert_target_type",
     "assert_name_matches",
@@ -527,9 +531,15 @@ def build_pipeline_lint_report(
                 findings.append(AuditFinding(status="error", message=error))
             continue
         except ValueError as exc:
-            # parse_flat_rule re-raises discriminator failures as a plain
-            # ValueError with an author-friendly message — surface as-is.
-            findings.append(AuditFinding(status="error", message=f"{prefix}: {exc}"))
+            # parse_flat_rule re-raises discriminator failures with a known
+            # sentinel prefix; only surface those as v3-flat schema errors.
+            # Any other ValueError (e.g. unexpected pydantic coercion path)
+            # bubbles up so we don't silently misroute it.
+            text = str(exc)
+            if not text.startswith(FLAT_RULE_DISCRIMINATOR_ERROR_PREFIX):
+                raise
+            cleaned = text[len(FLAT_RULE_DISCRIMINATOR_ERROR_PREFIX) :]
+            findings.append(AuditFinding(status="error", message=f"{prefix}: {cleaned}"))
             continue
         findings.extend(validate_rule_against_census(parsed, idx, census, target_registry_state))
         findings.extend(validate_rule_variant_mapping(parsed, idx, variants))
@@ -547,6 +557,21 @@ def build_pipeline_lint_report(
     )
 
 
+def _rule_path_prefix(rule: FlatRule | NestedRule, idx: int) -> tuple[str, str]:
+    """Return the dotted-path prefixes for ``new_key`` and ``expected_new_name``.
+
+    v3-flat rules carry these at the top level (``rules[i].new_key``); the
+    nested v3 schema nests them inside ``target`` (``rules[i].target.new_key``).
+    Lint messages should use the path that *actually exists* in the input
+    document so authors aren't sent looking for a `target` block that isn't
+    there. (Issue #167 review finding #3 / Copilot L555.)
+    """
+    base = f"rules[{idx}]"
+    if isinstance(rule, NestedRule):
+        return f"{base}.target.new_key", f"{base}.target.expected_new_name"
+    return f"{base}.new_key", f"{base}.new_component_set"
+
+
 def validate_rule_against_census(
     rule: FlatRule | NestedRule,
     idx: int,
@@ -559,12 +584,13 @@ def validate_rule_against_census(
         return []
     if not new_key:
         return []
+    new_key_path, expected_name_path = _rule_path_prefix(rule, idx)
     if target_registry_state == "not_probed":
         return [
             AuditFinding(
                 status="warning",
                 message=(
-                    f"rules[{idx}].target.new_key was not checked against census; "
+                    f"{new_key_path} was not checked against census; "
                     "pass --census figma/<file>/_census.md to verify target identity"
                 ),
             )
@@ -574,7 +600,7 @@ def validate_rule_against_census(
         return [
             AuditFinding(
                 status="error",
-                message=f"rules[{idx}].target.new_key {new_key!r} not found in census registry",
+                message=f"{new_key_path} {new_key!r} not found in census registry",
             )
         ]
     if expected_name and actual_name != expected_name:
@@ -582,7 +608,7 @@ def validate_rule_against_census(
             AuditFinding(
                 status="error",
                 message=(
-                    f"rules[{idx}].target.expected_new_name {expected_name!r} "
+                    f"{expected_name_path} {expected_name!r} "
                     f"does not match census name {actual_name!r}"
                 ),
             )
@@ -738,6 +764,26 @@ def validate_rule_variant_mapping(
         return findings
 
     new_axes = new_taxonomy.axis_names()
+    # If the taxonomy entry exists but has no published axes, we cannot
+    # discriminate fixed vs branching — every value would be misclassified
+    # as branching and chain-error trying to parse "Logo" as `axis=value`.
+    # Emit one explicit incompleteness warning and skip per-mapping checks
+    # so the operator knows the taxonomy needs another collection pass.
+    # (Issue #167 review finding #4 / Copilot L674.)
+    if not new_axes:
+        findings.append(
+            AuditFinding(
+                status="warning",
+                message=(
+                    f"{prefix}: variant taxonomy entry for new_key "
+                    f"{rule.new_key!r} has no published axes; re-collect the "
+                    "taxonomy with `componentSet.children` for that key before "
+                    "the variant_mapping can be lint-validated"
+                ),
+            )
+        )
+        return findings
+
     shape = _classify_variant_mapping_shape(rule.variant_mapping, new_taxonomy)
 
     if shape == "fixed":

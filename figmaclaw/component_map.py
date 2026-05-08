@@ -248,6 +248,14 @@ FlatRule = Annotated[
 
 FlatRuleAdapter: TypeAdapter[FlatRule] = TypeAdapter(FlatRule)
 
+# Sentinel prefix on ValueErrors that parse_flat_rule re-raises for
+# discriminator failures. Callers that catch broadly (the lint loop in
+# audit.py does — pydantic can raise plain ValueError from coercion paths
+# we don't control) match on this prefix so they only treat the
+# discriminator case as a flat-rule shape error. Any other ValueError
+# bubbles up untouched.
+FLAT_RULE_DISCRIMINATOR_ERROR_PREFIX = "[flat-rule-swap-strategy] "
+
 
 def parse_flat_rule(payload: dict[str, Any]) -> FlatRule:
     """Parse a single flat-shape rule.
@@ -256,18 +264,17 @@ def parse_flat_rule(payload: dict[str, Any]) -> FlatRule:
     author-friendly message that lists the accepted ``swap_strategy`` values
     — by default the user sees ``Unable to extract tag using discriminator
     'swap_strategy'``, which is opaque if you don't know it's a discriminated
-    union under the hood. (Issue #167 review finding, parse_flat_rule.)
+    union under the hood.
     """
     try:
         return FlatRuleAdapter.validate_python(payload)
     except ValidationError as exc:
-        # Walk the errors to find a discriminator failure; if there is one,
-        # raise a fresh ValidationError-like error with FLAT_SWAP_STRATEGIES.
         for err in exc.errors(include_url=False):
             if err.get("type") in {"union_tag_invalid", "union_tag_not_found"}:
                 got = payload.get("swap_strategy")
                 raise ValueError(
-                    f"v3-flat rule swap_strategy must be one of "
+                    FLAT_RULE_DISCRIMINATOR_ERROR_PREFIX
+                    + f"v3-flat rule swap_strategy must be one of "
                     f"{sorted(FLAT_SWAP_STRATEGIES)}; got {got!r}. "
                     "If this rule is meant to use the v3-nested schema, add a "
                     "`target` block (then it will be validated as nested)."
@@ -354,6 +361,7 @@ __all__ = [
     "ComponentSetTaxonomy",
     "FLAT_AUDIT_KINDS",
     "FLAT_CONFIDENCES",
+    "FLAT_RULE_DISCRIMINATOR_ERROR_PREFIX",
     "FLAT_SWAP_STRATEGIES",
     "FlatAuditOnlyRule",
     "FlatDirectRule",

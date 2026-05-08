@@ -761,6 +761,22 @@ def audit_page_swap_cmd(
         emit_json_value(report)
         raise click.ClickException("refusing to emit swap batches: 0 rows")
 
+    # Surface plan warnings on stderr in non-dry-run modes too — operators
+    # running --execute should not have to re-run with --dry-run to learn
+    # that the manifest has structural problems. (#167 review finding #11.)
+    for warning in report.get("warnings") or []:
+        click.echo(f"warning: {warning}", err=True)
+
+    # Hard refuse when EVERY row lacks oldCid: that means the resolver could
+    # not link any row back to a published OLD componentId, so the swap is
+    # almost certainly being run against the wrong manifest or wrong page.
+    if rows and all(row.old_component_id is None for row in rows):
+        raise click.ClickException(
+            "refusing to emit/execute: every row in the manifest lacks oldCid; "
+            "the resolver couldn't link any row to a published OLD componentId. "
+            "Re-check the source page or rebuild the manifest."
+        )
+
     if batch_dir is None:
         raise click.UsageError("--batch-dir is required for --emit-only and --execute")
 

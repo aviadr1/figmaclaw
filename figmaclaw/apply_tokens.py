@@ -219,11 +219,32 @@ def _from_compact_rows(
         if isinstance(paint_index, Refusal):
             refusals.append(paint_index)
             continue
-        candidates = token_index.get(str(token), [])
+        token_str = str(token)
+        candidates = token_index.get(token_str, [])
+        # The legacy migration shape sometimes prefixes token names with the
+        # library name (e.g. "tapin:fg/inverse"). Strip a single leading
+        # `<lib>:` segment and retry — and if THAT resolves, surface the
+        # transparent fixup so the author can update their resolver.
+        stripped_token: str | None = None
+        if not candidates and ":" in token_str:
+            stripped_token = token_str.split(":", 1)[1]
+            candidates = token_index.get(stripped_token, [])
         if len(candidates) != 1:
             reason = "token_not_in_catalog" if not candidates else "ambiguous_token_name"
-            refusals.append(Refusal(index, reason, dict(raw)))
+            payload = dict(raw)
+            if ":" in token_str:
+                payload["did_you_mean_token_name"] = token_str.split(":", 1)[1]
+                payload["hint"] = (
+                    f"token name {token_str!r} carries a `<library>:` prefix that "
+                    f"is not in the catalog; use the bare token name and pass "
+                    f"`--library` to scope resolution"
+                )
+            refusals.append(Refusal(index, reason, payload))
             continue
+        # Use the catalog-resolved bare name even if the input row carried a
+        # prefix — the emitted manifest stays identity-stable across re-runs.
+        variable_id, variable = candidates[0]
+        token_str = stripped_token or token_str
         variable_id, variable = candidates[0]
         refusal = _catalog_refusal(
             variable_id,
@@ -241,7 +262,7 @@ def _from_compact_rows(
                 node_id=str(node_id),
                 property=str(prop),
                 value=raw.get("value", raw.get("v")),
-                token_name=str(token),
+                token_name=token_str,
                 variable_id=variable_id,
                 variable_key=variable.key or raw.get("variable_key"),
                 source=variable.source,

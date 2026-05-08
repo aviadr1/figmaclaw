@@ -105,7 +105,10 @@ class SwapManifest(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    schema_version: int = AUDIT_PAGE_SWAP_SCHEMA_VERSION
+    # Constrained to the current version: a future v2 manifest must not
+    # silently validate as v1. The CLI loader catches the resulting
+    # ValidationError and tells the operator which version is expected.
+    schema_version: Literal[1] = AUDIT_PAGE_SWAP_SCHEMA_VERSION
     kind: Literal["figmaclaw.audit_page_swap.manifest"] = "figmaclaw.audit_page_swap.manifest"
     file_key: str | None = None
     page_node_id: str | None = None
