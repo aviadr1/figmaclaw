@@ -323,10 +323,12 @@ async def _run(
             file_name = getattr(stored_entry, "file_name", "") or "unknown"
             obs.emit("file_start", file_key=key, file_name=file_name)
 
-            # Listing pre-filter: skip get_file_meta entirely when the listing tells us
-            # the file hasn't changed (or isn't reachable at all).
-            #   - listing_lm is None  → file not in team listing (e.g. FigJam boards);
-            #     skip — if it's not reachable via the listing, it can't have changed
+            # Listing pre-filter: skip get_file_meta only when the listing proves
+            # the tracked file is still present and unchanged.
+            #   - listing_lm is None  → file not in team listing; probe with get_file_meta
+            #     instead of skipping. Absence can mean deleted, moved, permission-lost,
+            #     or an API listing gap; only the file-scoped endpoint can distinguish
+            #     "still accessible" from "must prune artifacts".
             #   - listing_lm == stored → last_modified unchanged; skip
             #   - listing_lm != stored → file changed; proceed to get_file_meta
             #
@@ -348,11 +350,13 @@ async def _run(
                     if stored_entry is not None
                     else True
                 )
-                unchanged_on_figma = listing_lm is None or stored_lm == listing_lm
+                unchanged_on_figma = bool(listing_lm and stored_lm == listing_lm)
                 if unchanged_on_figma and not schema_needs_refresh:
                     obs.files_skipped_prefilter += 1
                     obs.file_end(key, "listing_prefilter_skip", file_start)
                     continue
+                if listing_lm is None:
+                    obs.emit("listing_prefilter_probe", file_key=key, reason="missing_from_listing")
 
             try:
                 obs.files_attempted_pull += 1

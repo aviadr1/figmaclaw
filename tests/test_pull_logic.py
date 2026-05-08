@@ -1354,9 +1354,13 @@ async def test_pull_cmd_pulls_files_whose_listing_last_modified_changed(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_pull_cmd_skips_figjam_files_not_in_listing(tmp_path: Path):
-    """INVARIANT: files absent from the team listing (e.g. FigJam boards) are always
-    skipped — they cannot change if not reachable via the listing API."""
+async def test_pull_cmd_probes_files_missing_from_listing(tmp_path: Path):
+    """INVARIANT: files absent from the team listing must not be prefilter-skipped.
+
+    Absence can mean deleted, moved, permission-lost, or an API listing gap. The
+    file-scoped pull path is what distinguishes accessible files from no-access
+    files whose generated artifacts must be pruned.
+    """
     from figmaclaw.commands.pull import _run
 
     state = _make_state_with_file(tmp_path, "figjam_key", "")
@@ -1366,13 +1370,65 @@ async def test_pull_cmd_skips_figjam_files_not_in_listing(tmp_path: Path):
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
     mock_client.list_team_projects = AsyncMock(return_value=[ProjectSummary(id="p1", name="Web")])
-    mock_client.list_project_files = AsyncMock(return_value=[])  # FigJam not in listing
-    mock_client.get_file_meta = AsyncMock()
+    mock_client.list_project_files = AsyncMock(return_value=[])
+    mock_pull = AsyncMock(return_value=PullResult(file_key="figjam_key", skipped_file=True))
 
-    with patch("figmaclaw.commands.pull.FigmaClient", return_value=mock_client):
+    with (
+        patch("figmaclaw.commands.pull.FigmaClient", return_value=mock_client),
+        patch("figmaclaw.commands.pull.pull_file", mock_pull),
+    ):
         await _run("key", tmp_path, None, False, None, False, 10, "team123", "all")
 
-    mock_client.get_file_meta.assert_not_called()
+    mock_pull.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_pull_cmd_missing_from_listing_no_access_prunes_artifacts(tmp_path: Path):
+    """INVARIANT: listing absence must not strand artifacts for deleted/no-access files."""
+    from figmaclaw.commands.pull import _run
+
+    state = _make_state_with_file(tmp_path, "deleted_key", "")
+    state.manifest.files["deleted_key"].pages["100:1"] = PageEntry(
+        page_name="Deleted",
+        page_slug="deleted-100-1",
+        md_path="figma/deleted/pages/deleted-100-1.md",
+        page_hash="oldhash",
+        last_refreshed_at="2026-03-01T00:00:00Z",
+        component_md_paths=["figma/deleted/components/deleted-components-100-2.md"],
+    )
+    state.save()
+
+    page_md = tmp_path / "figma/deleted/pages/deleted-100-1.md"
+    page_md.parent.mkdir(parents=True, exist_ok=True)
+    page_md.write_text("deleted")
+    page_sidecar = page_md.with_suffix(".tokens.json")
+    page_sidecar.write_text("{}")
+    comp_md = tmp_path / "figma/deleted/components/deleted-components-100-2.md"
+    comp_md.parent.mkdir(parents=True, exist_ok=True)
+    comp_md.write_text("deleted component")
+
+    mock_client = MagicMock(spec=FigmaClient)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.list_team_projects = AsyncMock(return_value=[ProjectSummary(id="p1", name="Web")])
+    mock_client.list_project_files = AsyncMock(return_value=[])
+    mock_pull = AsyncMock(
+        return_value=PullResult(file_key="deleted_key", no_access=True, skipped_file=True)
+    )
+
+    with (
+        patch("figmaclaw.commands.pull.FigmaClient", return_value=mock_client),
+        patch("figmaclaw.commands.pull.pull_file", mock_pull),
+    ):
+        await _run("key", tmp_path, None, False, None, False, 10, "team123", "all")
+
+    assert not page_md.exists()
+    assert not page_sidecar.exists()
+    assert not comp_md.exists()
+    reloaded = FigmaSyncState(tmp_path)
+    reloaded.load()
+    assert "deleted_key" not in reloaded.manifest.tracked_files
+    assert "deleted_key" not in reloaded.manifest.files
 
 
 @pytest.mark.asyncio
