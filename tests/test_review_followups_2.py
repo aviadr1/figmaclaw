@@ -493,17 +493,49 @@ def test_copilot_round3_no_orphan_instance_on_skipped_no_parent_path() -> None:
     )
 
 
-def test_copilot_round3_apply_tokens_no_duplicate_unpack(tmp_path: Path) -> None:
-    """The token-prefix retry path unpacks `candidates[0]` exactly once."""
-    import inspect
+def test_copilot_round3_apply_tokens_prefix_retry_resolves_to_bare_token(
+    tmp_path: Path,
+) -> None:
+    """Behavioural assertion replacing the source-grep dup-unpack test.
 
-    from figmaclaw.apply_tokens import _from_compact_rows
-
-    src = inspect.getsource(_from_compact_rows)
-    # `variable_id, variable = candidates[0]` should appear exactly once in
-    # the function body — the pre-c229466 dead-duplication regressed; the
-    # fix collapses it to a single unpack after `token_str = stripped_token or ...`.
-    assert src.count("variable_id, variable = candidates[0]") == 1
+    The dup-unpack regression would have made `variable_id` reference the
+    UN-stripped name (since the second assignment overwrote the first
+    after `token_str` was reassigned). Verify the bare-name resolution
+    end-to-end by emitting a batch and inspecting the embedded variable_id.
+    """
+    _make_repo(tmp_path)
+    rows_path = tmp_path / "bindings_for_figma.json"
+    rows_path.write_text(
+        json.dumps([{"n": "1:2", "p": "fill", "t": "tapin:fg/inverse"}]),
+        encoding="utf-8",
+    )
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "apply-tokens",
+            str(rows_path),
+            "--file",
+            "file123",
+            "--page",
+            "10:1",
+            "--legacy-bindings-for-figma",
+            "--library",
+            "TAP IN",
+            "--emit-only",
+            "--batch-dir",
+            "apply_batches",
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    rows = json.loads((tmp_path / "apply_batches" / "batch-0001.json").read_text(encoding="utf-8"))
+    # The catalog has "fg/inverse" (bare); the row had "tapin:fg/inverse"
+    # (prefixed). The emitted batch must carry the catalog's bare name and
+    # the catalog variable_id, NOT the prefixed input form.
+    assert rows[0]["token_name"] == "fg/inverse"
+    assert rows[0]["variable_id"] == "VariableID:libabc/1:1"
 
 
 def test_copilot_round3_scheduled_tasks_lock_gitignored(tmp_path: Path) -> None:
@@ -512,12 +544,45 @@ def test_copilot_round3_scheduled_tasks_lock_gitignored(tmp_path: Path) -> None:
     assert ".claude/scheduled_tasks.lock" in gitignore
 
 
-def test_copilot_round3_use_figma_batch_options_documents_last_wins() -> None:
-    """The decorator's docstring matches Click's actual flag_value semantics."""
-    from figmaclaw.use_figma_batches import use_figma_batch_options
+def test_copilot_round3_batch_options_last_wins_behaviour(tmp_path: Path) -> None:
+    """Behavioural assertion replacing the docstring-grep last-wins test.
 
-    doc = use_figma_batch_options.__doc__ or ""
-    assert "last-wins" in doc or "last one wins" in doc.lower()
+    Click's `flag_value` for a shared dest is last-wins; passing
+    `--dry-run --emit-only` resolves to `mode == "emit-only"`. We verify
+    by feeding a multi-flag invocation through the CliRunner and observing
+    that emit-only's effects (batch files written) actually fire.
+    """
+    manifest = tmp_path / "swap.json"
+    manifest.write_text(
+        json.dumps([{"src": "1", "oldCid": "OLD1", "newKey": "K", "variants": {"X": "y"}}]),
+        encoding="utf-8",
+    )
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "audit-page",
+            "swap",
+            "FILE",
+            "9559:29",
+            "--manifest",
+            str(manifest),
+            "--dry-run",
+            "--emit-only",  # last-wins → emit-only
+            "--batch-dir",
+            "swap_batches",
+            "--json",
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    # If last-wins works, the run executed in emit-only mode and the batch
+    # files exist on disk. If --dry-run had won, the report mode would say
+    # "dry-run" and no batch files would be written.
+    assert data["mode"] == "emit-only"
+    assert (tmp_path / "swap_batches" / "swap-batch-0001.json").exists()
 
 
 # README + docs touched (finding #2) -------------------------------------

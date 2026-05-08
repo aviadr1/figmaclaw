@@ -137,7 +137,19 @@ def load_swap_manifest(payload: Any) -> SwapManifest:
     return manifest
 
 
+_DUPLICATE_SRC_SAMPLE_LIMIT = 5
+
+
 def _reject_duplicate_src(rows: list[SwapRow]) -> None:
+    """Refuse manifests with duplicate `src` values.
+
+    A swap that ran once removed the OLD instance, so a second row with the
+    same `src` would silently `skipped_no_clone`. The caller would see
+    `applied: 0` with no clear cause. We catch at load time.
+
+    The sample is capped: a buggy resolver can emit thousands of duplicates,
+    and a 50KB ValueError dumped through `click.UsageError` is unreadable.
+    """
     seen: dict[str, int] = {}
     duplicates: dict[str, list[int]] = {}
     for index, row in enumerate(rows):
@@ -145,13 +157,18 @@ def _reject_duplicate_src(rows: list[SwapRow]) -> None:
             duplicates.setdefault(row.src, [seen[row.src]]).append(index)
         else:
             seen[row.src] = index
-    if duplicates:
-        offenders = ", ".join(f"{src}@rows{idxs}" for src, idxs in sorted(duplicates.items()))
-        raise ValueError(
-            f"swap manifest contains duplicate src values: {offenders}; "
-            "the second occurrence would silently skip after the first row "
-            "removed the OLD instance"
-        )
+    if not duplicates:
+        return
+    items = sorted(duplicates.items())
+    sample = ", ".join(f"{src}@rows{idxs}" for src, idxs in items[:_DUPLICATE_SRC_SAMPLE_LIMIT])
+    suffix = ""
+    if len(items) > _DUPLICATE_SRC_SAMPLE_LIMIT:
+        suffix = f" … and {len(items) - _DUPLICATE_SRC_SAMPLE_LIMIT} more"
+    raise ValueError(
+        f"swap manifest contains {len(items)} duplicate src value(s): "
+        f"{sample}{suffix}; the second occurrence would silently skip after "
+        "the first row removed the OLD instance"
+    )
 
 
 def _row_to_writer(row: SwapRow) -> dict[str, Any]:
@@ -222,12 +239,23 @@ async function importNewSet(newKey) {
   }
 }
 
-// Pick a variant child of *componentSet* whose published variant axes match
-// *variants*. Returns null when no exact match is found.
+// Pick a variant child of *componentSet* whose published variant axes
+// EXACTLY match *variants*. Returns null when no exact match exists.
+//
+// "Exact" here means: the set of axis names in the requested `variants`
+// equals the set of axis names parsed from the child's name. A subset
+// match would pick an arbitrary variant by `children` ordering when the
+// caller passed only a partial assignment — the same row could resolve
+// to different children across runs depending on how Figma orders the
+// children list. (#167 Copilot finding 3211373631.)
 function pickVariantChild(componentSet, variants) {
   if (!componentSet || !componentSet.children) return null;
-  const wanted = Object.entries(variants || {});
-  if (wanted.length === 0) return componentSet.defaultVariant || componentSet.children[0] || null;
+  const wanted = variants || {};
+  const wantedKeys = Object.keys(wanted);
+  if (wantedKeys.length === 0) {
+    // No axes requested — fall back to the published default variant.
+    return componentSet.defaultVariant || componentSet.children[0] || null;
+  }
   for (const child of componentSet.children) {
     // child.name like "Type=Logo, Colored=True"
     const pairs = (child.name || "").split(",").map((s) => s.trim());
@@ -237,9 +265,11 @@ function pickVariantChild(componentSet, variants) {
       if (idx < 0) continue;
       have[pair.slice(0, idx).trim()] = pair.slice(idx + 1).trim();
     }
+    const haveKeys = Object.keys(have);
+    if (haveKeys.length !== wantedKeys.length) continue;
     let hit = true;
-    for (const [axis, value] of wanted) {
-      if (have[axis] !== value) { hit = false; break; }
+    for (const axis of wantedKeys) {
+      if (have[axis] !== wanted[axis]) { hit = false; break; }
     }
     if (hit) return child;
   }

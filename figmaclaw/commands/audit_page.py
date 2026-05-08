@@ -813,6 +813,9 @@ def audit_page_swap_cmd(
     emit_json_value(report)
 
 
+_HIGH_UNKNOWN_OLD_CID_THRESHOLD = 0.25
+
+
 def _swap_plan_warnings(rows: list[SwapRow]) -> list[str]:
     """Collect manifest-shape warnings the operator should see at dry-run time.
 
@@ -820,17 +823,30 @@ def _swap_plan_warnings(rows: list[SwapRow]) -> list[str]:
     flag patterns that almost always indicate misuse:
 
     * rows missing ``oldCid`` (the resolver couldn't identify the OLD
-      componentId, so the rule's variant axes can't be cross-checked)
+      componentId, so the rule's variant axes can't be cross-checked).
+      A separate elevated warning fires when more than 25% of rows lack
+      oldCid, since that almost always indicates the wrong manifest /
+      wrong page rather than a per-row resolver miss. (#167 review-3 #6.)
     * rows whose ``variants`` mapping is empty (the swap will fall back to
       ``defaultVariant``, which is rarely what the operator intended)
     """
     warnings: list[str] = []
+    if not rows:
+        return warnings
     missing_old = sum(1 for row in rows if not row.old_component_id)
     if missing_old:
-        warnings.append(
-            f"{missing_old} row(s) have no oldCid; resolver couldn't link them "
-            "back to a published OLD componentId"
-        )
+        ratio = missing_old / len(rows)
+        if ratio >= _HIGH_UNKNOWN_OLD_CID_THRESHOLD:
+            warnings.append(
+                f"{missing_old}/{len(rows)} row(s) ({ratio:.0%}) have no oldCid; "
+                "this almost always indicates the wrong manifest or wrong "
+                "audit page — re-run the resolver before --execute"
+            )
+        else:
+            warnings.append(
+                f"{missing_old} row(s) have no oldCid; resolver couldn't link them "
+                "back to a published OLD componentId"
+            )
     no_variants = sum(1 for row in rows if not row.variants)
     if no_variants:
         warnings.append(

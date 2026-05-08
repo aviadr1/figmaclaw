@@ -245,10 +245,17 @@ def _from_compact_rows(
         # prefix — the emitted manifest stays identity-stable across re-runs.
         token_str = stripped_token or token_str
         variable_id, variable = candidates[0]
+        refusal_row = dict(raw)
+        # If the prefix-strip retry was what made resolution succeed, carry
+        # the hint into any downstream refusal so the operator can see WHY
+        # the row resolved differently than the input shape suggested.
+        # (#167 review-3 finding #3.)
+        if stripped_token is not None:
+            refusal_row["did_you_mean_token_name"] = stripped_token
         refusal = _catalog_refusal(
             variable_id,
             variable,
-            row=dict(raw),
+            row=refusal_row,
             row_index=index,
             allow_non_authoritative=allow_non_authoritative,
             allow_variable_id_fallback=allow_variable_id_fallback,

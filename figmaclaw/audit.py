@@ -50,6 +50,10 @@ class AuditFinding(BaseModel):
     in_instance: bool | None = None
     path: list[str] = Field(default_factory=list)
     message: str | None = None
+    # Optional human-readable rule identifier (e.g. "Buttons Desktop") so
+    # operators reading lint output don't have to cross-reference rules[i]
+    # back to the source map. (#167 review-3 finding #8.)
+    rule_label: str | None = None
 
 
 class AuditCheckReport(BaseModel):
@@ -521,6 +525,13 @@ def build_pipeline_lint_report(
             findings.append(AuditFinding(status="error", message=f"rules[{idx}] must be object"))
             continue
         prefix = f"rules[{idx}]"
+        # Best-effort label from the raw row — readable even when pydantic
+        # parse fails. We prefer old_component_set, fall back to old_key.
+        rule_label: str | None = None
+        if isinstance(row, dict):
+            label = row.get("old_component_set") or row.get("old_key")
+            if isinstance(label, str) and label:
+                rule_label = label
         parsed: FlatRule | NestedRule | None = None
         try:
             parsed = (
@@ -528,7 +539,7 @@ def build_pipeline_lint_report(
             )
         except ValidationError as exc:
             for error in format_validation_error(prefix, exc):
-                findings.append(AuditFinding(status="error", message=error))
+                findings.append(AuditFinding(status="error", message=error, rule_label=rule_label))
             continue
         except ValueError as exc:
             # parse_flat_rule re-raises discriminator failures with a known
@@ -539,10 +550,25 @@ def build_pipeline_lint_report(
             if not text.startswith(FLAT_RULE_DISCRIMINATOR_ERROR_PREFIX):
                 raise
             cleaned = text[len(FLAT_RULE_DISCRIMINATOR_ERROR_PREFIX) :]
-            findings.append(AuditFinding(status="error", message=f"{prefix}: {cleaned}"))
+            findings.append(
+                AuditFinding(status="error", message=f"{prefix}: {cleaned}", rule_label=rule_label)
+            )
             continue
-        findings.extend(validate_rule_against_census(parsed, idx, census, target_registry_state))
-        findings.extend(validate_rule_variant_mapping(parsed, idx, variants))
+        # Now that the rule parsed, prefer its typed old_component_set field.
+        if (
+            isinstance(parsed, (NestedRule, FlatDirectRule))
+            and parsed.old_component_set
+            or hasattr(parsed, "old_component_set")
+            and parsed.old_component_set
+        ):
+            rule_label = parsed.old_component_set
+        per_rule = validate_rule_against_census(
+            parsed, idx, census, target_registry_state
+        ) + validate_rule_variant_mapping(parsed, idx, variants)
+        for finding in per_rule:
+            if finding.rule_label is None:
+                finding.rule_label = rule_label
+            findings.append(finding)
 
     for finding in findings:
         counts[finding.status] += 1
@@ -697,7 +723,11 @@ def _classify_variant_mapping_shape(
         return "branching"
     if not all(key in new_axes for key in mapping):
         return "branching"
-    if not all(isinstance(value, str) and value for value in mapping.values()):
+    # An all-string mapping (including empty strings) classifies as fixed
+    # so the empty-value case routes to the explicit "axis value cannot be
+    # empty" error in `_check_value` instead of chain-erroring on
+    # `parse_variant_axis_assignment("")` returning {}. (#167 review-3 #7.)
+    if not all(isinstance(value, str) for value in mapping.values()):
         return "branching"
     return "fixed"
 
@@ -786,20 +816,53 @@ def validate_rule_variant_mapping(
 
     shape = _classify_variant_mapping_shape(rule.variant_mapping, new_taxonomy)
 
+    def _check_value(axis_name: str, axis_value: str, *, key_label: str) -> AuditFinding | None:
+        """Validate a single axis=value pair against the new taxonomy.
+
+        Empty-string values get an explicit "axis value cannot be empty"
+        error — without this branch the branching shape would fall into a
+        misleading "could not be parsed as `axis=value`" message for a key
+        that *was* a published axis. (#167 review-3 finding #7.)
+
+        Axes flagged ``inner_instance=True`` are F23 slot-on-the-leaf
+        INSTANCE_SWAP slots (e.g. text-input's `_input-add-on`); their
+        values are component_set keys or inner-instance variant names that
+        the published variant taxonomy cannot enumerate, so we skip the
+        membership check for those axes.
+        """
+        if axis_value == "":
+            return AuditFinding(
+                status="error",
+                message=(
+                    f"{prefix}.variant_mapping[{key_label}] sets axis "
+                    f"{axis_name!r} to an empty string; remove the entry or "
+                    "supply a published variant value"
+                ),
+            )
+        axis = new_taxonomy.axes.get(axis_name)
+        if axis is not None and axis.inner_instance:
+            # F23 slot-on-the-leaf — value is a component_set key / inner
+            # variant name that the published taxonomy cannot enumerate.
+            return None
+        allowed = new_taxonomy.values_for(axis_name)
+        if allowed and axis_value not in allowed:
+            return AuditFinding(
+                status="error",
+                message=(
+                    f"{prefix}.variant_mapping[{key_label}] uses unknown "
+                    f"value {axis_value!r} for axis {axis_name!r} on new "
+                    f"component_set {rule.new_key!r}; published values: "
+                    f"{sorted(allowed)}"
+                ),
+            )
+        return None
+
     if shape == "fixed":
         for axis_name, axis_value in rule.variant_mapping.items():
-            allowed = new_taxonomy.values_for(axis_name)
-            if allowed and axis_value not in allowed:
-                findings.append(
-                    AuditFinding(
-                        status="error",
-                        message=(
-                            f"{prefix}.variant_mapping[{axis_name!r}] uses unknown "
-                            f"value {axis_value!r} on new component_set "
-                            f"{rule.new_key!r}; published values: {sorted(allowed)}"
-                        ),
-                    )
-                )
+            assert isinstance(axis_value, str)
+            finding = _check_value(axis_name, axis_value, key_label=repr(axis_name))
+            if finding is not None:
+                findings.append(finding)
     else:
         for old_axis_value, raw_assignment in rule.variant_mapping.items():
             assignment = parse_variant_axis_assignment(raw_assignment)
@@ -828,19 +891,9 @@ def validate_rule_variant_mapping(
                         )
                     )
                     continue
-                allowed = new_taxonomy.values_for(axis_name)
-                if allowed and axis_value not in allowed:
-                    findings.append(
-                        AuditFinding(
-                            status="error",
-                            message=(
-                                f"{prefix}.variant_mapping[{old_axis_value!r}] uses "
-                                f"unknown value {axis_value!r} for axis {axis_name!r} on "
-                                f"new component_set {rule.new_key!r}; published values: "
-                                f"{sorted(allowed)}"
-                            ),
-                        )
-                    )
+                finding = _check_value(axis_name, axis_value, key_label=repr(old_axis_value))
+                if finding is not None:
+                    findings.append(finding)
 
     # Coverage check: OLD axis values that the lint can reach. A "fixed"
     # variant_mapping covers every OLD instance trivially (no branching), so

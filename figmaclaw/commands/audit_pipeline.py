@@ -92,7 +92,11 @@ def audit_pipeline_lint_cmd(
     findings = report.findings
     show_limit = 20
     for finding in findings[:show_limit]:
-        click.echo(f"  [{finding.status}] {finding.message}")
+        # Prepend the rule's old_component_set name when known so operators
+        # don't have to cross-reference rules[i] back to the source map.
+        # (#167 review-3 finding #8.)
+        label = f" ({finding.rule_label})" if finding.rule_label else ""
+        click.echo(f"  [{finding.status}]{label} {finding.message}")
     if len(findings) > show_limit:
         click.echo(f"  … {len(findings) - show_limit} more (use --json for full list)")
     click.echo(f"ok: {str(report.ok).lower()}")
