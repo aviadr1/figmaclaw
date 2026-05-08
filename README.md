@@ -26,6 +26,14 @@ Agent systems are strongest with local files. `figmaclaw` gives them structured 
 - reason over history via git instead of repeated remote calls
 - update code and design documentation in one branch
 
+## Why It's Great For Design-System Evolution
+
+Migrating a Figma file from one design system to another (or auditing one for token coverage, or verifying a DS rollout actually landed) is the kind of work where a one-shot agent pass *looks* right but produces silent corruption — invisible inheritance leaks, frozen literals on unbind, components that detach from their masters.
+
+The `audit-page` / `audit-pipeline` / `apply-tokens` command family turns those passes into deterministic pipelines: every change is encoded as a manifest, linted against accumulated invariants (the `FCLAW` rule namespace), applied in atomic batches, and verified after each batch via REST. Round 1 of a real-world migration produced 365 silently-incorrect bindings; the rules and verifiers in this command family exist so round N doesn't.
+
+See [docs/migration-pipeline.md](docs/migration-pipeline.md) for the full pipeline.
+
 ## Setup Is Two Separate Steps
 
 `figmaclaw` setup has two distinct scopes:
@@ -130,6 +138,7 @@ Designer saves in Figma
 - Installation and CI setup: [docs/INSTALL.md](docs/INSTALL.md)
 - Token auth and rotation: [docs/token-auth-and-rotation.md](docs/token-auth-and-rotation.md)
 - Markdown schema: [docs/figmaclaw-md-format.md](docs/figmaclaw-md-format.md)
+- Migration / lint / apply-tokens pipeline: [docs/migration-pipeline.md](docs/migration-pipeline.md)
 - Body preservation design: [docs/body-preservation-design.md](docs/body-preservation-design.md)
 - Body preservation invariants: [docs/body-preservation-invariants.md](docs/body-preservation-invariants.md)
 - Failure postmortem and lessons: [docs/failure-postmortem-2026-04-03.md](docs/failure-postmortem-2026-04-03.md)
