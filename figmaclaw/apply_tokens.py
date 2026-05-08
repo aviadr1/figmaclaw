@@ -72,6 +72,7 @@ class Refusal:
 class PreparedApplyTokens:
     manifest: ApplyTokensManifest
     refusals: list[Refusal]
+    accepted_fix_indices: frozenset[int] | None = None
 
     @property
     def ok(self) -> bool:
@@ -114,7 +115,11 @@ def load_apply_token_input(
             allow_catalog_source_mismatch=allow_catalog_source_mismatch,
             library_hashes=library_hashes,
         )
-        return PreparedApplyTokens(manifest, refusals)
+        refused_indices = frozenset(refusal.row_index for refusal in refusals)
+        accepted_indices = frozenset(
+            index for index in range(len(manifest.fixes)) if index not in refused_indices
+        )
+        return PreparedApplyTokens(manifest, refusals, accepted_indices)
 
     if isinstance(payload, list):
         if file_key is None:
@@ -375,7 +380,9 @@ def referenced_catalog_source_file_keys(
 ) -> set[str]:
     """Return catalog source file keys used by accepted fixes."""
     file_keys: set[str] = set()
-    for fix in prepared.manifest.fixes:
+    for index, fix in enumerate(prepared.manifest.fixes):
+        if prepared.accepted_fix_indices is not None and index not in prepared.accepted_fix_indices:
+            continue
         variable = catalog.variables.get(fix.variable_id)
         if variable is None or not variable.library_hash:
             continue

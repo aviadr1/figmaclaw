@@ -407,6 +407,84 @@ def test_apply_tokens_refuses_stale_explicit_catalog_by_default(tmp_path: Path) 
     assert "ds_catalog.json is stale" in result.output
 
 
+def test_apply_tokens_reports_malformed_explicit_catalog_as_usage_error(tmp_path: Path) -> None:
+    _track_current(tmp_path)
+    bad_catalog = tmp_path / "bad_catalog.json"
+    bad_catalog.write_text(
+        json.dumps({"schema_version": 2, "libraries": [], "variables": {}}),
+        encoding="utf-8",
+    )
+    rows = tmp_path / "bindings_for_figma.json"
+    rows.write_text(json.dumps([]), encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "apply-tokens",
+            str(rows),
+            "--file",
+            FILE_KEY,
+            "--page",
+            PAGE_ID,
+            "--catalog",
+            str(bad_catalog),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "failed to load catalog" in result.output
+
+
+def test_apply_tokens_stale_gate_ignores_refused_versioned_fixes(tmp_path: Path) -> None:
+    _track_current(tmp_path, file_key="ds-file", version="v3")
+    _write_catalog(
+        tmp_path,
+        source_file_key="ds-file",
+        source_version="v2",
+        source="seeded:manual",
+    )
+    manifest_path = tmp_path / "fixes.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "fixes": [
+                    {
+                        "node_id": "1:2",
+                        "property": "fill",
+                        "variable_id": VAR_ID,
+                        "source": "seeded:manual",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "apply-tokens",
+            str(manifest_path),
+            "--file",
+            "consumer-file",
+            "--page",
+            PAGE_ID,
+            "--json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["ok"] is False
+    assert data["counts"]["refusals"] == {"non_authoritative_variable": 1}
+
+
 def test_apply_tokens_refuses_non_authoritative_and_missing_key_rows(tmp_path: Path) -> None:
     _track_current(tmp_path)
     _write_catalog(tmp_path, source="seeded:manual", key=None)

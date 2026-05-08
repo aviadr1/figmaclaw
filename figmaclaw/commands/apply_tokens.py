@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 import click
+from pydantic import ValidationError
 
 from figmaclaw.apply_tokens import (
     DEFAULT_NAMESPACE,
@@ -149,17 +150,20 @@ def apply_tokens_cmd(
     ``--library`` when those names can exist in multiple catalog libraries.
     """
     repo_dir = Path(ctx.obj["repo_dir"])
-    if catalog_path is not None:
-        # load_catalog expects a repo root. Preserve that for the default path,
-        # but allow direct catalog-path use for migration folders and tests.
-        catalog = TokenCatalog.model_validate_json(
-            resolve_repo_path(repo_dir, catalog_path).read_text(encoding="utf-8")
-        )
-    else:
-        catalog = load_catalog(repo_dir)
-
-    library_hashes = _resolve_library_filter(catalog, libraries)
     try:
+        if catalog_path is not None:
+            # load_catalog expects a repo root. Preserve that for the default path,
+            # but allow direct catalog-path use for migration folders and tests.
+            catalog = TokenCatalog.model_validate_json(
+                resolve_repo_path(repo_dir, catalog_path).read_text(encoding="utf-8")
+            )
+        else:
+            catalog = load_catalog(repo_dir)
+    except (OSError, ValueError, ValidationError) as exc:
+        raise click.UsageError(f"failed to load catalog: {exc}") from exc
+
+    try:
+        library_hashes = _resolve_library_filter(catalog, libraries)
         prepared = load_apply_token_input(
             resolve_repo_path(repo_dir, input_path),
             file_key=file_key,
