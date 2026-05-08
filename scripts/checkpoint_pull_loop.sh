@@ -32,7 +32,8 @@ OBS_PULL_INVOCATIONS_FILE=""
 BATCHES_STARTED=0
 TOTAL_TIMEOUTS=0
 TOTAL_BACKOFFS=0
-TOTAL_COMMITS=0
+TOTAL_AUTO_COMMITS=0
+TOTAL_SAFETY_NET_COMMITS=0
 FINAL_REASON="unknown"
 
 PULL_STATUS=0
@@ -43,6 +44,7 @@ GIT_DIFF_S=0
 GIT_COMMIT_S=0
 GIT_PUSH_S=0
 HAS_MORE="false"
+AUTO_COMMITS_THIS_BATCH=0
 
 sanitize_obs_field() {
   echo "$1" | tr '\n\r,' '   '
@@ -56,14 +58,14 @@ emit_obs() {
   elapsed_s="$(( $(date +%s) - SCRIPT_START_EPOCH ))"
   safe_reason="$(sanitize_obs_field "$reason")"
 
-  echo "SYNC_OBS event=${event} batch=${BATCH:-0} elapsed_s=${elapsed_s} max_pages=${CURRENT_MAX_PAGES_PER_BATCH} pull_status=${PULL_STATUS} committed=${committed:-na} has_more=${HAS_MORE} idle_has_more=${idle_has_more:-0} reason=\"${safe_reason}\""
+  echo "SYNC_OBS event=${event} batch=${BATCH:-0} elapsed_s=${elapsed_s} max_pages=${CURRENT_MAX_PAGES_PER_BATCH} pull_status=${PULL_STATUS} committed=${committed:-na} auto_commits=${AUTO_COMMITS_THIS_BATCH:-0} has_more=${HAS_MORE} idle_has_more=${idle_has_more:-0} reason=\"${safe_reason}\""
 
   if [ -z "$OBS_EVENTS_FILE" ]; then
     return
   fi
 
   cat >> "$OBS_EVENTS_FILE" <<EOF
-${ts_utc},${elapsed_s},${BATCH:-0},${event},${INPUT_FORCE},${CURRENT_MAX_PAGES_PER_BATCH},${PULL_STATUS},${PULL_DURATION_S},${GIT_PULL_S},${GIT_ADD_S},${GIT_DIFF_S},${GIT_COMMIT_S},${GIT_PUSH_S},${committed:-na},${HAS_MORE},${idle_has_more:-0},${safe_reason}
+${ts_utc},${elapsed_s},${BATCH:-0},${event},${INPUT_FORCE},${CURRENT_MAX_PAGES_PER_BATCH},${PULL_STATUS},${PULL_DURATION_S},${GIT_PULL_S},${GIT_ADD_S},${GIT_DIFF_S},${GIT_COMMIT_S},${GIT_PUSH_S},${committed:-na},${AUTO_COMMITS_THIS_BATCH:-0},${HAS_MORE},${idle_has_more:-0},${safe_reason}
 EOF
 }
 
@@ -76,7 +78,7 @@ init_observability() {
   OBS_SUMMARY_FILE="${FIGMACLAW_SYNC_OBS_DIR}/checkpoint_summary.txt"
   OBS_PULL_INVOCATIONS_FILE="${FIGMACLAW_SYNC_OBS_DIR}/pull_invocations.txt"
   cat > "$OBS_EVENTS_FILE" <<EOF
-ts_utc,elapsed_s,batch,event,input_force,max_pages,pull_status,pull_duration_s,git_pull_s,git_add_s,git_diff_s,git_commit_s,git_push_s,committed,has_more,idle_has_more,reason
+ts_utc,elapsed_s,batch,event,input_force,max_pages,pull_status,pull_duration_s,git_pull_s,git_add_s,git_diff_s,git_commit_s,git_push_s,committed,auto_commits,has_more,idle_has_more,reason
 EOF
   : > "$OBS_PULL_INVOCATIONS_FILE"
 }
@@ -129,6 +131,50 @@ run_pull_batch() {
   fi
 }
 
+push_with_ff_retry() {
+  if git push >&2; then
+    return 0
+  fi
+  git pull --no-rebase --ff-only origin "$TARGET_REF" >&2 || true
+  if git push >&2; then
+    return 0
+  fi
+  return 1
+}
+
+count_auto_commits_in_output() {
+  if [ ! -f "$FIGMACLAW_OUT_PATH" ]; then
+    echo "0"
+    return
+  fi
+  grep -c '^[[:space:]]*✓ committed:' "$FIGMACLAW_OUT_PATH" || true
+}
+
+record_auto_commits_this_batch() {
+  if [ "${AUTO_COMMITS_THIS_BATCH:-0}" -gt 0 ]; then
+    TOTAL_AUTO_COMMITS=$((TOTAL_AUTO_COMMITS + AUTO_COMMITS_THIS_BATCH))
+    emit_obs "auto_commit_progress" "figmaclaw auto-committed page progress"
+  fi
+}
+
+flush_auto_commits_best_effort() {
+  if git push >&2; then
+    emit_obs "auto_commit_flush" "git push succeeded"
+    return
+  fi
+
+  emit_obs "auto_commit_flush_failed" "initial git push failed"
+  # A page-level push can race another job or a previous push from the same
+  # batch. Fast-forward and retry once so unpushed --auto-commit tails still
+  # have a chance to become durable before the fresh checkout in the next run.
+  git pull --no-rebase --ff-only origin "$TARGET_REF" >&2 || true
+  if git push >&2; then
+    emit_obs "auto_commit_flush" "git push succeeded after fast-forward"
+  else
+    emit_obs "auto_commit_flush_failed" "git push retry failed"
+  fi
+}
+
 commit_if_changed() {
   local msg_override="${1:-}"
   local t0 t1
@@ -171,7 +217,13 @@ commit_if_changed() {
   GIT_COMMIT_S="$((t1 - t0))"
 
   t0="$(date +%s)"
-  git push >&2
+  if ! push_with_ff_retry; then
+    t1="$(date +%s)"
+    GIT_PUSH_S="$((t1 - t0))"
+    echo "warning: safety-net commit push failed after retry" >&2
+    echo "false"
+    return
+  fi
   t1="$(date +%s)"
   GIT_PUSH_S="$((t1 - t0))"
   echo "true"
@@ -186,7 +238,7 @@ init_observability
 # this whole PR exists to fix. The trap fires on normal exit, error exit, and
 # signals — `git push` with nothing to push is a no-op, so it's always safe.
 final_push_flush() {
-  git push >&2 || true
+  push_with_ff_retry >&2 || true
 }
 trap final_push_flush EXIT
 
@@ -207,12 +259,15 @@ while true; do
   BATCHES_STARTED=$((BATCHES_STARTED + 1))
   HAS_MORE="false"
   committed="na"
+  AUTO_COMMITS_THIS_BATCH=0
   echo "--- batch $BATCH ---"
   emit_obs "batch_start" "starting batch"
 
   set_pull_args
   run_pull_batch
   pull_status="$PULL_STATUS"
+  AUTO_COMMITS_THIS_BATCH="$(count_auto_commits_in_output)"
+  record_auto_commits_this_batch
 
   if [ "$pull_status" -eq 124 ] || [ "$pull_status" -eq 137 ]; then
     TOTAL_TIMEOUTS=$((TOTAL_TIMEOUTS + 1))
@@ -225,25 +280,23 @@ while true; do
     # Without these, the next CI run's fresh `actions/checkout@v6` throws all
     # mid-batch work away — causing the loop to re-do the same schema upgrades
     # forever without ever landing a commit upstream.
-    flushed_auto_commit="false"
-    if grep -q '✓ committed' "$FIGMACLAW_OUT_PATH"; then
-      if git push >&2; then
-        flushed_auto_commit="true"
-      fi
+    auto_commit_progress="false"
+    if [ "$AUTO_COMMITS_THIS_BATCH" -gt 0 ]; then
+      auto_commit_progress="true"
+      flush_auto_commits_best_effort
     else
       git push >&2 || true
     fi
     committed="$(commit_if_changed "sync: figmaclaw — partial progress (batch $BATCH timeout)")"
     if [ "$committed" = "true" ]; then
-      TOTAL_COMMITS=$((TOTAL_COMMITS + 1))
+      TOTAL_SAFETY_NET_COMMITS=$((TOTAL_SAFETY_NET_COMMITS + 1))
       # Distinct event + log line so operators can tell at a glance whether a
       # timed-out batch made forward progress or was completely wasted.
       echo "figmaclaw pull timed out but partial progress committed (batch $BATCH)."
       emit_obs "partial_commit_on_timeout" "timeout commit saved work"
-    elif [ "$flushed_auto_commit" = "true" ]; then
-      TOTAL_COMMITS=$((TOTAL_COMMITS + 1))
-      echo "figmaclaw pull timed out but auto-committed progress was flushed (batch $BATCH)."
-      emit_obs "partial_commit_on_timeout" "timeout auto-commit saved work"
+    elif [ "$auto_commit_progress" = "true" ]; then
+      echo "figmaclaw pull timed out after ${AUTO_COMMITS_THIS_BATCH} auto-committed page(s) in batch $BATCH."
+      emit_obs "partial_commit_on_timeout" "timeout after auto-committed progress"
     else
       echo "figmaclaw pull timed out after ${BATCH_TIMEOUT_SECONDS}s with no dirty progress; stopping checkpoint loop early."
       FINAL_REASON="timeout_no_progress_stop"
@@ -273,12 +326,12 @@ while true; do
 
   committed="$(commit_if_changed)"
   if [ "$committed" = "true" ]; then
-    TOTAL_COMMITS=$((TOTAL_COMMITS + 1))
+    TOTAL_SAFETY_NET_COMMITS=$((TOTAL_SAFETY_NET_COMMITS + 1))
   fi
 
   if grep -q '^HAS_MORE:true' "$FIGMACLAW_OUT_PATH"; then
     HAS_MORE="true"
-    if [ "$committed" = false ]; then
+    if [ "$committed" = false ] && [ "$AUTO_COMMITS_THIS_BATCH" -eq 0 ]; then
       idle_has_more=$((idle_has_more + 1))
       echo "HAS_MORE:true with no commit (idle_has_more=$idle_has_more/$MAX_IDLE_HAS_MORE_BATCHES)"
       if [ "$idle_has_more" -ge "$MAX_IDLE_HAS_MORE_BATCHES" ]; then
@@ -309,10 +362,13 @@ emit_obs "loop_end" "$FINAL_REASON"
 
 if [ -n "$OBS_SUMMARY_FILE" ]; then
   total_elapsed_s="$(( $(date +%s) - SCRIPT_START_EPOCH ))"
+  total_commits="$((TOTAL_AUTO_COMMITS + TOTAL_SAFETY_NET_COMMITS))"
   cat > "$OBS_SUMMARY_FILE" <<EOF
 total_elapsed_s=${total_elapsed_s}
 batches_started=${BATCHES_STARTED}
-total_commits=${TOTAL_COMMITS}
+total_commits=${total_commits}
+total_auto_commits=${TOTAL_AUTO_COMMITS}
+total_safety_net_commits=${TOTAL_SAFETY_NET_COMMITS}
 total_timeouts=${TOTAL_TIMEOUTS}
 total_backoffs=${TOTAL_BACKOFFS}
 final_reason=${FINAL_REASON}
