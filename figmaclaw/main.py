@@ -23,6 +23,7 @@ from figmaclaw.commands.doctor import doctor_cmd
 from figmaclaw.commands.image_urls import image_urls_cmd
 from figmaclaw.commands.init import init_cmd
 from figmaclaw.commands.inspect import inspect_cmd
+from figmaclaw.commands.inspect_instance import inspect_instance_cmd
 from figmaclaw.commands.list_files import list_cmd
 from figmaclaw.commands.mark_enriched import mark_enriched_cmd
 from figmaclaw.commands.mark_stale import mark_stale_cmd
@@ -171,6 +172,7 @@ cli.add_command(list_cmd)
 cli.add_command(mark_enriched_cmd)
 cli.add_command(mark_stale_cmd)
 cli.add_command(inspect_cmd)
+cli.add_command(inspect_instance_cmd)
 cli.add_command(pull_cmd)
 cli.add_command(image_urls_cmd)
 cli.add_command(screenshots_cmd)

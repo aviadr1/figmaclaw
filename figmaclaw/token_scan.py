@@ -53,13 +53,18 @@ _SPACING_PROPS = (
 _FONT_PROPS = ("fontSize", "fontFamily", "fontWeight")
 
 
-def _library_hash(var_id: str | None) -> str | None:
+def variable_library_hash(var_id: str | None) -> str | None:
+    """Return the library-hash prefix from a Figma variable ID."""
     if not var_id:
         return None
     inner = var_id.removeprefix("VariableID:")
     if "/" not in inner:
         return None
     return inner.split("/", 1)[0]
+
+
+def _library_hash(var_id: str | None) -> str | None:
+    return variable_library_hash(var_id)
 
 
 def classify_variable_id(

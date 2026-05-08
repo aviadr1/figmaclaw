@@ -48,8 +48,12 @@ If you only need updated tokens, run `figmaclaw variables --file-key <k>` — do
 | `figmaclaw inspect <md_file>` | Show page state: frame count, sections, enrichment status. |
 | `figmaclaw inspect <md_file> --json` | Machine-readable. Includes `needs_enrichment`, `pending_frames`, `stale_frames`. |
 | `figmaclaw inspect <md_file> --needs-enrichment` | Boolean shortcut for CI gating. |
+| `figmaclaw inspect-instance --file-key <k> --node <id> --current-ds-hash <key>` | Print a JSON diff for one INSTANCE against its master. Repeat `--node` for JSONL output. |
+| `figmaclaw inspect-instance --file-key <k> --nodes-from audit_nodes.jsonl --filter type=INSTANCE` | Batch diff INSTANCE records from `audit-page fetch-nodes` JSONL. |
 | `figmaclaw doctor` | Verify install, env vars, manifest sanity. |
 | `figmaclaw self skill <name>` | Print a bundled skill's content. |
+
+`inspect-instance` is read-only and writes JSON to stdout for one node, JSONL for multiple nodes. It chunks REST reads internally and skips synthesized nested instance ids containing `;`. Stale/missing node ids are emitted as per-record JSONL errors with `is_resolvable: false`, not as batch failures. It emits `properties[]`, `override_properties`, and master identity fields (`component_key`, `component_set_key`, `published_key`, `is_current_ds`). Use `properties[].override_kind` (`none`, `value`, `binding`, `both`) to distinguish clean inheritance from numeric overrides, variable swaps, and combined value+binding overrides. `--current-ds-hash` accepts a published component-set key, component key, library hash, or DS file key.
 
 ### LLM enrichment workflow
 

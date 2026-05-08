@@ -95,6 +95,14 @@ exists. When deciding whether to port a local script:
 The current port roadmap is [issue
 #152](https://github.com/aviadr1/figmaclaw/issues/152).
 
+## Instance/master override inspection
+
+Use `figmaclaw inspect-instance --file-key "$FILE" --node "$INSTANCE" --current-ds-hash "$TARGET_COMPONENT_SET_KEY"` to audit one INSTANCE after a component swap. For migration pages, prefer batch mode: `--nodes-from audit_nodes.jsonl --filter type=INSTANCE`; the CLI chunks REST reads, skips synthesized nested instance ids containing `;`, and emits stale/missing node ids as per-record JSONL errors.
+
+- `override_properties != []` is the structural Rule B signal: the instance points at the target master, but still carries detached overrides, so the writer missed `resetOverrides()`.
+- `master.is_current_ds == false` is the complementary Rule A signal when published identity is available: the instance still points at a legacy master.
+- `master.published_key` prefers the component-set key over the component key. `--current-ds-hash` accepts that component-set key, a component key, a library hash, or the target DS file key.
+
 ## Don't-do list
 
 - **Don't** propose a new FCLAW rule without ≥2 migration uses to validate the shape. The lint catalog is small and high-quality on purpose.
@@ -148,6 +156,13 @@ figmaclaw audit-page check "$FILE" "$AUDIT_PAGE" \
     --manifest fixes.json --idmap idmap.json
 figmaclaw audit-page diagnose "$FILE" "$AUDIT_PAGE" \
     --old-palette palettes/old.json --new-palette palettes/new.json
+
+# Batch swap audit
+figmaclaw inspect-instance \
+    --file-key "$FILE" \
+    --nodes-from audit_nodes.jsonl \
+    --filter type=INSTANCE \
+    --current-ds-hash "$TARGET_COMPONENT_SET_KEY"
 ```
 
 For the full walkthrough with explanations and rationale, see
