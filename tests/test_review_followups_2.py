@@ -346,6 +346,127 @@ def test_finding_14_clean_generated_batch_dir_preserves_other_prefix(
     assert not (tmp_path / "batch-0001.json").exists()
 
 
+# Copilot round-2 finding A — namespace adopted from manifest when CLI default
+
+
+def test_copilot_round2_a_swap_adopts_manifest_namespace_when_cli_default(
+    tmp_path: Path,
+) -> None:
+    """A wrapped manifest with a `namespace` field works without redundantly
+    passing --namespace on the CLI."""
+    manifest = tmp_path / "swap.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "figmaclaw.audit_page_swap.manifest",
+                "namespace": "login_signup_onboarding_2026_05_08",
+                "rows": [{"src": "a", "oldCid": "OLD", "newKey": "K"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    # Don't pass --namespace; the CLI default is `linear_git_migration`.
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "audit-page",
+            "swap",
+            "FILE",
+            "9559:29",
+            "--manifest",
+            str(manifest),
+            "--json",
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    # Dry-run report should show no error; without the fix this raised
+    # "manifest namespace … does not match CLI --namespace 'linear_git_migration'".
+    data = json.loads(result.output)
+    assert data["rows"] == 1
+
+
+def test_copilot_round2_a_swap_still_errors_when_user_passes_conflicting_namespace(
+    tmp_path: Path,
+) -> None:
+    """Explicit non-default --namespace that disagrees with the manifest still errors."""
+    manifest = tmp_path / "swap.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "figmaclaw.audit_page_swap.manifest",
+                "namespace": "manifest_ns",
+                "rows": [{"src": "a", "newKey": "K"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "audit-page",
+            "swap",
+            "FILE",
+            "9559:29",
+            "--manifest",
+            str(manifest),
+            "--namespace",
+            "explicit_other_ns",
+            "--json",
+        ],
+        catch_exceptions=False,
+    )
+    assert result.exit_code != 0
+    assert "does not match CLI --namespace" in result.output
+
+
+# Copilot round-2 finding B — unique_old_component_ids excludes missing
+
+
+def test_copilot_round2_b_unknown_oldcid_does_not_inflate_unique_count(
+    tmp_path: Path,
+) -> None:
+    """Rows without oldCid are reported separately; not counted as a unique id."""
+    manifest = tmp_path / "swap.json"
+    manifest.write_text(
+        json.dumps(
+            [
+                {"src": "1", "oldCid": "OLD1", "newKey": "K"},
+                {"src": "2", "newKey": "K"},  # no oldCid
+                {"src": "3", "newKey": "K"},  # no oldCid
+            ]
+        ),
+        encoding="utf-8",
+    )
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "audit-page",
+            "swap",
+            "FILE",
+            "9559:29",
+            "--manifest",
+            str(manifest),
+            "--json",
+        ],
+        catch_exceptions=False,
+    )
+    data = json.loads(result.output)
+    # One real OLD componentId, NOT two ("OLD1" + "<unknown>").
+    assert data["unique_old_component_ids"] == 1
+    assert data["unknown_old_component_id_rows"] == 2
+    # The by_old_component_id map only carries real keys.
+    assert data["by_old_component_id"] == {"OLD1": 1}
+
+
 # README + docs touched (finding #2) -------------------------------------
 
 

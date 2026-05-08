@@ -740,12 +740,19 @@ def audit_page_swap_cmd(
             f"CLI audit_page_id {audit_page_id!r}"
         )
     if manifest.namespace and manifest.namespace != namespace:
-        # Manifest-pinned namespace beats the CLI default; only error when
-        # they disagree explicitly.
-        raise click.UsageError(
-            f"manifest namespace {manifest.namespace!r} does not match "
-            f"CLI --namespace {namespace!r}"
-        )
+        # Manifest-pinned namespace beats the CLI default. Only error when
+        # the operator passed a non-default --namespace that contradicts the
+        # manifest — otherwise wrapped manifests would force every operator
+        # to redundantly pass --namespace just to satisfy the equality check.
+        # (#167 second-review Copilot finding.)
+        ns_source = ctx.get_parameter_source("namespace")
+        if ns_source == click.core.ParameterSource.DEFAULT:
+            namespace = manifest.namespace
+        else:
+            raise click.UsageError(
+                f"manifest namespace {manifest.namespace!r} does not match "
+                f"CLI --namespace {namespace!r}"
+            )
 
     rows = manifest.rows
     report = _swap_plan_report(rows, mode=mode, file_key=file_key, audit_page_id=audit_page_id)
@@ -840,9 +847,17 @@ def _swap_plan_report(
     file_key: str,
     audit_page_id: str,
 ) -> dict[str, Any]:
-    """Stable plan report for swap dry-run / emit-only modes."""
+    """Stable plan report for swap dry-run / emit-only modes.
+
+    `unique_old_component_ids` counts only rows that DO have an `oldCid` —
+    missing values are surfaced via `unknown_old_component_id_rows` instead,
+    so the uniqueness metric isn't inflated by the resolver's "couldn't
+    link" bucket. Operators get the count of unlinked rows separately.
+    (#167 second-review Copilot finding.)
+    """
     new_keys = Counter(row.new_key for row in rows)
-    old_cids = Counter(row.old_component_id or "<unknown>" for row in rows)
+    old_cids = Counter(row.old_component_id for row in rows if row.old_component_id)
+    unknown_old_cid_rows = sum(1 for row in rows if not row.old_component_id)
     return {
         "schema_version": AUDIT_PAGE_SWAP_SCHEMA_VERSION,
         "mode": mode,
@@ -851,6 +866,7 @@ def _swap_plan_report(
         "rows": len(rows),
         "unique_new_keys": len(new_keys),
         "unique_old_component_ids": len(old_cids),
+        "unknown_old_component_id_rows": unknown_old_cid_rows,
         "by_new_key": dict(new_keys),
         "by_old_component_id": dict(old_cids),
         "warnings": _swap_plan_warnings(rows),
@@ -864,6 +880,8 @@ def _emit_human_swap_plan(report: dict[str, Any]) -> None:
     click.echo(f"rows: {report['rows']}")
     click.echo(f"unique new keys: {report['unique_new_keys']}")
     click.echo(f"unique OLD componentIds: {report['unique_old_component_ids']}")
+    if report.get("unknown_old_component_id_rows"):
+        click.echo(f"  rows without oldCid: {report['unknown_old_component_id_rows']}")
     for key, count in sorted(report["by_new_key"].items(), key=lambda x: -x[1])[:5]:
         click.echo(f"  {key}: {count}")
     warnings = report.get("warnings") or []
