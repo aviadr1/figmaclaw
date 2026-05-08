@@ -22,10 +22,11 @@ from figmaclaw.commands.observability import (
     env_interval_seconds,
 )
 from figmaclaw.figma_client import FigmaClient
+from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
+from figmaclaw.figma_sync_state import file_has_pull_schema_debt
 from figmaclaw.git_utils import git_commit, git_push
 from figmaclaw.prune_utils import prune_file_artifacts_from_manifest
 from figmaclaw.pull_logic import DEFAULT_PER_PAGE_TIMEOUT_S, PullResult, pull_file
-from figmaclaw.schema_status import is_pull_schema_stale
 from figmaclaw.status_markers import COMMIT_MSG_PREFIX, HAS_MORE_TRUE
 
 DEFAULT_PER_FILE_TIMEOUT_S: float = 300.0
@@ -338,8 +339,15 @@ async def _run(
             if not force and listing_last_modified is not None:
                 listing_lm = listing_last_modified.get(key)
                 stored_lm = stored_entry.last_modified if stored_entry else ""
-                stored_schema = stored_entry.pull_schema_version if stored_entry else 0
-                schema_needs_refresh = is_pull_schema_stale(stored_schema)
+                schema_needs_refresh = (
+                    file_has_pull_schema_debt(
+                        stored_entry,
+                        current_pull_schema_version=CURRENT_PULL_SCHEMA_VERSION,
+                        should_skip_page=state.should_skip_page,
+                    )
+                    if stored_entry is not None
+                    else True
+                )
                 unchanged_on_figma = listing_lm is None or stored_lm == listing_lm
                 if unchanged_on_figma and not schema_needs_refresh:
                     obs.files_skipped_prefilter += 1

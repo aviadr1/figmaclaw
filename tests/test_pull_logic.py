@@ -2148,6 +2148,7 @@ async def test_pull_file_processes_schema_stale_pages_even_when_page_hash_unchan
 
     # Simulate schema staleness: reset pull_schema_version to 0 (pre-versioning)
     state.manifest.files["abc123"].pull_schema_version = 0
+    state.manifest.files["abc123"].pages["7741:45837"].pull_schema_version = 0
     # Also update Figma version so file passes file-level check... wait, we need schema_stale
     # Actually with version unchanged AND schema stale, it should still process
     state.manifest.files["abc123"].version = "v2"
@@ -2227,6 +2228,7 @@ async def test_schema_upgrade_does_not_cause_infinite_loop_with_max_pages(tmp_pa
 
     # Simulate schema bump: reset pull_schema_version so it appears stale
     state.manifest.files["abc123"].pull_schema_version = 0
+    state.manifest.files["abc123"].pages["7741:45837"].pull_schema_version = 0
     state.save()
 
     # Second pull with max_pages=1 — schema-only upgrades must NOT consume the budget.
@@ -2248,6 +2250,48 @@ async def test_schema_upgrade_does_not_cause_infinite_loop_with_max_pages(tmp_pa
 
     # pull_schema_version must be updated after a schema-only pass
     assert state.manifest.files["abc123"].pull_schema_version == CURRENT_PULL_SCHEMA_VERSION
+
+
+@pytest.mark.asyncio
+async def test_file_schema_debt_does_not_reprocess_page_current_artifacts(tmp_path: Path):
+    """INVARIANT: page-level schema progress survives a stale file aggregate.
+
+    A giant file may time out after committing page-level schema progress but
+    before the file-level aggregate reaches CURRENT. The next run must not
+    reprocess already-current page artifacts just because the parent file still
+    says stale; it should skip the page and repair the aggregate when all pages
+    are current.
+    """
+    from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    state.add_tracked_file("abc123", "Web App")
+
+    mock_client = MagicMock(spec=FigmaClient)
+    page_node = fake_page_node_with_children()
+    mock_client.get_file_meta = AsyncMock(return_value=fake_file_meta("v2", "2026-03-31T12:00:00Z"))
+    mock_client.get_page = AsyncMock(return_value=page_node)
+    mock_client.get_component_sets = AsyncMock(return_value=[])
+    mock_client.get_nodes = AsyncMock(return_value=fake_get_nodes_response())
+
+    await pull_file(mock_client, "abc123", state, tmp_path, force=False)
+    page_entry = state.manifest.files["abc123"].pages["7741:45837"]
+    assert page_entry.pull_schema_version == CURRENT_PULL_SCHEMA_VERSION
+
+    state.manifest.files["abc123"].pull_schema_version = CURRENT_PULL_SCHEMA_VERSION - 1
+    state.save()
+
+    result = await pull_file(mock_client, "abc123", state, tmp_path, force=False, max_pages=1)
+
+    assert result.pages_written == 0
+    assert result.pages_schema_upgraded == 0
+    assert result.pages_skipped == 1
+    assert state.manifest.files["abc123"].pull_schema_version == CURRENT_PULL_SCHEMA_VERSION
+    assert (
+        state.manifest.files["abc123"].pages["7741:45837"].pull_schema_version
+        == CURRENT_PULL_SCHEMA_VERSION
+    )
 
 
 @pytest.mark.asyncio
@@ -2305,6 +2349,7 @@ async def test_schema_upgrade_v6_to_v7_prunes_orphan_enriched_frame_hashes(tmp_p
     )
     md_path.write_text(injected)
     state.manifest.files["abc123"].pull_schema_version = 6  # simulate v6
+    state.manifest.files["abc123"].pages["7741:45837"].pull_schema_version = 6
     state.save()
 
     # Second pull: v6 < v7 → schema-stale refresh. The chokepoint must
@@ -3352,6 +3397,7 @@ async def test_has_more_only_set_when_content_changes_exhaust_budget(tmp_path: P
 
     # Simulate schema bump by resetting pull_schema_version
     state.manifest.files["abc123"].pull_schema_version = 0
+    state.manifest.files["abc123"].pages["7741:45837"].pull_schema_version = 0
     state.save()
 
     # Schema-stale pull with max_pages=1: schema-only pages must not trigger has_more

@@ -75,7 +75,12 @@ from figmaclaw.figma_render import (
     section_frame_ids,
 )
 from figmaclaw.figma_schema import UNGROUPED_COMPONENTS_NODE_ID
-from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
+from figmaclaw.figma_sync_state import (
+    FigmaSyncState,
+    PageEntry,
+    file_has_pull_schema_debt,
+    page_schema_is_current,
+)
 from figmaclaw.figma_utils import write_json_if_changed
 from figmaclaw.prune_utils import (
     LEGACY_UNGROUPED_COMPONENTS_BASENAME,
@@ -83,7 +88,6 @@ from figmaclaw.prune_utils import (
     find_generated_orphans,
     remove_generated_relpath,
 )
-from figmaclaw.schema_status import is_pull_schema_stale
 from figmaclaw.token_catalog import (
     library_hashes_for_file,
     load_catalog,
@@ -753,7 +757,15 @@ async def pull_file(
     file_name = meta.name
 
     stored = state.manifest.files.get(file_key)
-    schema_stale = is_pull_schema_stale(stored.pull_schema_version if stored else 0)
+    schema_stale = (
+        file_has_pull_schema_debt(
+            stored,
+            current_pull_schema_version=CURRENT_PULL_SCHEMA_VERSION,
+            should_skip_page=state.should_skip_page,
+        )
+        if stored is not None
+        else True
+    )
     file_slug = _file_slug_for_state(state, file_key, file_name)
 
     local_reconcile_needed = False
@@ -967,7 +979,18 @@ async def pull_file(
                 continue
             new_hash = compute_page_hash(pn)
             stored_hash = state.get_page_hash(file_key, stub_id)
-            if not force and stored_hash == new_hash and not schema_stale:
+            previous_entry = previous_pages.get(stub_id)
+            page_schema_stale = (
+                previous_entry is None
+                or not page_schema_is_current(
+                    stored,
+                    previous_entry,
+                    current_pull_schema_version=CURRENT_PULL_SCHEMA_VERSION,
+                )
+                if stored is not None
+                else True
+            )
+            if not force and stored_hash == new_hash and not page_schema_stale:
                 # When schema is stale we still need frame children for unchanged pages
                 # so newly introduced frontmatter fields (e.g. frame_sections) can be
                 # backfilled in one schema-upgrade pass.
@@ -1072,6 +1095,16 @@ async def pull_file(
         expected_page_slug = f"{slugify(page_name)}-{node_suffix}"
         expected_screen_md_rel = page_path(file_slug, expected_page_slug)
         previous_entry = previous_pages.get(page_node_id)
+        page_schema_stale = (
+            previous_entry is None
+            or not page_schema_is_current(
+                stored,
+                previous_entry,
+                current_pull_schema_version=CURRENT_PULL_SCHEMA_VERSION,
+            )
+            if stored is not None
+            else True
+        )
         needs_path_reconcile = bool(
             previous_entry
             and previous_entry.md_path
@@ -1083,7 +1116,7 @@ async def pull_file(
         # Schema-only: content is identical but the pull schema version needs refreshing.
         # Frontmatter gets re-rendered to pick up new fields; no token scan is run.
         # These don't consume the max_pages budget so the whole file upgrades in one pass.
-        schema_only = content_unchanged and schema_stale
+        schema_only = content_unchanged and page_schema_stale
 
         needs_sidecar_backfill = False
         if content_unchanged and previous_entry and previous_entry.md_path:
@@ -1092,7 +1125,7 @@ async def pull_file(
 
         if (
             content_unchanged
-            and not schema_stale
+            and not page_schema_stale
             and not needs_path_reconcile
             and not needs_sidecar_backfill
         ):
@@ -1239,6 +1272,7 @@ async def pull_file(
                     md_path=screen_md_rel,
                     page_hash=new_hash,
                     last_refreshed_at=now,
+                    pull_schema_version=CURRENT_PULL_SCHEMA_VERSION,
                     frame_hashes=frame_hashes,
                 )
                 if screen_md.exists():
@@ -1357,7 +1391,11 @@ async def pull_file(
             md_path=written_screen_rel,
             page_hash=new_hash,
             last_refreshed_at=now,
+            pull_schema_version=CURRENT_PULL_SCHEMA_VERSION,
             component_md_paths=written_component_rels,
+            component_schema_versions={
+                rel: CURRENT_PULL_SCHEMA_VERSION for rel in written_component_rels
+            },
             frame_hashes=frame_hashes,
         )
         state.set_page_entry(file_key, page_node_id, entry)
@@ -1420,11 +1458,19 @@ async def pull_file(
     if manifest_changed:
         state.save()
 
-    # Record that all pages in this file are now at the current pull schema version.
-    # Only written after the full page loop completes — if interrupted mid-file,
-    # the version stays at 0 and the next run re-processes the whole file.
     if not result.has_more and file_key in state.manifest.files:
-        state.manifest.files[file_key].pull_schema_version = CURRENT_PULL_SCHEMA_VERSION
+        file_entry = state.manifest.files[file_key]
+        all_page_artifacts_current = all(
+            state.should_skip_page(page_entry.page_name)
+            or page_schema_is_current(
+                file_entry,
+                page_entry,
+                current_pull_schema_version=CURRENT_PULL_SCHEMA_VERSION,
+            )
+            for page_entry in file_entry.pages.values()
+        )
+        if all_page_artifacts_current and result.pages_errored == 0:
+            file_entry.pull_schema_version = CURRENT_PULL_SCHEMA_VERSION
         state.save()
 
     # Structural invariant: schema-only upgrades must never *by themselves* cause has_more=True.

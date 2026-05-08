@@ -199,6 +199,51 @@ def test_sync_state_save_then_load_round_trips(tmp_path: Path):
     assert state2.manifest.files["abc123"].pages["0:1"].page_hash == "deadbeef12345678"
 
 
+def test_manifest_v1_load_migrates_file_schema_to_page_schema(tmp_path: Path):
+    """INVARIANT: legacy manifests preserve schema state when loaded as v2."""
+    import json
+
+    manifest_path = tmp_path / ".figma-sync" / "manifest.json"
+    manifest_path.parent.mkdir(parents=True)
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "tracked_files": ["abc123"],
+                "files": {
+                    "abc123": {
+                        "file_name": "Web App",
+                        "version": "v1",
+                        "last_modified": "2026-03-31T00:00:00Z",
+                        "pull_schema_version": 7,
+                        "pages": {
+                            "0:1": {
+                                "page_name": "Onboarding",
+                                "page_slug": "onboarding-0-1",
+                                "md_path": "figma/web-app-abc123/pages/onboarding-0-1.md",
+                                "page_hash": "deadbeef12345678",
+                                "last_refreshed_at": "2026-03-31T01:00:00Z",
+                                "component_md_paths": [
+                                    "figma/web-app-abc123/components/buttons-2-1.md"
+                                ],
+                                "frame_hashes": {"1:1": "aaaabbbb"},
+                            }
+                        },
+                    }
+                },
+            }
+        )
+    )
+
+    state = FigmaSyncState(tmp_path)
+    state.load()
+    page = state.manifest.files["abc123"].pages["0:1"]
+
+    assert state.manifest.schema_version == 2
+    assert page.pull_schema_version == 7
+    assert page.component_schema_versions == {"figma/web-app-abc123/components/buttons-2-1.md": 7}
+
+
 def test_sync_state_save_skips_manifest_timestamp_only_changes(tmp_path: Path):
     """W-1: manifest timestamp-only updates must not rewrite the committed cache.
 

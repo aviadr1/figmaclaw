@@ -36,6 +36,7 @@ import click
 
 from figmaclaw.commands._shared import load_state, require_figma_api_key
 from figmaclaw.figma_client import FigmaClient
+from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
 from figmaclaw.figma_hash import compute_frame_hashes, compute_page_hash
 from figmaclaw.figma_models import from_page_node
 from figmaclaw.figma_parse import parse_flows, parse_frontmatter, split_frontmatter
@@ -152,9 +153,11 @@ async def _run(
         existing_page_entry = manifest_file.pages.get(page_node_id)
 
     component_md_paths: list[str] = []
+    component_schema_versions: dict[str, int] = {}
     page_name: str = page_node.get("name", page_slug)
     if existing_page_entry is not None:
         component_md_paths = existing_page_entry.component_md_paths
+        component_schema_versions = dict(existing_page_entry.component_schema_versions)
         page_name = existing_page_entry.page_name
 
     entry = PageEntry(
@@ -163,7 +166,9 @@ async def _run(
         md_path=md_rel,
         page_hash=new_hash,
         last_refreshed_at=now,
+        pull_schema_version=CURRENT_PULL_SCHEMA_VERSION,
         component_md_paths=component_md_paths,
+        component_schema_versions=component_schema_versions,
         frame_hashes=frame_hashes,
     )
 

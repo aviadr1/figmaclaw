@@ -8,13 +8,15 @@ generated .md files — never .gitignored.
 from __future__ import annotations
 
 import fnmatch
+from collections.abc import Callable
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from figmaclaw.figma_utils import write_json_if_changed
 
 MANIFEST_TIMESTAMP_KEYS = frozenset({"last_checked_at", "last_refreshed_at"})
+CURRENT_MANIFEST_SCHEMA_VERSION = 2
 
 
 class PageEntry(BaseModel):
@@ -29,7 +31,11 @@ class PageEntry(BaseModel):
     md_path: str | None = None  # None for all-component pages
     page_hash: str
     last_refreshed_at: str
+    # 0/None = pre page-level schema tracking. When absent in legacy manifests,
+    # callers fall back to the parent FileEntry.pull_schema_version.
+    pull_schema_version: int | None = None
     component_md_paths: list[str] = Field(default_factory=list)
+    component_schema_versions: dict[str, int] = Field(default_factory=dict)
     frame_hashes: dict[str, str] = Field(default_factory=dict)  # {node_id: content_hash}
 
 
@@ -49,6 +55,17 @@ class FileEntry(BaseModel):
     # get frontmatter re-written on next pull even if Figma content is unchanged.
     pull_schema_version: int = 0
     pages: dict[str, PageEntry] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _backfill_page_schema_versions(self) -> FileEntry:
+        """Migrate legacy page entries to explicit page schema state in memory."""
+        for page in self.pages.values():
+            if page.pull_schema_version is None:
+                page.pull_schema_version = self.pull_schema_version
+            if page.component_md_paths:
+                for rel in page.component_md_paths:
+                    page.component_schema_versions.setdefault(rel, page.pull_schema_version or 0)
+        return self
 
 
 class Manifest(BaseModel):
@@ -71,7 +88,7 @@ class Manifest(BaseModel):
     ``tracked_files`` if it is already present in ``skipped_files``.
     """
 
-    schema_version: int = 1
+    schema_version: int = CURRENT_MANIFEST_SCHEMA_VERSION
     skip_pages: list[str] = Field(
         default_factory=lambda: ["old-*", "old *", "---"],
         description=(
@@ -83,6 +100,77 @@ class Manifest(BaseModel):
     tracked_files: list[str] = Field(default_factory=list)
     skipped_files: dict[str, str] = Field(default_factory=dict)
     files: dict[str, FileEntry] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _migrate_manifest_schema(self) -> Manifest:
+        """Upgrade legacy manifest shape without dropping tracked state."""
+        self.schema_version = CURRENT_MANIFEST_SCHEMA_VERSION
+        return self
+
+
+def effective_page_pull_schema_version(file_entry: FileEntry, page_entry: PageEntry) -> int:
+    """Return page schema version with legacy file-level fallback."""
+    if page_entry.pull_schema_version is not None:
+        return page_entry.pull_schema_version
+    return file_entry.pull_schema_version
+
+
+def effective_component_pull_schema_version(page_entry: PageEntry, component_rel: str) -> int:
+    """Return component artifact schema version with page-level fallback."""
+    return page_entry.component_schema_versions.get(
+        component_rel, page_entry.pull_schema_version or 0
+    )
+
+
+def page_schema_is_current(
+    file_entry: FileEntry,
+    page_entry: PageEntry,
+    *,
+    current_pull_schema_version: int,
+) -> bool:
+    """True when one page and its component artifacts are at current pull schema."""
+    page_version = effective_page_pull_schema_version(file_entry, page_entry)
+    if page_version < current_pull_schema_version:
+        return False
+    return all(
+        effective_component_pull_schema_version(page_entry, rel) >= current_pull_schema_version
+        for rel in page_entry.component_md_paths
+    )
+
+
+def file_schema_is_current(
+    file_entry: FileEntry,
+    *,
+    current_pull_schema_version: int,
+    should_skip_page: Callable[[str], bool] | None = None,
+) -> bool:
+    """True when file and all non-skipped page artifacts are at current pull schema."""
+    if file_entry.pull_schema_version < current_pull_schema_version:
+        return False
+    for page_entry in file_entry.pages.values():
+        if should_skip_page is not None and should_skip_page(page_entry.page_name):
+            continue
+        if not page_schema_is_current(
+            file_entry,
+            page_entry,
+            current_pull_schema_version=current_pull_schema_version,
+        ):
+            return False
+    return True
+
+
+def file_has_pull_schema_debt(
+    file_entry: FileEntry,
+    *,
+    current_pull_schema_version: int,
+    should_skip_page: Callable[[str], bool] | None = None,
+) -> bool:
+    """Return True when any file/page/component pull schema state is stale."""
+    return not file_schema_is_current(
+        file_entry,
+        current_pull_schema_version=current_pull_schema_version,
+        should_skip_page=should_skip_page,
+    )
 
 
 class FigmaSyncState:
@@ -100,6 +188,8 @@ class FigmaSyncState:
 
     def save(self) -> None:
         """Persist manifest to disk."""
+        self.manifest.schema_version = CURRENT_MANIFEST_SCHEMA_VERSION
+        self._normalize_schema_versions()
         self._sync_dir.mkdir(parents=True, exist_ok=True)
         write_json_if_changed(
             self._manifest_file,
@@ -167,3 +257,14 @@ class FigmaSyncState:
             entry.version = version
             entry.last_modified = last_modified
             entry.last_checked_at = last_checked_at
+
+    def _normalize_schema_versions(self) -> None:
+        """Write explicit page/component schema versions for legacy in-memory entries."""
+        for file_entry in self.manifest.files.values():
+            for page_entry in file_entry.pages.values():
+                if page_entry.pull_schema_version is None:
+                    page_entry.pull_schema_version = file_entry.pull_schema_version
+                for rel in page_entry.component_md_paths:
+                    page_entry.component_schema_versions.setdefault(
+                        rel, page_entry.pull_schema_version or 0
+                    )

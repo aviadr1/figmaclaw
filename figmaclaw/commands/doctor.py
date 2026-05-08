@@ -110,7 +110,11 @@ def doctor_cmd(ctx: click.Context) -> None:
     if manifest_file.exists():
         try:
             from figmaclaw.figma_frontmatter import CURRENT_PULL_SCHEMA_VERSION
-            from figmaclaw.figma_sync_state import FigmaSyncState
+            from figmaclaw.figma_sync_state import (
+                FigmaSyncState,
+                file_has_pull_schema_debt,
+                page_schema_is_current,
+            )
 
             state = FigmaSyncState(repo_dir)
             state.load()
@@ -123,11 +127,28 @@ def doctor_cmd(ctx: click.Context) -> None:
             )
             passed += 1
 
-            stale_schema_files = [
-                f"{file_entry.file_name} (v{file_entry.pull_schema_version})"
-                for file_entry in state.manifest.files.values()
-                if file_entry.pull_schema_version < CURRENT_PULL_SCHEMA_VERSION
-            ]
+            stale_schema_files: list[str] = []
+            stale_schema_pages = 0
+            for file_entry in state.manifest.files.values():
+                if not file_has_pull_schema_debt(
+                    file_entry,
+                    current_pull_schema_version=CURRENT_PULL_SCHEMA_VERSION,
+                    should_skip_page=state.should_skip_page,
+                ):
+                    continue
+                stale_schema_files.append(
+                    f"{file_entry.file_name} (v{file_entry.pull_schema_version})"
+                )
+                stale_schema_pages += sum(
+                    1
+                    for page_entry in file_entry.pages.values()
+                    if not state.should_skip_page(page_entry.page_name)
+                    and not page_schema_is_current(
+                        file_entry,
+                        page_entry,
+                        current_pull_schema_version=CURRENT_PULL_SCHEMA_VERSION,
+                    )
+                )
             if stale_schema_files:
                 detail = "; ".join(stale_schema_files[:3])
                 if len(stale_schema_files) > 3:
@@ -136,7 +157,7 @@ def doctor_cmd(ctx: click.Context) -> None:
                     "pull schema current",
                     False,
                     f"{len(stale_schema_files)} file(s) below "
-                    f"v{CURRENT_PULL_SCHEMA_VERSION}: {detail}",
+                    f"v{CURRENT_PULL_SCHEMA_VERSION}, {stale_schema_pages} page(s) stale: {detail}",
                 )
                 warnings += 1
             else:

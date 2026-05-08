@@ -27,6 +27,7 @@ from figmaclaw.figma_frontmatter import (
 from figmaclaw.figma_md_parse import section_line_ranges
 from figmaclaw.figma_parse import parse_frontmatter
 from figmaclaw.figma_schema import unresolved_row_node_id
+from figmaclaw.figma_sync_state import effective_page_pull_schema_version, page_schema_is_current
 from figmaclaw.schema_status import enrichment_schema_status, is_pull_schema_stale
 from figmaclaw.staleness import stale_frame_ids_from_manifest
 
@@ -158,11 +159,28 @@ def inspect_cmd(
 
     # Schema staleness: pull-pass frontmatter fields
     try:
-        file_entry = load_state(repo_dir).manifest.files.get(meta.file_key)
+        state = load_state(repo_dir)
+        file_entry = state.manifest.files.get(meta.file_key)
+        page_entry = file_entry.pages.get(meta.page_node_id) if file_entry else None
         file_pull_schema_version = file_entry.pull_schema_version if file_entry else 0
+        page_pull_schema_version = (
+            effective_page_pull_schema_version(file_entry, page_entry)
+            if file_entry is not None and page_entry is not None
+            else file_pull_schema_version
+        )
+        pull_schema_stale = (
+            not page_schema_is_current(
+                file_entry,
+                page_entry,
+                current_pull_schema_version=CURRENT_PULL_SCHEMA_VERSION,
+            )
+            if file_entry is not None and page_entry is not None
+            else is_pull_schema_stale(file_pull_schema_version)
+        )
     except Exception:
         file_pull_schema_version = 0
-    pull_schema_stale = is_pull_schema_stale(file_pull_schema_version)
+        page_pull_schema_version = 0
+        pull_schema_stale = True
 
     # Schema staleness: enrichment prompt/format
     enrichment = enrichment_schema_status(meta.enriched_schema_version)
@@ -193,6 +211,7 @@ def inspect_cmd(
             "section_threshold": SECTION_THRESHOLD,
             "pull_schema_stale": pull_schema_stale,
             "pull_schema_version": file_pull_schema_version,
+            "page_pull_schema_version": page_pull_schema_version,
             "current_pull_schema_version": CURRENT_PULL_SCHEMA_VERSION,
             "enrichment_schema_version": esv,
             "enrichment_must_update": enrichment_must_update,
@@ -216,7 +235,7 @@ def inspect_cmd(
             click.echo("  NOT enriched")
         if pull_schema_stale:
             click.echo(
-                f"  [PULL-SCHEMA STALE] frontmatter v{file_pull_schema_version} < current v{CURRENT_PULL_SCHEMA_VERSION} — pull-only refresh needed"
+                f"  [PULL-SCHEMA STALE] page frontmatter v{page_pull_schema_version} < current v{CURRENT_PULL_SCHEMA_VERSION} — pull-only refresh needed"
             )
         if enrichment_must_update:
             click.echo(
