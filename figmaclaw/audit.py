@@ -104,12 +104,12 @@ PARENT_HANDLING = set(_get_args(NestedRule.model_fields["parent_handling"].annot
 EXPECTED_TYPES: set[str | None] = set(
     _get_args(_get_args(NestedRuleTarget.model_fields["expected_type"].annotation)[0])
 ) | {None}
-VALIDATION_BOOLS = {
-    "assert_target_type",
-    "assert_name_matches",
-    "assert_property_keys",
-    "assert_variant_axes",
-}
+# Derived from the pydantic model so adding a new boolean to
+# NestedRuleValidation can't leave VALIDATION_BOOLS stale. (#167 review-3
+# Copilot finding 3211429163.)
+from figmaclaw.component_map import NestedRuleValidation as _NestedRuleValidation  # noqa: E402
+
+VALIDATION_BOOLS: set[str] = set(_NestedRuleValidation.model_fields)
 
 
 def _rule_is_flat_shape(row: dict[str, Any]) -> bool:

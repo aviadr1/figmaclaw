@@ -195,7 +195,11 @@ def use_figma_batch_options(default_batch_size: int) -> Callable[[Callable], Cal
         )(func)
         func = click.option(
             "--batch-size",
-            type=int,
+            # Click validation surfaces `--batch-size 0` as a UsageError with
+            # the option name, instead of the bare ValueError that
+            # `write_use_figma_batches` raises and Click renders as a stack
+            # trace. (#167 Copilot finding 3211429212.)
+            type=click.IntRange(min=1),
             default=default_batch_size,
             show_default=True,
         )(func)

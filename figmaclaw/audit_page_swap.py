@@ -366,8 +366,18 @@ for (const row of ROWS) {
             // loadFontAsync may reject for unloadable fonts — F30 says we
             // never let that fail the whole batch, just this row's text
             // preservation.
-            const style = target.fontName || o.fontName;
-            if (style && style !== figma.mixed) await figma.loadFontAsync(style);
+            //
+            // `target.fontName` can be `figma.mixed` (truthy) when the
+            // text node carries multiple per-character fonts; in that
+            // case the old `target.fontName || o.fontName` short-circuit
+            // skipped loadFontAsync and `target.characters = …` would
+            // throw "font not loaded". Pick the first non-mixed candidate
+            // explicitly. (#167 Copilot finding 3211429187.)
+            const candidates = [target.fontName, o.fontName];
+            const style = candidates.find(
+              (s) => s && s !== figma.mixed && typeof s === "object"
+            );
+            if (style) await figma.loadFontAsync(style);
             target.characters = o.characters || "";
           } catch (_e) { /* ignore per-text font failures */ }
         }

@@ -717,8 +717,8 @@ def audit_page_swap_cmd(
     (``scripts/build_swap_manifest.py``) already filters them out.
     """
     repo_dir = Path(ctx.obj["repo_dir"])
-    if batch_size <= 0:
-        raise click.UsageError("--batch-size must be > 0")
+    # batch_size is validated by click.IntRange(min=1) in
+    # `use_figma_batch_options`; resume_from is still hand-validated.
     if resume_from < 1:
         raise click.UsageError("--resume-from must be >= 1")
 
