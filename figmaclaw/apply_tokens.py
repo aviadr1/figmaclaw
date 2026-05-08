@@ -198,7 +198,7 @@ def _from_compact_rows(
                 value=raw.get("value", raw.get("v")),
                 token_name=str(token),
                 variable_id=variable_id,
-                variable_key=variable.key,
+                variable_key=variable.key or raw.get("variable_key"),
                 source=variable.source,
                 catalog_source_version=_catalog_source_version(catalog, variable),
                 paint_index=paint_index,
@@ -342,13 +342,24 @@ def _catalog_source_version(catalog: TokenCatalog, variable: CatalogVariable) ->
 def apply_plan_report(prepared: PreparedApplyTokens) -> dict[str, Any]:
     """Return a stable report for dry-run and refusal output."""
     refusal_counts = Counter(r.reason for r in prepared.refusals)
-    property_counts = Counter(fix.property for fix in prepared.manifest.fixes)
+    accepted_fixes = [
+        fix
+        for index, fix in enumerate(prepared.manifest.fixes)
+        if prepared.accepted_fix_indices is None or index in prepared.accepted_fix_indices
+    ]
+    property_counts = Counter(fix.property for fix in accepted_fixes)
+    input_rows = (
+        len(prepared.manifest.fixes)
+        if prepared.accepted_fix_indices is not None
+        else len(prepared.manifest.fixes) + len(prepared.refusals)
+    )
     return {
         "schema_version": APPLY_TOKENS_SCHEMA_VERSION,
         "ok": prepared.ok,
         "file_key": prepared.manifest.file_key,
         "page_node_id": prepared.manifest.page_node_id,
-        "fixes": len(prepared.manifest.fixes),
+        "input_rows": input_rows,
+        "fixes": len(accepted_fixes),
         "refusals": len(prepared.refusals),
         "counts": {
             "properties": dict(sorted(property_counts.items())),

@@ -192,6 +192,50 @@ def test_apply_tokens_emit_only_writes_deterministic_batches(tmp_path: Path) -> 
     assert "apply-tokens batch incomplete" in js
 
 
+def test_apply_tokens_compact_rows_preserve_supplied_variable_key(tmp_path: Path) -> None:
+    _track_current(tmp_path)
+    _write_catalog(tmp_path, key=None)
+    rows = tmp_path / "bindings_for_figma.json"
+    rows.write_text(
+        json.dumps(
+            [
+                {
+                    "n": "1:2",
+                    "p": "fill",
+                    "t": "fg/primary",
+                    "v": "#FFFFFF",
+                    "variable_key": "supplied-variable-key",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "apply-tokens",
+            str(rows),
+            "--file",
+            FILE_KEY,
+            "--page",
+            PAGE_ID,
+            "--emit-only",
+            "--batch-dir",
+            "apply_batches",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    first_batch = json.loads(
+        (tmp_path / "apply_batches" / "batch-0001.json").read_text(encoding="utf-8")
+    )
+    assert first_batch[0]["variable_key"] == "supplied-variable-key"
+
+
 def test_apply_tokens_emit_only_removes_stale_generated_batches(tmp_path: Path) -> None:
     _track_current(tmp_path)
     _write_catalog(tmp_path)
@@ -675,6 +719,58 @@ def test_apply_tokens_refuses_versioned_fix_from_different_catalog_version(
     assert result.exit_code == 0
     data = json.loads(result.output)
     assert data["counts"]["refusals"] == {"catalog_source_version_mismatch": 1}
+
+
+def test_apply_tokens_report_counts_only_accepted_versioned_fixes(tmp_path: Path) -> None:
+    _track_current(tmp_path)
+    _write_catalog(tmp_path)
+    manifest_path = tmp_path / "fixes.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "fixes": [
+                    {
+                        "node_id": "1:2",
+                        "property": "fill",
+                        "variable_id": VAR_ID,
+                        "source": "figma_api",
+                    },
+                    {
+                        "node_id": "1:3",
+                        "property": "stroke",
+                        "variable_id": "VariableID:libabc/missing",
+                        "source": "figma_api",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--repo-dir",
+            str(tmp_path),
+            "apply-tokens",
+            str(manifest_path),
+            "--file",
+            FILE_KEY,
+            "--page",
+            PAGE_ID,
+            "--json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["ok"] is False
+    assert data["input_rows"] == 2
+    assert data["fixes"] == 1
+    assert data["counts"]["properties"] == {"fill": 1}
+    assert data["counts"]["refusals"] == {"variable_not_in_catalog": 1}
 
 
 def test_apply_tokens_execute_uses_shared_mcp_executor(tmp_path: Path) -> None:
