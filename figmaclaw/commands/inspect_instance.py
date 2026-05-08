@@ -61,8 +61,19 @@ def inspect_instance_cmd(
     requested_node_ids = list(
         dict.fromkeys(normalize_node_id(node_id) for node_id in requested_node_ids)
     )
+    skipped_synthesized = [
+        node_id for node_id in requested_node_ids if _is_synthesized_node_id(node_id)
+    ]
+    requested_node_ids = [
+        node_id for node_id in requested_node_ids if not _is_synthesized_node_id(node_id)
+    ]
     if not requested_node_ids:
-        raise click.UsageError("Provide at least one --node or --nodes-from record.")
+        raise click.UsageError("Provide at least one resolvable --node or --nodes-from record.")
+    if skipped_synthesized:
+        click.echo(
+            f"skipped {len(skipped_synthesized)} synthesized nested instance ids",
+            err=True,
+        )
     try:
         results = asyncio.run(
             _run(
@@ -129,6 +140,10 @@ def _node_ids_from_jsonl(path: Path, *, record_filter: str | None) -> list[str]:
             if isinstance(node_id, str) and node_id.strip():
                 node_ids.append(node_id.strip())
     return node_ids
+
+
+def _is_synthesized_node_id(node_id: str) -> bool:
+    return ";" in node_id
 
 
 async def _published_component_set_keys_for_files(

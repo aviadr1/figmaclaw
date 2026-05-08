@@ -13,6 +13,7 @@ from figmaclaw.figma_client import FigmaClient, normalize_node_id
 from figmaclaw.token_scan import bound_variable_id, paint_bound_variable_id, variable_library_hash
 
 OverrideKind = Literal["none", "value", "binding", "both"]
+NODE_FETCH_BATCH_SIZE = 50
 
 SCALAR_PROPERTIES = (
     "cornerRadius",
@@ -196,7 +197,11 @@ async def diff_instances_against_masters(
 
     current_ds_file_keys = current_ds_file_keys or set()
     current_ds_published_keys = current_ds_published_keys or set()
-    instance_payload = await client.get_nodes_response(file_key, instance_node_ids, depth=1)
+    instance_payload = await _fetch_nodes_response_chunks(
+        client,
+        file_key,
+        instance_node_ids,
+    )
     component_cache: dict[str, dict[str, Any]] = {}
     component_set_cache: dict[str, dict[str, Any]] = {}
     rows: list[tuple[dict[str, Any], dict[str, Any], MasterRef]] = []
@@ -664,9 +669,37 @@ async def _fetch_optional_nodes_response(
     node_ids: list[str],
 ) -> dict[str, Any]:
     try:
-        return await client.get_nodes_response(file_key, node_ids, depth=1)
+        return await _fetch_nodes_response_chunks(client, file_key, node_ids)
     except httpx.HTTPStatusError:
         return {}
+
+
+async def _fetch_nodes_response_chunks(
+    client: FigmaClient,
+    file_key: str,
+    node_ids: list[str],
+    *,
+    chunk_size: int = NODE_FETCH_BATCH_SIZE,
+) -> dict[str, Any]:
+    merged: dict[str, Any] = {"nodes": {}}
+    for chunk in _chunks(node_ids, chunk_size):
+        payload = await client.get_nodes_response(file_key, chunk, depth=1)
+        _merge_nodes_response(merged, payload)
+    return merged
+
+
+def _merge_nodes_response(target: dict[str, Any], payload: Mapping[str, Any]) -> None:
+    for map_name in ("nodes", "components", "componentSets", "styles"):
+        values = payload.get(map_name)
+        if not isinstance(values, Mapping):
+            continue
+        target_map = target.setdefault(map_name, {})
+        if isinstance(target_map, dict):
+            target_map.update(values)
+
+
+def _chunks(values: list[str], size: int) -> list[list[str]]:
+    return [values[index : index + size] for index in range(0, len(values), size)]
 
 
 async def _fetch_optional_node(

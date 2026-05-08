@@ -53,7 +53,7 @@ If you only need updated tokens, run `figmaclaw variables --file-key <k>` — do
 | `figmaclaw doctor` | Verify install, env vars, manifest sanity. |
 | `figmaclaw self skill <name>` | Print a bundled skill's content. |
 
-`inspect-instance` is read-only and writes JSON to stdout for one node, JSONL for multiple nodes. It emits `properties[]`, `override_properties`, and master identity fields (`component_key`, `component_set_key`, `published_key`, `is_current_ds`). Use `properties[].override_kind` (`none`, `value`, `binding`, `both`) to distinguish clean inheritance from numeric overrides, variable swaps, and combined value+binding overrides. `--current-ds-hash` accepts a published component-set key, component key, library hash, or DS file key.
+`inspect-instance` is read-only and writes JSON to stdout for one node, JSONL for multiple nodes. It chunks REST reads internally and skips synthesized nested instance ids containing `;`. It emits `properties[]`, `override_properties`, and master identity fields (`component_key`, `component_set_key`, `published_key`, `is_current_ds`). Use `properties[].override_kind` (`none`, `value`, `binding`, `both`) to distinguish clean inheritance from numeric overrides, variable swaps, and combined value+binding overrides. `--current-ds-hash` accepts a published component-set key, component key, library hash, or DS file key.
 
 ### LLM enrichment workflow
 
