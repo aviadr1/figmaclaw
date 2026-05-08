@@ -5,14 +5,18 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from typing import Any
 
 import click
 from pydantic import ValidationError
 
 from figmaclaw.apply_tokens import (
     DEFAULT_NAMESPACE,
+    DEFAULT_SIGNATURE_ABORT_THRESHOLD,
+    EXIT_OPERATOR_ACTION_REQUIRED,
     apply_plan_report,
     load_apply_token_input,
+    operator_action_for_signature,
     referenced_catalog_source_file_keys,
     refusal_report,
     write_apply_batches,
@@ -90,6 +94,19 @@ from figmaclaw.use_figma_exec import execute_use_figma_calls
         "allows variable-id fallback. Pair with --library to match the legacy target library."
     ),
 )
+@click.option(
+    "--signature-abort-threshold",
+    type=click.IntRange(min=1),
+    default=None,
+    show_default="5",
+    help=(
+        "F48: abort the phase after this many rows hit the same root-cause "
+        "signature (e.g. unloadable_font:Boldonse Bold). Surfaces ONE F36 "
+        "operator-actionable block instead of N identical lines in the "
+        "report. Default 5; pass a larger value to tolerate more identical "
+        "failures before aborting."
+    ),
+)
 @click.pass_context
 def apply_tokens_cmd(
     ctx: click.Context,
@@ -110,6 +127,7 @@ def apply_tokens_cmd(
     allow_non_authoritative: bool,
     allow_variable_id_fallback: bool,
     legacy_bindings_for_figma: bool,
+    signature_abort_threshold: int | None,
     json_output: bool,
 ) -> None:
     """Apply authoritative, pre-filtered token fixes back into Figma.
@@ -206,12 +224,19 @@ def apply_tokens_cmd(
     if resume_from < 1:
         raise click.UsageError("--resume-from must be >= 1")
 
+    threshold = (
+        signature_abort_threshold
+        if signature_abort_threshold is not None
+        else DEFAULT_SIGNATURE_ABORT_THRESHOLD
+    )
     batch_result = write_apply_batches(
         prepared,
         batch_dir=resolve_output_path(repo_dir, batch_dir),
         batch_size=batch_size,
         namespace=namespace,
         node_map=node_map,  # type: ignore[arg-type]
+        catalog=catalog,
+        signature_abort_threshold=threshold,
     )
     report["batch_manifest"] = batch_result["manifest"]
 
@@ -228,7 +253,49 @@ def apply_tokens_cmd(
         )
     )
     report["execution"] = execution
+
+    # F48: if any batch's runtime aborted on a class-level signature,
+    # promote ONE F36 block to the human path and exit with the
+    # operator-action code so wrappers can route the failure to a human.
+    abort = _first_signature_abort(execution)
+    if abort is not None:
+        report["operator_action"] = {
+            "signature": abort["signature"],
+            "count": abort["count"],
+            "sample_rows": abort.get("sample_rows") or [],
+            "instruction": operator_action_for_signature(abort["signature"]),
+        }
+        emit_json_value(report)
+        action = report["operator_action"]
+        click.echo(
+            f"⚠️  ACTION REQUIRED — {action['signature']} hit "
+            f"{action['count']} times; aborting. {action['instruction']}",
+            err=True,
+        )
+        ctx.exit(EXIT_OPERATOR_ACTION_REQUIRED)
     emit_json_value(report)
+
+
+def _first_signature_abort(execution: Any) -> dict | None:
+    """Walk an execution result for the first signatureAbort returned by a batch.
+
+    The use_figma executor returns a list-of-batch-results; each batch's
+    return value (the JS template's ``summary``) carries a
+    ``signatureAbort`` field when the per-row loop bailed early. Returning
+    the first occurrence is enough to drive the F36 surface — the
+    threshold guarantees we are confident this signature dominates.
+    """
+    if not isinstance(execution, dict):
+        return None
+    for batch_result in execution.get("batches") or []:
+        if not isinstance(batch_result, dict):
+            continue
+        result = batch_result.get("result")
+        if isinstance(result, dict):
+            abort = result.get("signatureAbort")
+            if isinstance(abort, dict) and abort.get("signature"):
+                return abort
+    return None
 
 
 def _resolve_library_filter(catalog: TokenCatalog, libraries: tuple[str, ...]) -> set[str] | None:
