@@ -131,6 +131,14 @@ run_pull_batch() {
   fi
 }
 
+push_with_ff_retry() {
+  if git push >&2; then
+    return 0
+  fi
+  git pull --no-rebase --ff-only origin "$TARGET_REF" >&2 || true
+  git push >&2
+}
+
 count_auto_commits_in_output() {
   if [ ! -f "$FIGMACLAW_OUT_PATH" ]; then
     echo "0"
@@ -206,7 +214,13 @@ commit_if_changed() {
   GIT_COMMIT_S="$((t1 - t0))"
 
   t0="$(date +%s)"
-  git push >&2
+  if ! push_with_ff_retry; then
+    t1="$(date +%s)"
+    GIT_PUSH_S="$((t1 - t0))"
+    echo "warning: safety-net commit push failed after retry" >&2
+    echo "false"
+    return
+  fi
   t1="$(date +%s)"
   GIT_PUSH_S="$((t1 - t0))"
   echo "true"
@@ -221,7 +235,7 @@ init_observability
 # this whole PR exists to fix. The trap fires on normal exit, error exit, and
 # signals — `git push` with nothing to push is a no-op, so it's always safe.
 final_push_flush() {
-  git push >&2 || true
+  push_with_ff_retry >&2 || true
 }
 trap final_push_flush EXIT
 

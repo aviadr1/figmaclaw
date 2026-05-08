@@ -56,6 +56,16 @@ echo "git $*" >> "$TRACE_FILE"
 if [ "${1:-}" = "push" ] && [ "${GIT_PUSH_FAIL:-0}" = "1" ]; then
   exit 1
 fi
+if [ "${1:-}" = "push" ] && [ "${GIT_PUSH_FAIL_ONCE:-0}" = "1" ]; then
+  push_count_file="${GIT_PUSH_COUNT_FILE:?}"
+  push_count=0
+  if [ -f "$push_count_file" ]; then push_count="$(cat "$push_count_file")"; fi
+  push_count=$((push_count+1))
+  echo "$push_count" > "$push_count_file"
+  if [ "$push_count" -eq 1 ]; then
+    exit 1
+  fi
+fi
 if [ "${1:-}" = "diff" ] && [ "${GIT_DIRTY:-0}" = "1" ]; then
   exit 1
 fi
@@ -113,6 +123,7 @@ def _run_loop(
     args = tmp_path / "pull-args.txt"
     timeout_args = tmp_path / "timeout-args.txt"
     timeout_count = tmp_path / "timeout-count.txt"
+    push_count = tmp_path / "push-count.txt"
 
     bin_dir = _setup_fake_bin(
         tmp_path, scenario=scenario, git_dirty=git_dirty, timeout_mode=timeout_mode
@@ -128,9 +139,11 @@ def _run_loop(
             "ARGS_FILE": str(args),
             "TIMEOUT_ARGS_FILE": str(timeout_args),
             "TIMEOUT_COUNT_FILE": str(timeout_count),
+            "GIT_PUSH_COUNT_FILE": str(push_count),
             "SCENARIO": scenario,
             "GIT_DIRTY": git_dirty,
             "GIT_PUSH_FAIL": "0",
+            "GIT_PUSH_FAIL_ONCE": "0",
             "TIMEOUT_MODE": timeout_mode,
             "MAX_BATCHES": "10",
             "MAX_IDLE_HAS_MORE_BATCHES": "3",
@@ -556,6 +569,28 @@ def test_timeout_counts_auto_commit_progress_even_when_flush_push_fails(
     assert "total_auto_commits=10" in summary_text
     assert "total_commits=10" in summary_text
     assert "retrying with --max-pages 4" in out
+
+
+def test_safety_net_commit_push_race_retries_without_aborting(tmp_path: Path) -> None:
+    """A transient remote ref race during the shell safety-net push should not
+    abort the wrapper before observability is written."""
+    obs_dir = tmp_path / "obs"
+    out = _run_loop(
+        tmp_path,
+        scenario="single_done",
+        git_dirty="1",
+        timeout_mode="pass",
+        FIGMACLAW_SYNC_OBS_DIR=str(obs_dir),
+        GIT_PUSH_FAIL_ONCE="1",
+    )
+
+    trace = (tmp_path / "git-trace.txt").read_text()
+    summary_text = (obs_dir / "checkpoint_summary.txt").read_text()
+    assert trace.count("git push") >= 2
+    assert "git pull --no-rebase --ff-only origin main" in trace
+    assert "total_safety_net_commits=1" in summary_text
+    assert "final_reason=has_more_false" in summary_text
+    assert "warning: safety-net commit push failed" not in out
 
 
 def test_exit_trap_flushes_any_unpushed_commits_on_normal_exit(tmp_path: Path) -> None:
