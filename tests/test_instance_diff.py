@@ -456,26 +456,28 @@ async def test_diff_instance_against_master_reads_master_components_and_componen
         side_effect=[
             {
                 "nodes": {"10:2": {"document": instance}},
-                "components": {},
-                "componentSets": {},
             },
             {
-                "nodes": {"99:1": {"document": master}},
-                "components": {
+                "nodes": {
                     "99:1": {
-                        "key": COMPONENT_KEY,
-                        "name": "color=primary, size=lg",
-                        "remote": True,
-                        "componentSetId": "88:1",
+                        "document": master,
+                        "components": {
+                            "99:1": {
+                                "key": COMPONENT_KEY,
+                                "name": "color=primary, size=lg",
+                                "remote": True,
+                                "componentSetId": "88:1",
+                            }
+                        },
+                        "componentSets": {
+                            "88:1": {
+                                "key": COMPONENT_SET_KEY,
+                                "name": "button",
+                                "remote": True,
+                            }
+                        },
                     }
-                },
-                "componentSets": {
-                    "88:1": {
-                        "key": COMPONENT_SET_KEY,
-                        "name": "button",
-                        "remote": True,
-                    }
-                },
+                }
             },
         ]
     )

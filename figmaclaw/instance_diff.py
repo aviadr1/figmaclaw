@@ -272,14 +272,28 @@ def _metadata_for_node(
     map_name: str,
     node_id: str,
 ) -> dict[str, Any]:
-    values = payload.get(map_name)
-    if not isinstance(values, Mapping):
-        return {}
-    for key in _node_id_keys(node_id):
-        value = values.get(key)
-        if isinstance(value, dict):
-            return value
+    for values in _metadata_maps(payload, map_name):
+        for key in _node_id_keys(node_id):
+            value = values.get(key)
+            if isinstance(value, dict):
+                return value
     return {}
+
+
+def _metadata_maps(payload: Mapping[str, Any], map_name: str) -> list[Mapping[str, Any]]:
+    maps: list[Mapping[str, Any]] = []
+    top_level = payload.get(map_name)
+    if isinstance(top_level, Mapping):
+        maps.append(top_level)
+    nodes = payload.get("nodes")
+    if isinstance(nodes, Mapping):
+        for entry in nodes.values():
+            if not isinstance(entry, Mapping):
+                continue
+            nested = entry.get(map_name)
+            if isinstance(nested, Mapping):
+                maps.append(nested)
+    return maps
 
 
 def _node_id_keys(node_id: str) -> tuple[str, str, str]:
