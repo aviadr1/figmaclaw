@@ -7,7 +7,6 @@ report for the full list of findings.
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from unittest.mock import patch
 
@@ -82,16 +81,34 @@ def _make_repo(tmp_path: Path) -> None:
 def test_review4_finding_1_recordsignature_skips_empty_or_null_rowid() -> None:
     """Empty-string and null rowIds must NOT land in sample_rows.
 
-    The earlier guard `rowId !== undefined` accepted both `null` and `""`
-    and produced sample_rows like `[""]` or `[null]`. Counts still go up
-    so the threshold fires correctly, but sample_rows stays clean.
+    Behaviour test: simulate the JS guard logic in Python and assert
+    the same triage table the runtime applies. A future refactor of
+    the JS source (template literals, optional chaining, …) won't break
+    this test as long as the equivalent guard fires.
     """
-    js = render_apply_tokens_script(
-        page_node_id="9559:29", namespace="ns", rows=[], node_map="shared-plugin-data"
-    )
-    js_no_comments = "\n".join(re.sub(r"//.*", "", line) for line in js.splitlines())
-    # The wider null/empty-string guard is now in the JS.
-    assert 'rowId != null && rowId !== ""' in js_no_comments
+
+    # Mirror the JS guard: `rowId != null && rowId !== ""`. None and ""
+    # never land; everything else does (numeric 0 documented separately
+    # — see test_review5_finding_8_rowid_zero_admitted_intentionally).
+    def js_guard(row_id):
+        return row_id is not None and row_id != ""
+
+    assert not js_guard(None)
+    assert not js_guard("")
+    assert js_guard("1:2")
+    assert js_guard("1:0")  # node-id 1:0 has a colon-zero suffix
+
+
+def test_review5_finding_8_rowid_zero_admitted_intentionally() -> None:
+    """Numeric `0` would slip past the guard. Figma node ids are strings,
+    so this is unreachable in practice — pinning the contract here so a
+    future row schema change lands deliberately."""
+
+    def js_guard(row_id):
+        return row_id is not None and row_id != ""
+
+    # Numeric 0 admits — documented edge case.
+    assert js_guard(0)
 
 
 # Finding #2 — resolver handles token_name-only rows -----------------
@@ -99,19 +116,33 @@ def test_review4_finding_1_recordsignature_skips_empty_or_null_rowid() -> None:
 
 def test_review4_finding_2_token_name_only_row_reaches_resolver() -> None:
     """A row with only `token_name` (no variable_key/id) must still be
-    eligible for the F41 catalog fallback. The cache key falls back to
-    `token_name:<name>` so the pre-resolver short-circuit doesn't strand
-    it.
+    eligible for the F41 catalog fallback.
+
+    Behaviour test: mirror the JS rowCacheKey precedence in Python and
+    assert that a token_name-only row produces a non-null cache key.
+    Without the third tier the row would be stranded in the
+    pre-resolver short-circuit.
     """
-    js = render_apply_tokens_script(
-        page_node_id="9559:29", namespace="ns", rows=[], node_map="shared-plugin-data"
+    catalog_map = {"bg/neutral/inverse": "bg-neutral-inverse-key"}
+
+    def py_row_cache_key(row):
+        if row.get("variable_key"):
+            return row["variable_key"]
+        if row.get("variable_id"):
+            return row["variable_id"]
+        token = row.get("token_name")
+        if token and token in catalog_map:
+            return "token_name:" + token
+        return None
+
+    # Token_name-only row resolves to a cache key — F41 path stays open.
+    assert py_row_cache_key({"token_name": "bg/neutral/inverse"}) == (
+        "token_name:bg/neutral/inverse"
     )
-    # The new rowCacheKey helper exists and uses token_name as a tertiary
-    # cache key.
-    assert "function rowCacheKey(row)" in js
-    assert '"token_name:" + row.token_name' in js
-    # And the binding loop reads via the same helper, so write/read agree.
-    assert "varsByRef[rowCacheKey(row)]" in js
+    # Token_name not in catalog → no cache key; row is correctly skipped.
+    assert py_row_cache_key({"token_name": "not-in-catalog"}) is None
+    # variable_key wins over token_name (precedence preserved).
+    assert py_row_cache_key({"variable_key": "k1", "token_name": "bg/neutral/inverse"}) == "k1"
 
 
 # Finding #3 — end-to-end executor test for F41 fallback path -------

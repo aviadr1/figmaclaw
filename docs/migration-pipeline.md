@@ -207,7 +207,7 @@ Fields:
 - `count` — how many rows tripped this signature in the runtime.
 - `sample_rows` — up to 3 row identifiers (typically `node_id`) so operators can drill into specific failures.
 - `instruction` — F36-style operator-actionable text from `operator_action_for_signature(...)`.
-- `additional_signatures` — every other batch's abort, in `[{signature, count, sample_rows}]` form.
+- `additional_signatures` — every other batch's abort, in `[{signature, count, sample_rows}]` form. Same-signature aborts from multiple batches are MERGED before this list is built: counts sum, sample_rows union (preserving first-seen order, capped at 3) — so the list is one-entry-per-signature, never echoing the dominant one.
 
 Recognised signature classes (regex match in the JS runtime):
 
@@ -221,6 +221,15 @@ Recognised signature classes (regex match in the JS runtime):
 | `rate_limited` | `rate ?limit`, `429` | Back off, resume via `--resume-from <batch>` |
 | `network_unavailable` | `network (?:error|unreachable|timeout)`, `econnreset` | Retry with `--resume-from` once connectivity returns |
 | `session_expired` | `session (?:expired|not found)`, `401` | Re-authenticate, re-run |
+
+F41 visibility: each batch's `summary.stats` carries
+`resolved_via_variable_key`, `resolved_via_variable_id`, and
+`resolved_via_catalog_fallback` counters so an operator can see whether
+the F41 fallback fired (vs. rows resolving via their own keys/ids).
+Issue #171 — when the catalog has multiple publishable keys for one
+token name, those names are dropped from the F41 map (warn-and-skip)
+and surfaced in the batch manifest's `catalog_name_conflicts` field;
+rows referencing them fall through to the legacy `variable_id` path.
 
 Tunable via `--signature-abort-threshold N` (default 5). The threshold is
 "how many rows hit the same signature before we stop the phase and bail

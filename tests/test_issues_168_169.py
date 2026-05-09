@@ -85,8 +85,9 @@ def test_issue_168_catalog_key_by_token_name_indexes_authoritative_keys(
     """Helper produces a token-name → key map for authoritative entries only."""
     _make_repo(tmp_path)
     catalog = _load_catalog(tmp_path)
-    name_map = _catalog_key_by_token_name(catalog)
+    name_map, conflicts = _catalog_key_by_token_name(catalog)
     assert name_map == {"bg/neutral/inverse": "bg-neutral-inverse-key"}
+    assert conflicts == {}
 
 
 def test_issue_168_emitted_js_carries_catalog_key_map(tmp_path: Path) -> None:

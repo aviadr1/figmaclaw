@@ -341,13 +341,16 @@ def _make_repo(tmp_path: Path) -> None:
     )
 
 
-def test_pr170_finding_6_duplicate_token_name_distinct_keys_raises() -> None:
-    """Two libraries publish the same token name with different keys ⇒ raise.
+def test_pr170_finding_6_duplicate_token_name_distinct_keys_warn_and_skip() -> None:
+    """Two libraries publish the same token name with different keys ⇒
+    drop both from the F41 map and surface them in `conflicts`.
 
-    Without this check, the runtime would silently pick the first key
-    Python iterates and bind to the wrong variable. The error message
-    has to name both libraries' keys so the operator can disambiguate
-    via `--library`.
+    Per #171, eager-raising aborted runs whose manifest didn't even
+    reference the conflicted name. The new contract is "warn and skip":
+    the conflicted name doesn't land in the F41 map, so rows that
+    DO reference it fall through to the legacy variable_id path.
+    Operators see the conflicts via the manifest's
+    `catalog_name_conflicts` field.
     """
     catalog = TokenCatalog.model_validate(
         {
@@ -378,8 +381,12 @@ def test_pr170_finding_6_duplicate_token_name_distinct_keys_raises() -> None:
             },
         }
     )
-    with pytest.raises(ValueError, match="multiple publishable keys"):
-        _catalog_key_by_token_name(catalog)
+    name_map, conflicts = _catalog_key_by_token_name(catalog)
+    # The conflicted name is REMOVED from the resolution map (warn-and-skip).
+    assert "fg/inverse" not in name_map
+    # The conflict is reported with both keys so the operator can clean
+    # the catalog or pass `--library`.
+    assert sorted(conflicts["fg/inverse"]) == ["new-key", "old-key"]
 
 
 def test_pr170_finding_6_library_filter_disambiguates_duplicate_names() -> None:
@@ -413,8 +420,9 @@ def test_pr170_finding_6_library_filter_disambiguates_duplicate_names() -> None:
             },
         }
     )
-    result = _catalog_key_by_token_name(catalog, library_hashes={"libnew"})
-    assert result == {"fg/inverse": "new-key"}
+    name_map, conflicts = _catalog_key_by_token_name(catalog, library_hashes={"libnew"})
+    assert name_map == {"fg/inverse": "new-key"}
+    assert conflicts == {}
 
 
 # Finding #4 — ok expression has single source of truth --------------------

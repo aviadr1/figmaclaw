@@ -232,17 +232,47 @@ def apply_tokens_cmd(
         if signature_abort_threshold is not None
         else DEFAULT_SIGNATURE_ABORT_THRESHOLD
     )
-    batch_result = write_apply_batches(
-        prepared,
-        batch_dir=resolve_output_path(repo_dir, batch_dir),
-        batch_size=batch_size,
-        namespace=namespace,
-        node_map=node_map,  # type: ignore[arg-type]
-        catalog=catalog,
-        library_hashes=library_hashes,
-        signature_abort_threshold=threshold,
-    )
+    try:
+        batch_result = write_apply_batches(
+            prepared,
+            batch_dir=resolve_output_path(repo_dir, batch_dir),
+            batch_size=batch_size,
+            namespace=namespace,
+            node_map=node_map,  # type: ignore[arg-type]
+            catalog=catalog,
+            library_hashes=library_hashes,
+            signature_abort_threshold=threshold,
+        )
+    except ValueError as exc:
+        # Catalog or scope-related ValueErrors should surface as a clean
+        # CLI error rather than a Python stack trace. (#171 + Copilot
+        # 3211930087.)
+        raise click.ClickException(str(exc)) from exc
     report["batch_manifest"] = batch_result["manifest"]
+    # F41 catalog-name conflicts (warn-and-skip per #171). The conflicts
+    # don't abort the run — rows referencing the conflicted name fall
+    # through to the legacy variable_id path — but operators should see
+    # them so they can clean the catalog or pass `--library`.
+    conflicts = batch_result["manifest"].get("catalog_name_conflicts") or {}
+    referenced_conflicts = {
+        name: keys
+        for name, keys in conflicts.items()
+        if any(fix.token_name == name for fix in prepared.manifest.fixes)
+    }
+    if conflicts:
+        click.echo(
+            f"warning: catalog has {len(conflicts)} ambiguous token name(s) "
+            f"with multiple keys; F41 fallback will skip them. Referenced by "
+            f"this run: {len(referenced_conflicts)}.",
+            err=True,
+        )
+        for name, keys in sorted(conflicts.items())[:5]:
+            click.echo(f"  {name}: {keys}", err=True)
+        if len(conflicts) > 5:
+            click.echo(
+                f"  … and {len(conflicts) - 5} more (see batch manifest `catalog_name_conflicts`)",
+                err=True,
+            )
 
     if mode == "emit-only":
         emit_json_value(report)
@@ -261,7 +291,7 @@ def apply_tokens_cmd(
     # F48: if any batch's runtime aborted on a class-level signature,
     # promote ONE F36 block to the human path and exit with the
     # operator-action code so wrappers can route the failure to a human.
-    aborts = _collect_signature_aborts(execution)
+    aborts = _merge_aborts_by_signature(_collect_signature_aborts(execution))
     if aborts:
         # Sort by count desc, signature asc — surface the dominant
         # signature first so the operator sees the most-frequent failure
@@ -272,7 +302,10 @@ def apply_tokens_cmd(
             signature=str(primary.get("signature") or ""),
             count=_safe_count(primary.get("count")),
             sample_rows=[str(r) for r in (primary.get("sample_rows") or [])],
-            instruction=operator_action_for_signature(str(primary.get("signature") or "")),
+            instruction=(
+                operator_action_for_signature(str(primary.get("signature") or ""))
+                or _GENERIC_OPERATOR_ACTION_FALLBACK
+            ),
             additional_signatures=[
                 AdditionalSignature(
                     signature=str(a.get("signature") or ""),
@@ -295,21 +328,78 @@ def apply_tokens_cmd(
     emit_json_value(report)
 
 
+# Fallback hint when `operator_action_for_signature` returns ""
+# (signature class is new / unknown). Without this, the CLI would echo
+# `aborting. ` with a trailing space and no actionable text. Copilot
+# 3211930081.
+_GENERIC_OPERATOR_ACTION_FALLBACK = (
+    "see `report.operator_action` and the per-call MCP results in "
+    "`execution.calls[*].result` for details."
+)
+
+
+def _merge_aborts_by_signature(aborts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse multiple aborts that share a signature into one.
+
+    Without this, a 1000-row run where batches A and B independently hit
+    threshold for ``unloadable_font:Boldonse Bold`` produces a primary
+    abort (count=N from batch A) AND an ``additional_signatures[0]``
+    entry with the SAME signature (count=M from batch B). Operator
+    stderr shows the same wall-of-noise the F48 surface fixed.
+
+    Merge rule: sum counts, union sample_rows preserving first-seen
+    order, truncated to 3 (matches the JS-side per-batch sample cap).
+    """
+    merged: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for abort in aborts:
+        sig = str(abort.get("signature") or "")
+        if not sig:
+            continue
+        existing = merged.get(sig)
+        if existing is None:
+            existing = {
+                "signature": sig,
+                "count": _safe_count(abort.get("count")),
+                "sample_rows": [str(r) for r in (abort.get("sample_rows") or [])],
+            }
+            merged[sig] = existing
+            order.append(sig)
+        else:
+            existing["count"] += _safe_count(abort.get("count"))
+            for sample in abort.get("sample_rows") or []:
+                if len(existing["sample_rows"]) >= 3:
+                    break
+                if sample not in existing["sample_rows"]:
+                    existing["sample_rows"].append(str(sample))
+    return [merged[sig] for sig in order]
+
+
 def _safe_count(value: Any) -> int:
     """Coerce a JS-runtime count into a non-negative int.
 
     The MCP runtime returns counters as JSON numbers; in well-behaved
     environments they round-trip cleanly. But MCP servers / proxies
-    vary, and a non-numeric or NaN value would raise ``ValueError`` from
-    ``int(...)`` and crash the abort surface — the very surface meant
-    to give operators a clean F36 error. Coerce defensively. (#170
-    fourth-round finding #5.)
+    vary, and an exotic value (NaN, ``inf``, "lots", None) would crash
+    the abort surface — the very surface meant to give operators a
+    clean F36 error. Coerce defensively, including the ``inf`` →
+    ``OverflowError`` edge that ``int(float(...))`` raises.
+
+    Extends #170 review #5 with the fifth-round finding #1 (inf).
     """
     if value is None:
         return 0
     try:
-        result = int(float(value))
+        as_float = float(value)
     except (TypeError, ValueError):
+        return 0
+    # NaN compares unequal to itself; non-finite (inf / -inf / nan) all
+    # fail this guard and fall to 0 rather than raising on int(...).
+    if as_float != as_float or as_float in (float("inf"), float("-inf")):
+        return 0
+    try:
+        result = int(as_float)
+    except (TypeError, ValueError, OverflowError):
         return 0
     return max(0, result)
 

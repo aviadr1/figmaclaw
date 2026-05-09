@@ -533,8 +533,9 @@ def write_apply_batches(
     """Write deterministic batch rows, JS files, and a batch manifest.
 
     When *catalog* is provided, every emitted batch JS receives a
-    ``dsCatalogKeyByName`` map derived from authoritative catalog
-    variables. The runtime uses it as a last-ditch fallback when both
+    ``CATALOG_KEY_BY_TOKEN_NAME`` const (token-name → publishable key)
+    derived from authoritative catalog variables. The runtime uses it
+    as a last-ditch fallback when both
     ``importVariableByKeyAsync(row.variable_key)`` and
     ``getVariableByIdAsync(row.variable_id)`` come up empty — which
     happens for published DS variables that the working file has never
@@ -550,11 +551,32 @@ def write_apply_batches(
         raise ValueError("page_node_id is required")
 
     fixes = prepared.manifest.fixes
-    catalog_key_by_token_name = (
-        _catalog_key_by_token_name(catalog, library_hashes=library_hashes)
-        if catalog is not None
-        else {}
-    )
+    if catalog is not None:
+        catalog_key_by_token_name, catalog_name_conflicts = _catalog_key_by_token_name(
+            catalog, library_hashes=library_hashes
+        )
+    else:
+        catalog_key_by_token_name = {}
+        catalog_name_conflicts = {}
+    manifest_extras = {
+        "schema_version": APPLY_BATCH_MANIFEST_SCHEMA_VERSION,
+        "kind": "figmaclaw.apply_tokens.batch_manifest",
+        "file_key": file_key,
+        "page_node_id": page_node_id,
+        "namespace": namespace,
+        "node_map": node_map,
+        "signature_abort_threshold": signature_abort_threshold,
+        # Apply-tokens has historically called the row-count `total_fixes`;
+        # keep the key so existing batch-manifest consumers don't break.
+        # The shared writer also adds `total_rows` for the new convention.
+        "total_fixes": len(fixes),
+    }
+    if catalog_name_conflicts:
+        # Surface the conflicts in the manifest so the operator can see
+        # them via --json without having to read the catalog. The runtime
+        # F41 fallback won't fire for these names; rows that reference
+        # them fall through to the legacy variable_id path. (#171.)
+        manifest_extras["catalog_name_conflicts"] = catalog_name_conflicts
     return write_use_figma_batches(
         fixes,
         batch_dir=batch_dir,
@@ -571,19 +593,7 @@ def write_apply_batches(
             signature_abort_threshold=signature_abort_threshold,
         ),
         description_prefix="apply design token bindings batch",
-        manifest_extras={
-            "schema_version": APPLY_BATCH_MANIFEST_SCHEMA_VERSION,
-            "kind": "figmaclaw.apply_tokens.batch_manifest",
-            "file_key": file_key,
-            "page_node_id": page_node_id,
-            "namespace": namespace,
-            "node_map": node_map,
-            "signature_abort_threshold": signature_abort_threshold,
-            # Apply-tokens has historically called the row-count `total_fixes`;
-            # keep the key so existing batch-manifest consumers don't break.
-            # The shared writer also adds `total_rows` for the new convention.
-            "total_fixes": len(fixes),
-        },
+        manifest_extras=manifest_extras,
     )
 
 
@@ -680,24 +690,29 @@ def _catalog_key_by_token_name(
     catalog: TokenCatalog,
     *,
     library_hashes: set[str] | None = None,
-) -> dict[str, str]:
+) -> tuple[dict[str, str], dict[str, list[str]]]:
     """Map authoritative variable token-name → publishable key.
 
-    Only AUTHORITATIVE_DEFINITION_SOURCES variables are included so the
-    runtime never tries to import a manually-edited or proxied entry.
-    When *library_hashes* is provided, the map is restricted to those
-    libraries — same filter the operator uses on the CLI. This prevents
-    silent collisions when two libraries publish the same token name with
-    different keys (e.g. legacy DS + new DS both shipping ``fg/inverse``):
-    the resolver picks the user's intended library by construction.
+    Returns ``(name_map, conflicts)``.
 
-    If duplicate (name, key) pairs survive the filter — i.e. two distinct
-    keys for the same token name — we raise rather than silently picking
-    the first one Python iterates over. The operator should pass a
-    tighter ``--library`` filter to disambiguate.
+    * ``name_map`` carries the unambiguous name→key entries the F41
+      runtime fallback uses. Only AUTHORITATIVE_DEFINITION_SOURCES
+      variables are included so the runtime never tries to import a
+      manually-edited or proxied entry. When *library_hashes* is set,
+      the map is scoped to those libraries.
+    * ``conflicts`` lists token names that had multiple distinct keys in
+      the same scope. These names are **excluded** from ``name_map``
+      (warn-and-skip per issue #171): the runtime's F41 fallback simply
+      won't fire for them, just as it doesn't fire for names that aren't
+      in the catalog at all. The CLI surfaces the conflicts to the
+      operator so they can clean the catalog or pass a tighter
+      ``--library`` filter — but a conflict no longer aborts the run
+      when no row in the manifest actually references the conflicted
+      name.
     """
     name_map: dict[str, str] = {}
-    duplicates: dict[str, set[str]] = {}
+    seen_keys: dict[str, str] = {}
+    conflicts: dict[str, set[str]] = {}
     for variable in catalog.variables.values():
         if variable.source not in AUTHORITATIVE_DEFINITION_SOURCES:
             continue
@@ -705,20 +720,17 @@ def _catalog_key_by_token_name(
             continue
         if not variable.name or not variable.key:
             continue
-        existing = name_map.get(variable.name)
+        existing = seen_keys.get(variable.name)
         if existing is None:
+            seen_keys[variable.name] = variable.key
             name_map[variable.name] = variable.key
         elif existing != variable.key:
-            duplicates.setdefault(variable.name, {existing}).add(variable.key)
-    if duplicates:
-        offenders = ", ".join(
-            f"{name}: {sorted(keys)}" for name, keys in sorted(duplicates.items())
-        )
-        raise ValueError(
-            "catalog contains multiple publishable keys for the same token "
-            f"name ({offenders}); pass `--library` to scope the resolver"
-        )
-    return name_map
+            # Drop both entries from the resolution map — we can't pick
+            # silently — and remember every key we've seen for this name
+            # so the CLI's warning lists them all.
+            name_map.pop(variable.name, None)
+            conflicts.setdefault(variable.name, {existing}).add(variable.key)
+    return name_map, {name: sorted(keys) for name, keys in conflicts.items()}
 
 
 def _fix_to_writer_row(fix: ApplyTokenFix) -> dict[str, Any]:
@@ -846,6 +858,36 @@ function classifyError(message, contextRow) {
   return null;
 }
 
+// Stats must be declared BEFORE the resolver loop so
+// `recordResolveOutcome` can mutate it without a TDZ error. The full
+// counter set lives here (per-row failure reasons + F41 resolution
+// kinds + the abort counter) so JSON consumers see one stable shape.
+const stats = {
+  applied: 0,
+  already_bound: 0,
+  missing_idmap: 0,
+  node_not_found: 0,
+  missing_variable: 0,
+  paint_mixed: 0,
+  paint_no_solid: 0,
+  unsupported_property: 0,
+  errors: 0,
+  aborted_by_signature: 0,
+  // F41 counters: how many distinct variables resolved via each path.
+  // The catalog_token_name counter is the F41-specific signal — without
+  // it, an operator can't tell whether the fallback fired or whether
+  // the rows already had variable_keys. (#170 fifth-round finding #5.)
+  resolved_via_variable_key: 0,
+  resolved_via_variable_id: 0,
+  resolved_via_catalog_fallback: 0,
+};
+
+function recordResolveOutcome(kind) {
+  if (kind === "variable_key") stats.resolved_via_variable_key++;
+  else if (kind === "variable_id") stats.resolved_via_variable_id++;
+  else if (kind === "catalog_token_name") stats.resolved_via_catalog_fallback++;
+}
+
 const varsByRef = {};
 const variableErrors = [];
 // Resolution order is significant: the F41 catalog-name fallback fires
@@ -910,6 +952,7 @@ for (const row of ROWS) {
   const outcome = await resolveVariable(row);
   if (outcome.resolved) {
     varsByRef[cacheKey] = outcome.resolved;
+    recordResolveOutcome(outcome.kind);
     continue;
   }
   if (outcome.tried && outcome.tried.length > 0) {
@@ -922,18 +965,6 @@ for (const row of ROWS) {
   }
 }
 
-const stats = {
-  applied: 0,
-  already_bound: 0,
-  missing_idmap: 0,
-  node_not_found: 0,
-  missing_variable: 0,
-  paint_mixed: 0,
-  paint_no_solid: 0,
-  unsupported_property: 0,
-  errors: 0,
-  aborted_by_signature: 0,
-};
 const errors = [];
 
 function sameBoundVariable(ref, variable) {
