@@ -14,6 +14,7 @@ from figmaclaw.apply_tokens import (
     DEFAULT_NAMESPACE,
     DEFAULT_SIGNATURE_ABORT_THRESHOLD,
     EXIT_OPERATOR_ACTION_REQUIRED,
+    AdditionalSignature,
     OperatorAction,
     apply_plan_report,
     load_apply_token_input,
@@ -265,18 +266,19 @@ def apply_tokens_cmd(
         # Sort by count desc, signature asc — surface the dominant
         # signature first so the operator sees the most-frequent failure
         # at the top, with any additional aborts listed beneath.
-        aborts.sort(key=lambda a: (-int(a.get("count") or 0), str(a.get("signature") or "")))
+        aborts.sort(key=lambda a: (-_safe_count(a.get("count")), str(a.get("signature") or "")))
         primary = aborts[0]
         action = OperatorAction(
             signature=str(primary.get("signature") or ""),
-            count=int(primary.get("count") or 0),
+            count=_safe_count(primary.get("count")),
             sample_rows=[str(r) for r in (primary.get("sample_rows") or [])],
             instruction=operator_action_for_signature(str(primary.get("signature") or "")),
             additional_signatures=[
-                {
-                    "signature": str(a.get("signature") or ""),
-                    "count": int(a.get("count") or 0),
-                }
+                AdditionalSignature(
+                    signature=str(a.get("signature") or ""),
+                    count=_safe_count(a.get("count")),
+                    sample_rows=[str(r) for r in (a.get("sample_rows") or [])],
+                )
                 for a in aborts[1:]
             ],
         )
@@ -288,9 +290,28 @@ def apply_tokens_cmd(
             err=True,
         )
         for extra in action.additional_signatures:
-            click.echo(f"   also seen: {extra['signature']} ×{extra['count']}", err=True)
+            click.echo(f"   also seen: {extra.signature} ×{extra.count}", err=True)
         ctx.exit(EXIT_OPERATOR_ACTION_REQUIRED)
     emit_json_value(report)
+
+
+def _safe_count(value: Any) -> int:
+    """Coerce a JS-runtime count into a non-negative int.
+
+    The MCP runtime returns counters as JSON numbers; in well-behaved
+    environments they round-trip cleanly. But MCP servers / proxies
+    vary, and a non-numeric or NaN value would raise ``ValueError`` from
+    ``int(...)`` and crash the abort surface — the very surface meant
+    to give operators a clean F36 error. Coerce defensively. (#170
+    fourth-round finding #5.)
+    """
+    if value is None:
+        return 0
+    try:
+        result = int(float(value))
+    except (TypeError, ValueError):
+        return 0
+    return max(0, result)
 
 
 def _collect_signature_aborts(execution: Any) -> list[dict[str, Any]]:

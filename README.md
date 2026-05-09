@@ -39,7 +39,7 @@ The migration commands share a common `--dry-run` / `--emit-only` / `--execute` 
 | `audit-page emit-clone-script` | Clone a source page into an audit page (warns if the source looks inactive — archive, playground, prior audit clone, etc.). |
 | `audit-page swap` | Apply component-instance swaps from a typed manifest. Emits per-row try/catch JS, persists the SPD idMap so subsequent `apply-tokens` runs target NEW instances. |
 | `audit-pipeline lint` | Validate the `component_migration_map.v3.json` (nested + flat shapes); with `--variants <taxonomy.json>` enforces variant-axis names, values, and OLD-axis coverage. |
-| `apply-tokens` | Apply variable-binding fixes; legacy compact-row + versioned manifest accepted. Refusals list unrecognised + missing canonical fields, plus a `did_you_mean_token_name` hint when a `<library>:` prefix is detected. |
+| `apply-tokens` | Apply variable-binding fixes; legacy compact-row + versioned manifest accepted. Refusals list unrecognised + missing canonical fields, plus a `did_you_mean_token_name` hint when a `<library>:` prefix is detected. **F41:** falls back to `importVariableByKeyAsync(catalog_key)` so published DS variables not yet in a file's local cache still bind. **F48:** identical-cause runtime errors (font, permission, rate-limit, …) trigger one F36 stderr block + exit 78 instead of N walls of identical lines. See [docs/migration-pipeline.md](docs/migration-pipeline.md#apply-tokens-f48-abort-surface--reportoperator_action). |
 
 See [docs/migration-pipeline.md](docs/migration-pipeline.md) for the full pipeline.
 

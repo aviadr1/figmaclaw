@@ -73,22 +73,35 @@ class ApplyTokensManifest(BaseModel):
     fixes: list[ApplyTokenFix] = Field(default_factory=list)
 
 
+class AdditionalSignature(BaseModel):
+    """Companion abort surfaced after the dominant one in a multi-batch run.
+
+    Carries ``sample_rows`` so operators investigating the secondary
+    signature ("also seen: read_only_file ×5") can identify WHICH rows
+    tripped it without re-reading the raw report JSON.
+    """
+
+    signature: str
+    count: int = Field(ge=0)
+    sample_rows: list[str] = Field(default_factory=list)
+
+
 class OperatorAction(BaseModel):
     """F36-shaped block surfaced when a batch aborts on a class-level signature.
 
     ``signature`` is the dominant abort across all batches in this run;
-    ``additional_signatures`` carries any other batches' aborts in
-    ``[{"signature": ..., "count": ...}]`` shape so the operator sees the
-    full picture instead of being told only about the alphabetically-first
-    failure. (Promoted from an ad-hoc dict so downstream JSON consumers can
-    rely on the shape — per CLAUDE.md "use pydantic, not dataclass".)
+    ``additional_signatures`` carries any other batches' aborts so the
+    operator sees the full picture instead of being told only about the
+    alphabetically-first failure. (Promoted from an ad-hoc dict so
+    downstream JSON consumers can rely on the shape — per CLAUDE.md
+    "use pydantic, not dataclass".)
     """
 
     signature: str
     count: int = Field(ge=0)
     sample_rows: list[str] = Field(default_factory=list)
     instruction: str = ""
-    additional_signatures: list[dict[str, Any]] = Field(default_factory=list)
+    additional_signatures: list[AdditionalSignature] = Field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -589,6 +602,23 @@ _SIGNATURE_CLASS_ACTIONS: dict[str, str] = {
         "catalog has its publishable key and that the row carries "
         "`token_name` so the F41 import-by-key fallback fires."
     ),
+    "variable_not_published": (
+        "variable is not published in this team. Ask the DS owner to "
+        "publish it from the source file, then re-run `figmaclaw variables` "
+        "to refresh the catalog."
+    ),
+    "rate_limited": (
+        "the Figma API is rate-limiting your session; back off, then re-run "
+        "with `--resume-from <batch>` to skip already-applied work."
+    ),
+    "network_unavailable": (
+        "transient network failure between figmaclaw and the Figma API. "
+        "Re-run with `--resume-from <batch>` once connectivity returns."
+    ),
+    "session_expired": (
+        "your MCP session has expired; re-authenticate (figmaclaw uses "
+        "the running Claude session's credentials by default) and re-run."
+    ),
 }
 
 
@@ -636,6 +666,12 @@ def operator_action_for_signature(signature: str) -> str:
             f"variable id {identifier!r} has no publishable key. Re-run "
             "`figmaclaw variables` to refresh the catalog and re-build "
             "the bindings manifest."
+        )
+    if cls == "variable_not_published" and identifier:
+        return (
+            f"variable {identifier!r} is not published in this team. Ask "
+            "the DS owner to publish it from the source file, then re-run "
+            "`figmaclaw variables`."
         )
     return _SIGNATURE_CLASS_ACTIONS.get(cls, "")
 
@@ -737,7 +773,13 @@ function recordSignature(sig, rowId) {
   if (!sig) return;
   const entry = errorSignatures[sig] || { count: 0, sample_rows: [] };
   entry.count++;
-  if (entry.sample_rows.length < 3 && rowId !== undefined) entry.sample_rows.push(rowId);
+  // Only record sample_rows for non-empty, non-null row identifiers — an
+  // undefined/null/"" rowId would push a useless placeholder into the
+  // operator's diagnostic. Counts still go up so the threshold fires
+  // correctly.
+  if (entry.sample_rows.length < 3 && rowId != null && rowId !== "") {
+    entry.sample_rows.push(rowId);
+  }
   errorSignatures[sig] = entry;
   if (!signatureAbort && entry.count >= SIGNATURE_ABORT_THRESHOLD) {
     signatureAbort = { signature: sig, count: entry.count, sample_rows: entry.sample_rows.slice() };
@@ -758,20 +800,48 @@ function classifyError(message, contextRow) {
   if (!message) return null;
   const text = String(message);
   let m;
+  // Unloadable font — Figma's MCP runtime can't materialise a font even
+  // when it's installed locally; "<family> <style> not loaded" is the
+  // standard error string. The shorter "loadFontAsync … for X" variant
+  // shows up in nested rejections.
   m = text.match(/font (.+?) (?:not loaded|could not be loaded)/i);
   if (m) return "unloadable_font:" + m[1].trim();
   m = text.match(/loadFontAsync.+?for (.+?)$/);
   if (m) return "unloadable_font:" + m[1].trim();
+  // Permission errors — operator needs to swap to a session with edit
+  // access, or get the file shared with their session's user.
   if (/read[- ]only|permission denied|cannot edit/i.test(text)) return "read_only_file";
+  // Missing publishable key on a non-published variable — upstream
+  // resolver bug; pass the row's variable_id forward so the F36 hint
+  // names the offender.
   if (/missing variable key/i.test(text)) {
-    // Use the row's variable_id when present so the operator sees WHICH
-    // resolver entry needs a publishable key, not just the generic class.
     const id = contextRow && contextRow.variable_id ? ":" + contextRow.variable_id : "";
     return "missing_variable_key" + id;
   }
-  if (/cannot find variable|variable not found/i.test(text)) {
+  // Variable doesn't exist on the target file — published-but-not-yet
+  // -reused variables fall here when the F41 fallback also misses.
+  // Match real Figma error strings: "Cannot find variable", "variable
+  // not found", and "Cannot find published variable".
+  if (/cannot find (?:published )?variable|variable not found/i.test(text)) {
     const tok = contextRow && contextRow.token_name ? ":" + contextRow.token_name : "";
     return "variable_not_found" + tok;
+  }
+  // Variable exists but isn't published in the current team — distinct
+  // operator action from "not found" (republish vs. re-grant access).
+  if (/variable does not exist in (?:this )?team|not published in this team/i.test(text)) {
+    const tok = contextRow && contextRow.token_name ? ":" + contextRow.token_name : "";
+    return "variable_not_published" + tok;
+  }
+  // Network / transient infrastructure errors. Operator retries; not
+  // a per-row data problem.
+  if (/rate ?limit|too many requests|http 429|429/i.test(text)) {
+    return "rate_limited";
+  }
+  if (/network (?:error|unreachable|timeout)|fetch failed|econnreset|enetunreach/i.test(text)) {
+    return "network_unavailable";
+  }
+  if (/session (?:expired|not found)|unauthorized|401/i.test(text)) {
+    return "session_expired";
   }
   return null;
 }
@@ -820,12 +890,26 @@ async function resolveVariable(row) {
   return { resolved: null, kind: null, tried };
 }
 
+// Build a cache key for varsByRef. Prefer variable_key/id; fall back to
+// `token_name:<name>` when the row has no explicit identifier so the F41
+// catalog fallback path stays reachable for upstream resolvers that emit
+// rows carrying only token_name. The per-row binding loop reads from
+// varsByRef using the same precedence so both write and read agree.
+function rowCacheKey(row) {
+  if (row.variable_key) return row.variable_key;
+  if (row.variable_id) return row.variable_id;
+  if (row.token_name && CATALOG_KEY_BY_TOKEN_NAME[row.token_name]) {
+    return "token_name:" + row.token_name;
+  }
+  return null;
+}
+
 for (const row of ROWS) {
-  const ref = row.variable_key || row.variable_id;
-  if (!ref || varsByRef[ref]) continue;
+  const cacheKey = rowCacheKey(row);
+  if (!cacheKey || varsByRef[cacheKey]) continue;
   const outcome = await resolveVariable(row);
   if (outcome.resolved) {
-    varsByRef[ref] = outcome.resolved;
+    varsByRef[cacheKey] = outcome.resolved;
     continue;
   }
   if (outcome.tried && outcome.tried.length > 0) {
@@ -864,7 +948,7 @@ for (const row of ROWS) {
   }
   const targetNodeId = NODE_MAP === "shared-plugin-data" ? idMap[row.node_id] : row.node_id;
   if (!targetNodeId) { stats.missing_idmap++; continue; }
-  const variable = varsByRef[row.variable_key || row.variable_id];
+  const variable = varsByRef[rowCacheKey(row)];
   if (!variable) {
     stats.missing_variable++;
     if (row.token_name) recordSignature("variable_not_found:" + row.token_name, row.node_id);
