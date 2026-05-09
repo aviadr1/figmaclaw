@@ -115,7 +115,7 @@ substrate is [issue
 | `figmaclaw audit-page diagnose <file_key> <audit_page_id>` | Classify unbound literal paints (old-palette / new-palette / unclassified) on the audit page. |
 | `figmaclaw audit-page swap <file_key> <audit_page_id> --manifest swap.json` | Emit / execute component-instance swaps on an audit page. F17/F22/F30-compliant: never `.detach()`, never `throw` on partial failure, returns aggregate per-row stats. Three modes (`--dry-run` / `--emit-only` / `--execute`) match `apply-tokens`. |
 | `figmaclaw audit-pipeline lint --component-map ... [--census ...] [--variants ...]` | Validate the v3 component-migration-map shape (nested or flat). With `--census` cross-references each `new_key` against the published `_census.md`. With `--variants <taxonomy.json>` validates `variant_mapping` axis names + values against the published variant taxonomy and enforces OLD-axis coverage. |
-| `figmaclaw apply-tokens <fix-manifest> --file ... --page ...` | Take a versioned fix manifest (or legacy compact rows) and apply variable bindings. Three modes: `--dry-run` plans, `--emit-only` writes deterministic batches, `--execute` runs them through the shared MCP executor. |
+| `figmaclaw apply-tokens <fix-manifest> --file ... --page ...` | Take a versioned fix manifest (or legacy compact rows) and apply variable bindings. Three modes: `--dry-run` plans, `--emit-only` writes deterministic batches, `--execute` runs them through the shared MCP executor. F41 import-by-key fallback: when a row's `variable_key`/`variable_id` both miss, the runtime falls back to `importVariableByKeyAsync(catalog_key_by_name[token])` so published DS variables that the file has never imported still bind. F48 class-level abort: identical-cause failures (`unloadable_font:<name>`, `read_only_file`, `missing_variable_key:<id>`, `variable_not_found:<token>`) trigger a single F36 "ACTION REQUIRED" stderr block + exit code **78** (`EX_CONFIG`) when one signature dominates. Tunable via `--signature-abort-threshold N` (default 5). |
 
 ### v3 component-migration-map schema
 
@@ -181,6 +181,60 @@ Produce a sidecar JSON via a `use_figma` call:
 
 Pass via `--variants <path>`, repeatable. The flat-form (key→taxonomy) and
 the wrapped form (`{"component_sets": {key: taxonomy}}`) are both accepted.
+
+### apply-tokens F48 abort surface — `report["operator_action"]`
+
+When `apply-tokens --execute` aborts on a class-level signature (F48),
+the JSON report grows an `operator_action` block and the CLI exits with
+code **78** (`EX_CONFIG`, "operator action required"). Shape:
+
+```json
+{
+  "operator_action": {
+    "signature": "unloadable_font:Boldonse Bold",
+    "count": 12,
+    "sample_rows": ["1:1", "1:2", "1:3"],
+    "instruction": "font 'Boldonse Bold' cannot load in the Figma MCP plugin runtime. Either (a) org-upload the font to your Figma admin → Fonts page, or (b) ask the DS owner to add a fallback typography mode binding fontFamily to a runtime-available font (e.g. Inter).",
+    "additional_signatures": [
+      {"signature": "read_only_file", "count": 5, "sample_rows": ["b:1", "b:2"]}
+    ]
+  }
+}
+```
+
+Fields:
+- `signature` — the dominant abort across all batches (sorted by count desc).
+- `count` — how many rows tripped this signature in the runtime.
+- `sample_rows` — up to 3 row identifiers (typically `node_id`) so operators can drill into specific failures.
+- `instruction` — F36-style operator-actionable text from `operator_action_for_signature(...)`.
+- `additional_signatures` — every other batch's abort, in `[{signature, count, sample_rows}]` form. Same-signature aborts from multiple batches are MERGED before this list is built: counts sum, sample_rows union (preserving first-seen order, capped at 3) — so the list is one-entry-per-signature, never echoing the dominant one.
+
+Recognised signature classes (regex match in the JS runtime):
+
+| Class | Source pattern | Operator action |
+|---|---|---|
+| `unloadable_font:<name>` | `font X (?:not loaded|could not be loaded)` | Org-upload font OR add a fallback typography mode |
+| `read_only_file` | `read[- ]only`, `permission denied`, `cannot edit` | Switch to an Editor/Owner session |
+| `missing_variable_key[:<id>]` | `missing variable key` | Re-run `figmaclaw variables`, rebuild manifest |
+| `variable_not_found[:<token>]` | `cannot find (?:published )?variable`, `variable not found` | Confirm catalog key + row carries `token_name` |
+| `variable_not_published[:<token>]` | `variable does not exist in (?:this )?team` | Ask DS owner to publish from source file |
+| `rate_limited` | `rate ?limit`, `429` | Back off, resume via `--resume-from <batch>` |
+| `network_unavailable` | `network (?:error|unreachable|timeout)`, `econnreset` | Retry with `--resume-from` once connectivity returns |
+| `session_expired` | `session (?:expired|not found)`, `401` | Re-authenticate, re-run |
+
+F41 visibility: each batch's `summary.stats` carries
+`resolved_via_variable_key`, `resolved_via_variable_id`, and
+`resolved_via_catalog_fallback` counters so an operator can see whether
+the F41 fallback fired (vs. rows resolving via their own keys/ids).
+Issue #171 — when the catalog has multiple publishable keys for one
+token name, those names are dropped from the F41 map (warn-and-skip)
+and surfaced in the batch manifest's `catalog_name_conflicts` field;
+rows referencing them fall through to the legacy `variable_id` path.
+
+Tunable via `--signature-abort-threshold N` (default 5). The threshold is
+"how many rows hit the same signature before we stop the phase and bail
+to a human". Lower = faster bail, higher = more tolerance for one-off
+flakes.
 
 ## What's in flight
 

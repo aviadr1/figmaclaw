@@ -86,9 +86,10 @@ def test_issue_161_apply_tokens_js_template_never_throws_on_hard_failures() -> N
 def test_issue_161_apply_tokens_js_template_returns_summary() -> None:
     """The JS returns an aggregate summary object so the caller can decide."""
     assert "return summary;" in APPLY_TOKENS_JS_TEMPLATE
-    # The summary still encodes ok = (hardFailures === 0), so the caller can
-    # implement run-level pass/fail externally.
-    assert "ok: hardFailures === 0," in APPLY_TOKENS_JS_TEMPLATE
+    # The summary still encodes ok in terms of hardFailures so the caller
+    # can implement run-level pass/fail externally. (The exact expression
+    # now also factors in F48 signatureAbort; see issues #168/169.)
+    assert "ok: hardFailures === 0" in APPLY_TOKENS_JS_TEMPLATE
 
 
 # Issue #162 — audit-page swap ----------------------------------------------

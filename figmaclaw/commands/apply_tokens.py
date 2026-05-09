@@ -5,14 +5,20 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from typing import Any
 
 import click
 from pydantic import ValidationError
 
 from figmaclaw.apply_tokens import (
     DEFAULT_NAMESPACE,
+    DEFAULT_SIGNATURE_ABORT_THRESHOLD,
+    EXIT_OPERATOR_ACTION_REQUIRED,
+    AdditionalSignature,
+    OperatorAction,
     apply_plan_report,
     load_apply_token_input,
+    operator_action_for_signature,
     referenced_catalog_source_file_keys,
     refusal_report,
     write_apply_batches,
@@ -24,6 +30,7 @@ from figmaclaw.commands.reporting import (
     resolve_repo_path,
     write_json_output,
 )
+from figmaclaw.figma_variables_mcp import _candidate_payloads, _parse_candidate
 from figmaclaw.token_catalog import (
     TokenCatalog,
     catalog_staleness_errors,
@@ -90,6 +97,19 @@ from figmaclaw.use_figma_exec import execute_use_figma_calls
         "allows variable-id fallback. Pair with --library to match the legacy target library."
     ),
 )
+@click.option(
+    "--signature-abort-threshold",
+    type=click.IntRange(min=1),
+    default=None,
+    show_default="5",
+    help=(
+        "F48: abort the phase after this many rows hit the same root-cause "
+        "signature (e.g. unloadable_font:Boldonse Bold). Surfaces ONE F36 "
+        "operator-actionable block instead of N identical lines in the "
+        "report. Default 5; pass a larger value to tolerate more identical "
+        "failures before aborting."
+    ),
+)
 @click.pass_context
 def apply_tokens_cmd(
     ctx: click.Context,
@@ -110,6 +130,7 @@ def apply_tokens_cmd(
     allow_non_authoritative: bool,
     allow_variable_id_fallback: bool,
     legacy_bindings_for_figma: bool,
+    signature_abort_threshold: int | None,
     json_output: bool,
 ) -> None:
     """Apply authoritative, pre-filtered token fixes back into Figma.
@@ -206,14 +227,52 @@ def apply_tokens_cmd(
     if resume_from < 1:
         raise click.UsageError("--resume-from must be >= 1")
 
-    batch_result = write_apply_batches(
-        prepared,
-        batch_dir=resolve_output_path(repo_dir, batch_dir),
-        batch_size=batch_size,
-        namespace=namespace,
-        node_map=node_map,  # type: ignore[arg-type]
+    threshold = (
+        signature_abort_threshold
+        if signature_abort_threshold is not None
+        else DEFAULT_SIGNATURE_ABORT_THRESHOLD
     )
+    try:
+        batch_result = write_apply_batches(
+            prepared,
+            batch_dir=resolve_output_path(repo_dir, batch_dir),
+            batch_size=batch_size,
+            namespace=namespace,
+            node_map=node_map,  # type: ignore[arg-type]
+            catalog=catalog,
+            library_hashes=library_hashes,
+            signature_abort_threshold=threshold,
+        )
+    except ValueError as exc:
+        # Catalog or scope-related ValueErrors should surface as a clean
+        # CLI error rather than a Python stack trace. (#171 + Copilot
+        # 3211930087.)
+        raise click.ClickException(str(exc)) from exc
     report["batch_manifest"] = batch_result["manifest"]
+    # F41 catalog-name conflicts (warn-and-skip per #171). The conflicts
+    # don't abort the run — rows referencing the conflicted name fall
+    # through to the legacy variable_id path — but operators should see
+    # them so they can clean the catalog or pass `--library`.
+    conflicts = batch_result["manifest"].get("catalog_name_conflicts") or {}
+    referenced_conflicts = {
+        name: keys
+        for name, keys in conflicts.items()
+        if any(fix.token_name == name for fix in prepared.manifest.fixes)
+    }
+    if conflicts:
+        click.echo(
+            f"warning: catalog has {len(conflicts)} ambiguous token name(s) "
+            f"with multiple keys; F41 fallback will skip them. Referenced by "
+            f"this run: {len(referenced_conflicts)}.",
+            err=True,
+        )
+        for name, keys in sorted(conflicts.items())[:5]:
+            click.echo(f"  {name}: {keys}", err=True)
+        if len(conflicts) > 5:
+            click.echo(
+                f"  … and {len(conflicts) - 5} more (see batch manifest `catalog_name_conflicts`)",
+                err=True,
+            )
 
     if mode == "emit-only":
         emit_json_value(report)
@@ -228,7 +287,152 @@ def apply_tokens_cmd(
         )
     )
     report["execution"] = execution
+
+    # F48: if any batch's runtime aborted on a class-level signature,
+    # promote ONE F36 block to the human path and exit with the
+    # operator-action code so wrappers can route the failure to a human.
+    aborts = _merge_aborts_by_signature(_collect_signature_aborts(execution))
+    if aborts:
+        # Sort by count desc, signature asc — surface the dominant
+        # signature first so the operator sees the most-frequent failure
+        # at the top, with any additional aborts listed beneath.
+        aborts.sort(key=lambda a: (-_safe_count(a.get("count")), str(a.get("signature") or "")))
+        primary = aborts[0]
+        action = OperatorAction(
+            signature=str(primary.get("signature") or ""),
+            count=_safe_count(primary.get("count")),
+            sample_rows=[str(r) for r in (primary.get("sample_rows") or [])],
+            instruction=(
+                operator_action_for_signature(str(primary.get("signature") or ""))
+                or _GENERIC_OPERATOR_ACTION_FALLBACK
+            ),
+            additional_signatures=[
+                AdditionalSignature(
+                    signature=str(a.get("signature") or ""),
+                    count=_safe_count(a.get("count")),
+                    sample_rows=[str(r) for r in (a.get("sample_rows") or [])],
+                )
+                for a in aborts[1:]
+            ],
+        )
+        report["operator_action"] = action.model_dump(mode="json")
+        emit_json_value(report)
+        click.echo(
+            f"⚠️  ACTION REQUIRED — {action.signature} hit "
+            f"{action.count} time(s); aborting. {action.instruction}",
+            err=True,
+        )
+        for extra in action.additional_signatures:
+            click.echo(f"   also seen: {extra.signature} ×{extra.count}", err=True)
+        ctx.exit(EXIT_OPERATOR_ACTION_REQUIRED)
     emit_json_value(report)
+
+
+# Fallback hint when `operator_action_for_signature` returns ""
+# (signature class is new / unknown). Without this, the CLI would echo
+# `aborting. ` with a trailing space and no actionable text. Copilot
+# 3211930081.
+_GENERIC_OPERATOR_ACTION_FALLBACK = (
+    "see `report.operator_action` and the per-call MCP results in "
+    "`execution.calls[*].result` for details."
+)
+
+
+def _merge_aborts_by_signature(aborts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse multiple aborts that share a signature into one.
+
+    Without this, a 1000-row run where batches A and B independently hit
+    threshold for ``unloadable_font:Boldonse Bold`` produces a primary
+    abort (count=N from batch A) AND an ``additional_signatures[0]``
+    entry with the SAME signature (count=M from batch B). Operator
+    stderr shows the same wall-of-noise the F48 surface fixed.
+
+    Merge rule: sum counts, union sample_rows preserving first-seen
+    order, truncated to 3 (matches the JS-side per-batch sample cap).
+    """
+    merged: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for abort in aborts:
+        sig = str(abort.get("signature") or "")
+        if not sig:
+            continue
+        existing = merged.get(sig)
+        if existing is None:
+            existing = {
+                "signature": sig,
+                "count": _safe_count(abort.get("count")),
+                "sample_rows": [str(r) for r in (abort.get("sample_rows") or [])],
+            }
+            merged[sig] = existing
+            order.append(sig)
+        else:
+            existing["count"] += _safe_count(abort.get("count"))
+            for sample in abort.get("sample_rows") or []:
+                if len(existing["sample_rows"]) >= 3:
+                    break
+                if sample not in existing["sample_rows"]:
+                    existing["sample_rows"].append(str(sample))
+    return [merged[sig] for sig in order]
+
+
+def _safe_count(value: Any) -> int:
+    """Coerce a JS-runtime count into a non-negative int.
+
+    The MCP runtime returns counters as JSON numbers; in well-behaved
+    environments they round-trip cleanly. But MCP servers / proxies
+    vary, and an exotic value (NaN, ``inf``, "lots", None) would crash
+    the abort surface — the very surface meant to give operators a
+    clean F36 error. Coerce defensively, including the ``inf`` →
+    ``OverflowError`` edge that ``int(float(...))`` raises.
+
+    Extends #170 review #5 with the fifth-round finding #1 (inf).
+    """
+    if value is None:
+        return 0
+    try:
+        as_float = float(value)
+    except (TypeError, ValueError):
+        return 0
+    # NaN compares unequal to itself; non-finite (inf / -inf / nan) all
+    # fail this guard and fall to 0 rather than raising on int(...).
+    if as_float != as_float or as_float in (float("inf"), float("-inf")):
+        return 0
+    try:
+        result = int(as_float)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return max(0, result)
+
+
+def _collect_signature_aborts(execution: Any) -> list[dict[str, Any]]:
+    """Return every per-batch ``signatureAbort`` payload in execution order.
+
+    The use_figma executor returns ``{"calls": [{"index", "result", ...}]}``
+    where ``result`` is the MCP ``tools/call`` result — the JS template's
+    return value lives inside ``result["structuredContent"]`` (preferred)
+    or as a JSON-stringified ``result["content"][0]["text"]``. We reuse
+    the existing :func:`_candidate_payloads` / :func:`_parse_candidate`
+    extractor so the same parsing logic the variables MCP path uses
+    drives the abort discovery here.
+    """
+    aborts: list[dict[str, Any]] = []
+    if not isinstance(execution, dict):
+        return aborts
+    for call_record in execution.get("calls") or []:
+        if not isinstance(call_record, dict):
+            continue
+        result = call_record.get("result")
+        if not isinstance(result, dict):
+            continue
+        for candidate in _candidate_payloads(result):
+            parsed = _parse_candidate(candidate)
+            if not isinstance(parsed, dict):
+                continue
+            abort = parsed.get("signatureAbort")
+            if isinstance(abort, dict) and abort.get("signature"):
+                aborts.append(abort)
+                break  # one abort per call is the contract
+    return aborts
 
 
 def _resolve_library_filter(catalog: TokenCatalog, libraries: tuple[str, ...]) -> set[str] | None:

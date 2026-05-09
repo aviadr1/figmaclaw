@@ -31,6 +31,19 @@ APPLY_TOKENS_SCHEMA_VERSION = 1
 APPLY_BATCH_MANIFEST_SCHEMA_VERSION = 1
 DEFAULT_NAMESPACE = "linear_git_migration"
 
+# F48: aborting the phase after this many rows hit the same signature
+# (e.g. unloadable_font:Boldonse Bold). The default 5 is small enough to
+# fire on the first batch's worst class and large enough that a one-off
+# transient (network, permission flicker) never trips it.
+DEFAULT_SIGNATURE_ABORT_THRESHOLD = 5
+
+# Exit code for "operator action required" — distinct from the generic
+# refusal exit so CI / wrappers can route the failure to a human queue.
+# Borrows the EX_CONFIG (78) Unix sysexits convention for "configuration
+# error" since the operator action (upload font, grant permission, …) is
+# always external/configuration.
+EXIT_OPERATOR_ACTION_REQUIRED = 78
+
 
 class ApplyTokenFix(BaseModel):
     """One concrete Figma variable-binding intent.
@@ -58,6 +71,37 @@ class ApplyTokensManifest(BaseModel):
     file_key: str | None = None
     page_node_id: str | None = None
     fixes: list[ApplyTokenFix] = Field(default_factory=list)
+
+
+class AdditionalSignature(BaseModel):
+    """Companion abort surfaced after the dominant one in a multi-batch run.
+
+    Carries ``sample_rows`` so operators investigating the secondary
+    signature ("also seen: read_only_file ×5") can identify WHICH rows
+    tripped it without re-reading the raw report JSON.
+    """
+
+    signature: str
+    count: int = Field(ge=0)
+    sample_rows: list[str] = Field(default_factory=list)
+
+
+class OperatorAction(BaseModel):
+    """F36-shaped block surfaced when a batch aborts on a class-level signature.
+
+    ``signature`` is the dominant abort across all batches in this run;
+    ``additional_signatures`` carries any other batches' aborts so the
+    operator sees the full picture instead of being told only about the
+    alphabetically-first failure. (Promoted from an ad-hoc dict so
+    downstream JSON consumers can rely on the shape — per CLAUDE.md
+    "use pydantic, not dataclass".)
+    """
+
+    signature: str
+    count: int = Field(ge=0)
+    sample_rows: list[str] = Field(default_factory=list)
+    instruction: str = ""
+    additional_signatures: list[AdditionalSignature] = Field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -482,8 +526,21 @@ def write_apply_batches(
     batch_size: int,
     namespace: str = DEFAULT_NAMESPACE,
     node_map: Literal["shared-plugin-data", "direct"] = "shared-plugin-data",
+    catalog: TokenCatalog | None = None,
+    library_hashes: set[str] | None = None,
+    signature_abort_threshold: int = DEFAULT_SIGNATURE_ABORT_THRESHOLD,
 ) -> dict[str, Any]:
-    """Write deterministic batch rows, JS files, and a batch manifest."""
+    """Write deterministic batch rows, JS files, and a batch manifest.
+
+    When *catalog* is provided, every emitted batch JS receives a
+    ``CATALOG_KEY_BY_TOKEN_NAME`` const (token-name → publishable key)
+    derived from authoritative catalog variables. The runtime uses it
+    as a last-ditch fallback when both
+    ``importVariableByKeyAsync(row.variable_key)`` and
+    ``getVariableByIdAsync(row.variable_id)`` come up empty — which
+    happens for published DS variables that the working file has never
+    imported into its local cache. (Issue #168 / F41.)
+    """
     if not prepared.ok:
         raise ValueError("refusing to emit batches while apply-token refusals remain")
     file_key = prepared.manifest.file_key
@@ -494,6 +551,32 @@ def write_apply_batches(
         raise ValueError("page_node_id is required")
 
     fixes = prepared.manifest.fixes
+    if catalog is not None:
+        catalog_key_by_token_name, catalog_name_conflicts = _catalog_key_by_token_name(
+            catalog, library_hashes=library_hashes
+        )
+    else:
+        catalog_key_by_token_name = {}
+        catalog_name_conflicts = {}
+    manifest_extras = {
+        "schema_version": APPLY_BATCH_MANIFEST_SCHEMA_VERSION,
+        "kind": "figmaclaw.apply_tokens.batch_manifest",
+        "file_key": file_key,
+        "page_node_id": page_node_id,
+        "namespace": namespace,
+        "node_map": node_map,
+        "signature_abort_threshold": signature_abort_threshold,
+        # Apply-tokens has historically called the row-count `total_fixes`;
+        # keep the key so existing batch-manifest consumers don't break.
+        # The shared writer also adds `total_rows` for the new convention.
+        "total_fixes": len(fixes),
+    }
+    if catalog_name_conflicts:
+        # Surface the conflicts in the manifest so the operator can see
+        # them via --json without having to read the catalog. The runtime
+        # F41 fallback won't fire for these names; rows that reference
+        # them fall through to the legacy variable_id path. (#171.)
+        manifest_extras["catalog_name_conflicts"] = catalog_name_conflicts
     return write_use_figma_batches(
         fixes,
         batch_dir=batch_dir,
@@ -506,21 +589,148 @@ def write_apply_batches(
             namespace=namespace,
             rows=rows,
             node_map=node_map,
+            catalog_key_by_token_name=catalog_key_by_token_name,
+            signature_abort_threshold=signature_abort_threshold,
         ),
         description_prefix="apply design token bindings batch",
-        manifest_extras={
-            "schema_version": APPLY_BATCH_MANIFEST_SCHEMA_VERSION,
-            "kind": "figmaclaw.apply_tokens.batch_manifest",
-            "file_key": file_key,
-            "page_node_id": page_node_id,
-            "namespace": namespace,
-            "node_map": node_map,
-            # Apply-tokens has historically called the row-count `total_fixes`;
-            # keep the key so existing batch-manifest consumers don't break.
-            # The shared writer also adds `total_rows` for the new convention.
-            "total_fixes": len(fixes),
-        },
+        manifest_extras=manifest_extras,
     )
+
+
+_SIGNATURE_CLASS_ACTIONS: dict[str, str] = {
+    "read_only_file": (
+        "the MCP session lacks edit access to the target file; switch to a "
+        "session whose user has Editor or Owner permission."
+    ),
+    "missing_variable_key": (
+        "an upstream resolver emitted variable_id without a publishable key. "
+        "Re-run `figmaclaw variables` to refresh the catalog and re-build "
+        "the bindings manifest."
+    ),
+    "variable_not_found": (
+        "variable could not be resolved on the target file. Confirm the "
+        "catalog has its publishable key and that the row carries "
+        "`token_name` so the F41 import-by-key fallback fires."
+    ),
+    "variable_not_published": (
+        "variable is not published in this team. Ask the DS owner to "
+        "publish it from the source file, then re-run `figmaclaw variables` "
+        "to refresh the catalog."
+    ),
+    "rate_limited": (
+        "the Figma API is rate-limiting your session; back off, then re-run "
+        "with `--resume-from <batch>` to skip already-applied work."
+    ),
+    "network_unavailable": (
+        "transient network failure between figmaclaw and the Figma API. "
+        "Re-run with `--resume-from <batch>` once connectivity returns."
+    ),
+    "session_expired": (
+        "your MCP session has expired; re-authenticate (figmaclaw uses "
+        "the running Claude session's credentials by default) and re-run."
+    ),
+}
+
+
+def operator_action_for_signature(signature: str) -> str:
+    """Return an F36-style operator-actionable hint for a runtime signature.
+
+    Signatures emitted by the JS runtime's ``classifyError`` come in two
+    shapes — bare class (``read_only_file``) or ``class:identifier``
+    (``unloadable_font:Boldonse Bold``, ``missing_variable_key:VariableID:libabc/1:1``).
+    We split on the FIRST colon so the identifier preserves any inner
+    colons (e.g. ``VariableID:libabc/1:1`` keeps ``libabc/1:1`` intact).
+
+    Per-class hints:
+
+    * ``unloadable_font:<Name>`` — Figma MCP plugin runtime can't load
+      this font even when installed locally. Surface the org-upload
+      escape valve.
+    * ``read_only_file`` — the connected MCP session lacks edit access
+      to the target file.
+    * ``missing_variable_key[:<id>]`` — the manifest carries a variable
+      id without a publishable key.
+    * ``variable_not_found[:<token>]`` — neither the row's id nor the
+      catalog name-fallback could resolve the variable.
+    """
+    if not signature:
+        return ""
+    cls, _, identifier = signature.partition(":")
+    if cls == "unloadable_font" and identifier:
+        return (
+            f"font {identifier!r} cannot load in the Figma MCP plugin "
+            "runtime. Either (a) org-upload the font to your Figma admin → "
+            "Fonts page, or (b) ask the DS owner to add a fallback "
+            "typography mode binding fontFamily to a runtime-available "
+            "font (e.g. Inter)."
+        )
+    if cls == "variable_not_found" and identifier:
+        return (
+            f"variable {identifier!r} could not be resolved on the target "
+            "file. Confirm the catalog has its publishable key and that "
+            "the row carries `token_name` so the F41 import-by-key "
+            "fallback fires."
+        )
+    if cls == "missing_variable_key" and identifier:
+        return (
+            f"variable id {identifier!r} has no publishable key. Re-run "
+            "`figmaclaw variables` to refresh the catalog and re-build "
+            "the bindings manifest."
+        )
+    if cls == "variable_not_published" and identifier:
+        return (
+            f"variable {identifier!r} is not published in this team. Ask "
+            "the DS owner to publish it from the source file, then re-run "
+            "`figmaclaw variables`."
+        )
+    return _SIGNATURE_CLASS_ACTIONS.get(cls, "")
+
+
+def _catalog_key_by_token_name(
+    catalog: TokenCatalog,
+    *,
+    library_hashes: set[str] | None = None,
+) -> tuple[dict[str, str], dict[str, list[str]]]:
+    """Map authoritative variable token-name → publishable key.
+
+    Returns ``(name_map, conflicts)``.
+
+    * ``name_map`` carries the unambiguous name→key entries the F41
+      runtime fallback uses. Only AUTHORITATIVE_DEFINITION_SOURCES
+      variables are included so the runtime never tries to import a
+      manually-edited or proxied entry. When *library_hashes* is set,
+      the map is scoped to those libraries.
+    * ``conflicts`` lists token names that had multiple distinct keys in
+      the same scope. These names are **excluded** from ``name_map``
+      (warn-and-skip per issue #171): the runtime's F41 fallback simply
+      won't fire for them, just as it doesn't fire for names that aren't
+      in the catalog at all. The CLI surfaces the conflicts to the
+      operator so they can clean the catalog or pass a tighter
+      ``--library`` filter — but a conflict no longer aborts the run
+      when no row in the manifest actually references the conflicted
+      name.
+    """
+    name_map: dict[str, str] = {}
+    seen_keys: dict[str, str] = {}
+    conflicts: dict[str, set[str]] = {}
+    for variable in catalog.variables.values():
+        if variable.source not in AUTHORITATIVE_DEFINITION_SOURCES:
+            continue
+        if library_hashes is not None and variable.library_hash not in library_hashes:
+            continue
+        if not variable.name or not variable.key:
+            continue
+        existing = seen_keys.get(variable.name)
+        if existing is None:
+            seen_keys[variable.name] = variable.key
+            name_map[variable.name] = variable.key
+        elif existing != variable.key:
+            # Drop both entries from the resolution map — we can't pick
+            # silently — and remember every key we've seen for this name
+            # so the CLI's warning lists them all.
+            name_map.pop(variable.name, None)
+            conflicts.setdefault(variable.name, {existing}).add(variable.key)
+    return name_map, {name: sorted(keys) for name, keys in conflicts.items()}
 
 
 def _fix_to_writer_row(fix: ApplyTokenFix) -> dict[str, Any]:
@@ -542,6 +752,13 @@ const TARGET_PAGE_ID = __TARGET_PAGE_ID__;
 const NAMESPACE = __NAMESPACE__;
 const NODE_MAP = __NODE_MAP__;
 const ROWS = __ROWS__;
+// Catalog map for the F41 fallback: token-name → publishable key. The
+// runtime calls `importVariableByKeyAsync(key)` when the row's own
+// variable_id/variable_key fail, which covers published DS variables the
+// working file has never imported. Empty when no catalog is plumbed.
+const CATALOG_KEY_BY_TOKEN_NAME = __CATALOG_KEY_BY_TOKEN_NAME__;
+// F48: abort the phase after this many rows hit the same signature.
+const SIGNATURE_ABORT_THRESHOLD = __SIGNATURE_ABORT_THRESHOLD__;
 
 const targetPage = await figma.getNodeByIdAsync(TARGET_PAGE_ID);
 if (!targetPage) throw new Error(`target page not found: ${TARGET_PAGE_ID}`);
@@ -556,27 +773,95 @@ if (NODE_MAP === "shared-plugin-data") {
   idMap = JSON.parse(rawIdMap);
 }
 
-const varsByRef = {};
-const variableErrors = [];
-for (const row of ROWS) {
-  const ref = row.variable_key || row.variable_id;
-  if (!ref || varsByRef[ref]) continue;
-  try {
-    if (row.variable_key) {
-      varsByRef[ref] = await figma.variables.importVariableByKeyAsync(row.variable_key);
-    } else if (row.variable_id) {
-      varsByRef[ref] = await figma.variables.getVariableByIdAsync(row.variable_id);
-    }
-  } catch (err) {
-    variableErrors.push({
-      token_name: row.token_name,
-      variable_id: row.variable_id,
-      variable_key: row.variable_key,
-      error: String(err && err.message ? err.message : err),
-    });
+// F48: aggregate identical-cause failures into one block. Each call to
+// `recordSignature(sig, rowId)` increments the count and pushes up to 3
+// sample row ids. When the count crosses SIGNATURE_ABORT_THRESHOLD we
+// flag `signatureAbort` so the per-row loop stops processing additional
+// rows. The caller (CLI) then surfaces ONE F36 operator-actionable
+// block instead of N identical lines in the report.
+const errorSignatures = {};
+let signatureAbort = null;
+function recordSignature(sig, rowId) {
+  if (!sig) return;
+  const entry = errorSignatures[sig] || { count: 0, sample_rows: [] };
+  entry.count++;
+  // Only record sample_rows for non-empty, non-null row identifiers — an
+  // undefined/null/"" rowId would push a useless placeholder into the
+  // operator's diagnostic. Counts still go up so the threshold fires
+  // correctly.
+  if (entry.sample_rows.length < 3 && rowId != null && rowId !== "") {
+    entry.sample_rows.push(rowId);
+  }
+  errorSignatures[sig] = entry;
+  if (!signatureAbort && entry.count >= SIGNATURE_ABORT_THRESHOLD) {
+    signatureAbort = { signature: sig, count: entry.count, sample_rows: entry.sample_rows.slice() };
   }
 }
 
+// F36-friendly signature normalizer. Maps a free-form runtime error into
+// a class-level identifier so 263 × "font Boldonse Bold not loaded" all
+// collapse to one "unloadable_font:Boldonse Bold" signature.
+//
+// Every signature has the shape `class:identifier` — the identifier
+// makes the F36 hint specific (which font, which variable) instead of
+// generic. classes without a natural identifier (read_only_file) are
+// passed through bare. The CLI's `operator_action_for_signature` and
+// the runtime's `recordSignature` callsites must agree on the format,
+// so changing the regex set requires updating both. (#170 review.)
+function classifyError(message, contextRow) {
+  if (!message) return null;
+  const text = String(message);
+  let m;
+  // Unloadable font — Figma's MCP runtime can't materialise a font even
+  // when it's installed locally; "<family> <style> not loaded" is the
+  // standard error string. The shorter "loadFontAsync … for X" variant
+  // shows up in nested rejections.
+  m = text.match(/font (.+?) (?:not loaded|could not be loaded)/i);
+  if (m) return "unloadable_font:" + m[1].trim();
+  m = text.match(/loadFontAsync.+?for (.+?)$/);
+  if (m) return "unloadable_font:" + m[1].trim();
+  // Permission errors — operator needs to swap to a session with edit
+  // access, or get the file shared with their session's user.
+  if (/read[- ]only|permission denied|cannot edit/i.test(text)) return "read_only_file";
+  // Missing publishable key on a non-published variable — upstream
+  // resolver bug; pass the row's variable_id forward so the F36 hint
+  // names the offender.
+  if (/missing variable key/i.test(text)) {
+    const id = contextRow && contextRow.variable_id ? ":" + contextRow.variable_id : "";
+    return "missing_variable_key" + id;
+  }
+  // Variable doesn't exist on the target file — published-but-not-yet
+  // -reused variables fall here when the F41 fallback also misses.
+  // Match real Figma error strings: "Cannot find variable", "variable
+  // not found", and "Cannot find published variable".
+  if (/cannot find (?:published )?variable|variable not found/i.test(text)) {
+    const tok = contextRow && contextRow.token_name ? ":" + contextRow.token_name : "";
+    return "variable_not_found" + tok;
+  }
+  // Variable exists but isn't published in the current team — distinct
+  // operator action from "not found" (republish vs. re-grant access).
+  if (/variable does not exist in (?:this )?team|not published in this team/i.test(text)) {
+    const tok = contextRow && contextRow.token_name ? ":" + contextRow.token_name : "";
+    return "variable_not_published" + tok;
+  }
+  // Network / transient infrastructure errors. Operator retries; not
+  // a per-row data problem.
+  if (/rate ?limit|too many requests|http 429|429/i.test(text)) {
+    return "rate_limited";
+  }
+  if (/network (?:error|unreachable|timeout)|fetch failed|econnreset|enetunreach/i.test(text)) {
+    return "network_unavailable";
+  }
+  if (/session (?:expired|not found)|unauthorized|401/i.test(text)) {
+    return "session_expired";
+  }
+  return null;
+}
+
+// Stats must be declared BEFORE the resolver loop so
+// `recordResolveOutcome` can mutate it without a TDZ error. The full
+// counter set lives here (per-row failure reasons + F41 resolution
+// kinds + the abort counter) so JSON consumers see one stable shape.
 const stats = {
   applied: 0,
   already_bound: 0,
@@ -587,7 +872,99 @@ const stats = {
   paint_no_solid: 0,
   unsupported_property: 0,
   errors: 0,
+  aborted_by_signature: 0,
+  // F41 counters: how many distinct variables resolved via each path.
+  // The catalog_token_name counter is the F41-specific signal — without
+  // it, an operator can't tell whether the fallback fired or whether
+  // the rows already had variable_keys. (#170 fifth-round finding #5.)
+  resolved_via_variable_key: 0,
+  resolved_via_variable_id: 0,
+  resolved_via_catalog_fallback: 0,
 };
+
+function recordResolveOutcome(kind) {
+  if (kind === "variable_key") stats.resolved_via_variable_key++;
+  else if (kind === "variable_id") stats.resolved_via_variable_id++;
+  else if (kind === "catalog_token_name") stats.resolved_via_catalog_fallback++;
+}
+
+const varsByRef = {};
+const variableErrors = [];
+// Resolution order is significant: the F41 catalog-name fallback fires
+// LAST so it never overrides a row's explicit variable_key/id. Each
+// candidate's `kind` is recorded in any error so the operator sees
+// which path the runtime tried before giving up.
+async function resolveVariable(row) {
+  const candidates = [];
+  if (row.variable_key) {
+    candidates.push({
+      kind: "variable_key",
+      load: () => figma.variables.importVariableByKeyAsync(row.variable_key),
+    });
+  }
+  if (row.variable_id) {
+    candidates.push({
+      kind: "variable_id",
+      load: () => figma.variables.getVariableByIdAsync(row.variable_id),
+    });
+  }
+  if (row.token_name && CATALOG_KEY_BY_TOKEN_NAME[row.token_name]) {
+    const catalogKey = CATALOG_KEY_BY_TOKEN_NAME[row.token_name];
+    candidates.push({
+      kind: "catalog_token_name",
+      catalogKey,
+      load: () => figma.variables.importVariableByKeyAsync(catalogKey),
+    });
+  }
+  const tried = [];
+  for (const candidate of candidates) {
+    try {
+      const resolved = await candidate.load();
+      if (resolved) return { resolved, kind: candidate.kind };
+    } catch (err) {
+      tried.push({
+        kind: candidate.kind,
+        catalogKey: candidate.catalogKey,
+        error: String(err && err.message ? err.message : err),
+      });
+    }
+  }
+  return { resolved: null, kind: null, tried };
+}
+
+// Build a cache key for varsByRef. Prefer variable_key/id; fall back to
+// `token_name:<name>` when the row has no explicit identifier so the F41
+// catalog fallback path stays reachable for upstream resolvers that emit
+// rows carrying only token_name. The per-row binding loop reads from
+// varsByRef using the same precedence so both write and read agree.
+function rowCacheKey(row) {
+  if (row.variable_key) return row.variable_key;
+  if (row.variable_id) return row.variable_id;
+  if (row.token_name && CATALOG_KEY_BY_TOKEN_NAME[row.token_name]) {
+    return "token_name:" + row.token_name;
+  }
+  return null;
+}
+
+for (const row of ROWS) {
+  const cacheKey = rowCacheKey(row);
+  if (!cacheKey || varsByRef[cacheKey]) continue;
+  const outcome = await resolveVariable(row);
+  if (outcome.resolved) {
+    varsByRef[cacheKey] = outcome.resolved;
+    recordResolveOutcome(outcome.kind);
+    continue;
+  }
+  if (outcome.tried && outcome.tried.length > 0) {
+    variableErrors.push({
+      token_name: row.token_name,
+      variable_id: row.variable_id,
+      variable_key: row.variable_key,
+      tried: outcome.tried,
+    });
+  }
+}
+
 const errors = [];
 
 function sameBoundVariable(ref, variable) {
@@ -596,10 +973,18 @@ function sameBoundVariable(ref, variable) {
 }
 
 for (const row of ROWS) {
+  if (signatureAbort) {
+    stats.aborted_by_signature++;
+    continue;
+  }
   const targetNodeId = NODE_MAP === "shared-plugin-data" ? idMap[row.node_id] : row.node_id;
   if (!targetNodeId) { stats.missing_idmap++; continue; }
-  const variable = varsByRef[row.variable_key || row.variable_id];
-  if (!variable) { stats.missing_variable++; continue; }
+  const variable = varsByRef[rowCacheKey(row)];
+  if (!variable) {
+    stats.missing_variable++;
+    if (row.token_name) recordSignature("variable_not_found:" + row.token_name, row.node_id);
+    continue;
+  }
   let node;
   try {
     node = await figma.getNodeByIdAsync(targetNodeId);
@@ -645,11 +1030,15 @@ for (const row of ROWS) {
     }
   } catch (err) {
     stats.errors++;
+    const message = String(err && err.message ? err.message : err);
+    const sig = classifyError(message, row);
+    if (sig) recordSignature(sig, row.node_id);
     if (errors.length < 20) {
       errors.push({
         row,
         targetNodeId,
-        error: String(err && err.message ? err.message : err),
+        error: message,
+        signature: sig,
       });
     }
   }
@@ -662,7 +1051,8 @@ const hardFailures =
   stats.paint_mixed +
   stats.paint_no_solid +
   stats.unsupported_property +
-  stats.errors;
+  stats.errors +
+  stats.aborted_by_signature;
 
 // We never throw here on hardFailures > 0. A throw inside the Figma plugin
 // runtime rolls back the entire transaction, so a single bad row in a batch
@@ -670,6 +1060,11 @@ const hardFailures =
 // already ran. Rows are independent — each one wraps its own work in a
 // try/catch and increments per-reason counters above. Returning the summary
 // lets the caller decide whether to fail the run based on aggregate stats.
+// `hardFailures` already includes `aborted_by_signature`, so when the
+// loop short-circuits on signatureAbort the `aborted_by_signature` count
+// alone makes `ok` false. Don't add a redundant `!signatureAbort` here —
+// keeping a single source of truth means a future refactor can't leave
+// the two checks subtly out of step.
 const summary = {
   ok: hardFailures === 0,
   targetPageId: targetPage.id,
@@ -678,6 +1073,8 @@ const summary = {
   stats,
   variableErrors,
   errorsSample: errors,
+  errorSignatures,
+  signatureAbort,
 };
 
 return summary;
@@ -690,12 +1087,20 @@ def render_apply_tokens_script(
     namespace: str,
     rows: list[dict[str, Any]],
     node_map: Literal["shared-plugin-data", "direct"],
+    catalog_key_by_token_name: dict[str, str] | None = None,
+    signature_abort_threshold: int = DEFAULT_SIGNATURE_ABORT_THRESHOLD,
 ) -> str:
+    catalog_map = catalog_key_by_token_name or {}
     return (
         APPLY_TOKENS_JS_TEMPLATE.replace("__TARGET_PAGE_ID__", json.dumps(page_node_id))
         .replace("__NAMESPACE__", json.dumps(namespace))
         .replace("__NODE_MAP__", json.dumps(node_map))
         .replace("__ROWS__", json.dumps(rows, separators=(",", ":"), ensure_ascii=True))
+        .replace(
+            "__CATALOG_KEY_BY_TOKEN_NAME__",
+            json.dumps(catalog_map, separators=(",", ":"), ensure_ascii=True),
+        )
+        .replace("__SIGNATURE_ABORT_THRESHOLD__", json.dumps(int(signature_abort_threshold)))
         .replace("__READ_SPD_CHUNKS_JS__", READ_SPD_CHUNKS_JS)
         .lstrip()
     )
