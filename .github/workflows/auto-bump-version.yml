@@ -29,9 +29,14 @@ jobs:
   auto-bump:
     runs-on: ubuntu-latest
     # Same-repo PRs only. Fork PRs run with read-only token; can't push back.
+    # Dependabot is excluded: pushing a bot commit onto a dependabot branch stops
+    # dependabot from auto-rebasing it, and the version-file churn then conflicts
+    # whenever main advances — which is exactly what blocked dependabot auto-merge.
+    # Dependabot PRs are correspondingly exempt from the version-bump check in ci.yml.
     if: |
       github.event.pull_request.head.repo.full_name == github.repository
       && github.actor != 'github-actions[bot]'
+      && github.event.pull_request.user.login != 'dependabot[bot]'
     steps:
       - name: Checkout PR branch with full history
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
