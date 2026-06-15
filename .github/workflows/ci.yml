@@ -130,7 +130,11 @@ jobs:
           fetch-depth: 0
 
       - name: Enforce PR version bump
-        if: github.event_name == 'pull_request'
+        # Dependabot PRs are exempt: we don't auto-bump their branches (see
+        # auto-bump-version.yml), so requiring a bump here would block them. This
+        # keeps dependabot branches free of bot commits so dependabot can auto-rebase
+        # them on base changes and auto-merge cleanly.
+        if: github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: python3 scripts/check_version_bump.py --base-ref "$BASE_SHA"
