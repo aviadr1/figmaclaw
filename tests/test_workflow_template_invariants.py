@@ -501,7 +501,12 @@ def test_registry_workflows_receive_team_id_for_fast_noop_paths() -> None:
 
 
 def test_ci_requires_source_controlled_version_bump_in_pr() -> None:
-    """INVARIANT: version bumps are PR contents, not bot pushes to protected main."""
+    """INVARIANT: version bumps are PR contents, not bot pushes to protected main.
+
+    Dependabot PRs are exempt: their branches are intentionally not auto-bumped (so
+    dependabot can keep them rebased and auto-merge cleanly), so the enforcement must
+    skip them. The bump rides along with the next human PR instead.
+    """
 
     assert not (Path(__file__).parents[1] / ".github" / "workflows" / "bump-version.yml").exists()
 
@@ -513,7 +518,10 @@ def test_ci_requires_source_controlled_version_bump_in_pr() -> None:
     assert "bump-version" not in workflow["jobs"]
     assert workflow["permissions"]["contents"] == "read"
     assert steps["Checkout"]["with"]["fetch-depth"] == 0
-    assert steps["Enforce PR version bump"]["if"] == "github.event_name == 'pull_request'"
+    assert steps["Enforce PR version bump"]["if"] == (
+        "github.event_name == 'pull_request' "
+        "&& github.event.pull_request.user.login != 'dependabot[bot]'"
+    )
     assert steps["Enforce PR version bump"]["env"] == {
         "BASE_SHA": "${{ github.event.pull_request.base.sha }}"
     }
