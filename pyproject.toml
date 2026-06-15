@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "figmaclaw"
-version = "0.2.11"
+version = "0.2.12"
 description = "Figma → git semantic design memory for AI agents"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -72,11 +72,8 @@ markers = [
 ]
 testpaths = ["tests"]
 
+# packages = ["figmaclaw"] already includes every subdirectory (workflows, skills,
+# prompts, plugin) and their data files in the wheel. A force-include table here would
+# add those same paths a second time and fail the build with a duplicate-path error.
 [tool.hatch.build.targets.wheel]
 packages = ["figmaclaw"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"figmaclaw/workflows" = "figmaclaw/workflows"
-"figmaclaw/skills" = "figmaclaw/skills"
-"figmaclaw/prompts" = "figmaclaw/prompts"
-"figmaclaw/plugin" = "figmaclaw/plugin"

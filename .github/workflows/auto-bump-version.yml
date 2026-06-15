@@ -75,6 +75,11 @@ jobs:
           python3 scripts/bump_version.py \
             --trigger-sha "$TRIGGER_SHA" \
             --trigger-msg "PR #$PR_NUMBER: $PR_TITLE"
+          # bump_version.py writes _build_info.py with the PR title embedded as a
+          # string literal. A long title overflows the line-length limit, which the
+          # ruff-format CI check (run on changed files) would then reject. Format the
+          # generated file here so the committed file always matches ruff's output.
+          uv run ruff format figmaclaw/_build_info.py
           uv lock
 
       - name: Commit + push the bump back to the PR branch
