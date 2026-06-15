@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -53,6 +54,16 @@ from tests.conftest import (
     fake_page_node_for_id,
     fake_page_node_with_children,
 )
+
+
+def _iso_days_ago(days: int) -> str:
+    """ISO-8601 UTC timestamp `days` before now.
+
+    Dates are computed relative to the current time so --since-window tests do not
+    become time-bombs that break as the calendar advances past hardcoded dates.
+    """
+    return (datetime.now(UTC) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
 
 # Schema version registry — must contain every version that has been superseded.
 # When you bump CURRENT_PULL_SCHEMA_VERSION from N to N+1, add N here and add
@@ -1261,8 +1272,9 @@ async def test_listing_prefilter_applies_since_filter_to_new_files(tmp_path: Pat
     client.list_team_projects = AsyncMock(return_value=[ProjectSummary(id="p1", name="Web")])
     client.list_project_files = AsyncMock(
         return_value=[
-            FileSummary(key="old_file", name="Old", last_modified="2020-01-01T00:00:00Z"),
-            FileSummary(key="new_file", name="New", last_modified="2026-03-01T00:00:00Z"),
+            # 250d ago is outside a 3m (≈90d) window; 10d ago is inside it.
+            FileSummary(key="old_file", name="Old", last_modified=_iso_days_ago(250)),
+            FileSummary(key="new_file", name="New", last_modified=_iso_days_ago(10)),
         ]
     )
 

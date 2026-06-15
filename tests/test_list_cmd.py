@@ -12,6 +12,7 @@ INVARIANTS:
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -28,6 +29,20 @@ FILE_KEY_A = "aaaabbbbcccc"
 FILE_KEY_B = "ddddeeeefffg"
 
 
+def _iso_days_ago(days: int) -> str:
+    """ISO-8601 UTC timestamp `days` before now.
+
+    Dates are computed relative to the current time so --since-window tests do not
+    become time-bombs that break as the calendar advances past hardcoded dates.
+    """
+    return (datetime.now(UTC) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# Recent enough to fall inside a --since 3m (≈90d) window; safely old enough to fall outside it.
+_RECENT = _iso_days_ago(10)
+_OLD = _iso_days_ago(250)
+
+
 def _project(project_id: str = "proj1", name: str = "Web") -> ProjectSummary:
     return ProjectSummary(id=project_id, name=name)
 
@@ -35,7 +50,7 @@ def _project(project_id: str = "proj1", name: str = "Web") -> ProjectSummary:
 def _file(
     key: str,
     name: str,
-    last_modified: str = "2026-01-15T10:00:00Z",
+    last_modified: str = _RECENT,
 ) -> FileSummary:
     return FileSummary(key=key, name=name, last_modified=last_modified)
 
@@ -53,8 +68,8 @@ def mock_client():
     client.list_team_projects = AsyncMock(return_value=[_project()])
     client.list_project_files = AsyncMock(
         return_value=[
-            _file(FILE_KEY_A, "Web App", "2026-03-01T00:00:00Z"),
-            _file(FILE_KEY_B, "Mobile App", "2025-10-01T00:00:00Z"),
+            _file(FILE_KEY_A, "Web App", _RECENT),
+            _file(FILE_KEY_B, "Mobile App", _OLD),
         ]
     )
     return client
@@ -88,7 +103,7 @@ def test_list_cmd_shows_all_files(runner: CliRunner, tmp_path: Path, mock_client
 
 def test_list_cmd_filters_by_since(runner: CliRunner, tmp_path: Path, mock_client):
     """INVARIANT: --since 3m excludes files older than 3 months."""
-    # FILE_KEY_A last modified 2026-03-01 (recent); FILE_KEY_B 2025-10-01 (old)
+    # FILE_KEY_A modified _RECENT (inside the window); FILE_KEY_B _OLD (outside it)
     with patch.object(FigmaClient, "__new__", return_value=mock_client):
         result = runner.invoke(
             cli,
