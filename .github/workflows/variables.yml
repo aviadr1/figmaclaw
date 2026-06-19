@@ -51,7 +51,7 @@ jobs:
   variables:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
@@ -94,7 +94,7 @@ jobs:
           fi
 
       - name: Checkout generated-registry publisher
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: aviadr1/figmaclaw
           ref: ${{ inputs.figmaclaw_ref }}
