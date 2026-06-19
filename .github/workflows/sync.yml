@@ -39,7 +39,7 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
@@ -83,7 +83,7 @@ jobs:
         # This reusable workflow runs in the *consumer repo* workspace.
         # Pull the tested loop script from figmaclaw repo, instead of assuming
         # scripts/ exists in the consumer repo.
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: aviadr1/figmaclaw
           ref: ${{ inputs.figmaclaw_ref }}
