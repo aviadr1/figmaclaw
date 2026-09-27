@@ -14,13 +14,12 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
     "Intended Audience :: Developers",
-    "Operating System :: OS Independent",
+    "Operating System :: POSIX",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Software Development",
     "Topic :: Utilities",
-    "Typing :: Typed",
 ]
 dependencies = [
     "click>=8.3.2",
@@ -36,7 +35,6 @@ Homepage = "https://github.com/aviadr1/figmaclaw"
 Documentation = "https://github.com/aviadr1/figmaclaw/blob/main/docs/INSTALL.md"
 Repository = "https://github.com/aviadr1/figmaclaw"
 Issues = "https://github.com/aviadr1/figmaclaw/issues"
-Changelog = "https://github.com/aviadr1/figmaclaw/releases"
 
 [project.scripts]
 figmaclaw = "figmaclaw.main:cli"
@@ -98,3 +96,8 @@ testpaths = ["tests"]
 # add those same paths a second time and fail the build with a duplicate-path error.
 [tool.hatch.build.targets.wheel]
 packages = ["figmaclaw"]
+
+# Ship only what installing needs. Without this, hatchling puts every tracked file in the
+# sdist (CI workflows, agent notes, investigation reports, the demo GIF, the webhook worker).
+[tool.hatch.build.targets.sdist]
+include = ["/figmaclaw", "/README.md", "/pyproject.toml"]

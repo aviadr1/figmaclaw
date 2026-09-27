@@ -53,5 +53,12 @@ jobs:
       - name: Build sdist and wheel
         run: uv build
 
+      - name: Smoke-test the built wheel in a clean venv
+        run: |
+          uv venv /tmp/wheel-check
+          uv pip install --python /tmp/wheel-check dist/*.whl
+          /tmp/wheel-check/bin/figmaclaw --version
+          /tmp/wheel-check/bin/figmaclaw --help > /dev/null
+
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
