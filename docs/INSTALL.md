@@ -7,21 +7,13 @@
 
 ## Install the CLI
 
-From git (works today):
-
 ```bash
 uv tool install git+https://github.com/aviadr1/figmaclaw
 ```
 
-From PyPI, after the first release is published (the name `figmaclaw` was free on PyPI on 2026-09-27):
+Requires Python 3.12+ on Linux or macOS. On Windows, install and run it inside WSL (the CLI uses POSIX file locks).
 
-```bash
-uv tool install figmaclaw
-```
-
-```bash
-pip install figmaclaw
-```
+figmaclaw is not on PyPI yet. Once the first release is published, `uv tool install figmaclaw` and `pipx install figmaclaw` will also work.
 
 Verify: `figmaclaw --version`
 
@@ -154,7 +146,8 @@ The enrichment step is optional — without `CLAUDE_CODE_OAUTH_TOKEN`, sync stil
 ```bash
 git clone https://github.com/aviadr1/figmaclaw
 cd figmaclaw
-./install.sh          # runs: uv sync + pre-commit install
+uv sync                      # project venv with dev tools
+uv run pre-commit install    # git hooks
 
 # Run tests
 uv run pytest
