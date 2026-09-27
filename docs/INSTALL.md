@@ -7,13 +7,25 @@
 
 ## Install the CLI
 
+From git (works today):
+
 ```bash
 uv tool install git+https://github.com/aviadr1/figmaclaw
 ```
 
+From PyPI, after the first release is published (the name `figmaclaw` was free on PyPI on 2026-09-27):
+
+```bash
+uv tool install figmaclaw
+```
+
+```bash
+pip install figmaclaw
+```
+
 Verify: `figmaclaw --version`
 
-Upgrade: `uv tool install --force --reinstall --upgrade git+https://github.com/aviadr1/figmaclaw@main`
+Upgrade from git: `uv tool install --force --reinstall --upgrade git+https://github.com/aviadr1/figmaclaw@main`
 
 ## Environment variables
 

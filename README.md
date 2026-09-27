@@ -11,6 +11,17 @@
 
 Mirror Figma pages into local markdown so developers and agents can work against files, not slow UI/API loops.
 
+![figmaclaw mirroring a Figma page into markdown and searching it with ripgrep](docs/demo.gif)
+
+The recording uses the local fixture in [`docs/demo_fixture.py`](docs/demo_fixture.py), so it runs with no Figma token. Regenerate it from the repo root with [VHS](https://github.com/charmbracelet/vhs):
+
+```bash
+uv sync
+vhs docs/demo.tape
+```
+
+`vhs` needs `ttyd`, `ffmpeg`, and `rg` on `PATH`. `uv sync` puts `figmaclaw` on the tape's `PATH`.
+
 ## Why Developers Care
 
 - `figma/**` becomes a grep-able design memory in your repo.
@@ -54,16 +65,26 @@ Installing the CLI does not create mirror workflows or tracked-file state. `figm
 
 ## Step 1: Install The CLI
 
-### Quick install
+### From git (works today)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/aviadr1/figmaclaw/main/install.sh | sh
 ```
 
-### Manual install
-
 ```bash
 uv tool install git+https://github.com/aviadr1/figmaclaw
+```
+
+### From PyPI (after the first release)
+
+The name `figmaclaw` was free on PyPI on 2026-09-27. After the first version tag is published, install with:
+
+```bash
+uv tool install figmaclaw
+```
+
+```bash
+pip install figmaclaw
 ```
 
 ### Upgrade
