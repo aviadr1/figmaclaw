@@ -163,6 +163,44 @@ def test_version_prefers_non_editable_local_install_source(tmp_path, monkeypatch
     assert "stale commit" not in result.output
 
 
+def test_version_uses_build_info_for_local_archive_install(tmp_path, monkeypatch) -> None:
+    """INVARIANT: installs from a local wheel/sdist file report the archive's baked build info.
+
+    PEP 610 ``archive_info`` means the ``file:`` URL points at an archive, not a checkout,
+    so there is no git repository to ask. ``pip install ./figmaclaw-X-py3-none-any.whl``
+    must not crash ``--version``.
+    """
+
+    wheel = tmp_path / "figmaclaw-0.1.0-py3-none-any.whl"
+    wheel.write_bytes(b"")
+    direct_url = tmp_path / "direct_url.json"
+    direct_url.write_text(
+        f'{{"url":"{wheel.as_uri()}","archive_info":{{}}}}',
+        encoding="utf-8",
+    )
+
+    class FakeDist:
+        files = ["figmaclaw-0.1.0.dist-info/direct_url.json"]
+
+        def locate_file(self, _file):
+            return direct_url
+
+    monkeypatch.setattr(main_mod.metadata, "distribution", lambda _name: FakeDist())
+
+    runner = CliRunner()
+    with (
+        patch.object(_build_info, "__version__", "0.1.0"),
+        patch.object(_build_info, "__commit__", "baked1234567890"),
+        patch.object(_build_info, "__commit_message__", "feat: baked into the wheel"),
+        patch.object(_build_info, "__pr__", None),
+    ):
+        result = runner.invoke(cli, ["--version"])
+
+    assert result.exit_code == 0, result.output
+    assert "figmaclaw 0.1.0 (baked123)" in result.output
+    assert "feat: baked into the wheel" in result.output
+
+
 def test_version_prefers_editable_local_install_source(tmp_path, monkeypatch) -> None:
     """INVARIANT: editable installs report the live checkout commit, not stale build info."""
 
