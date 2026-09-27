@@ -4,6 +4,7 @@ INVARIANTS:
 - docs/demo_fixture.py writes markdown through pull_file with no network
 - the page path matches docs/demo.tape
 - frame names from the fixture are present in the markdown body
+- prototype NAVIGATE reactions in the fixture render as a Mermaid screen flow
 """
 
 from __future__ import annotations
@@ -30,4 +31,6 @@ def test_demo_fixture_mirrors_checkout_page(tmp_path: Path) -> None:
     text = page.read_text(encoding="utf-8")
     assert "Checkout" in text
     assert "Order confirmation" in text
+    assert "## Errors (`20:2`)" in text
+    assert 'n21_2["Checkout"] --> n22_1["Payment declined"]' in text
     assert str(_PAGE) in result.stdout

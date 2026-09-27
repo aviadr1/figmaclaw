@@ -40,8 +40,26 @@ def file_meta() -> FileMetaResponse:
     )
 
 
+def _navigate_to(*destination_ids: str) -> list[dict[str, Any]]:
+    """Prototype reactions, as the Figma REST API returns them for a click-through link."""
+    return [
+        {"trigger": {"type": "ON_CLICK"}, "action": {"navigation": "NAVIGATE", "destinationId": d}}
+        for d in destination_ids
+    ]
+
+
+def _frame(node_id: str, name: str, *destination_ids: str) -> dict[str, Any]:
+    return {
+        "id": node_id,
+        "name": name,
+        "type": "FRAME",
+        "children": [],
+        "reactions": _navigate_to(*destination_ids),
+    }
+
+
 def page_node() -> dict[str, Any]:
-    """Return a Checkout canvas with frames an agent can grep."""
+    """Return a Checkout canvas: two sections and a clickable prototype flow."""
     return {
         "id": PAGE_ID,
         "name": PAGE_NAME,
@@ -52,16 +70,17 @@ def page_node() -> dict[str, Any]:
                 "name": "Purchase",
                 "type": "SECTION",
                 "children": [
-                    {"id": "21:1", "name": "Cart", "type": "FRAME", "children": []},
-                    {"id": "21:2", "name": "Checkout", "type": "FRAME", "children": []},
-                    {
-                        "id": "21:3",
-                        "name": "Order confirmation",
-                        "type": "FRAME",
-                        "children": [],
-                    },
+                    _frame("21:1", "Cart", "21:2"),
+                    _frame("21:2", "Checkout", "21:3", "22:1"),
+                    _frame("21:3", "Order confirmation"),
                 ],
-            }
+            },
+            {
+                "id": "20:2",
+                "name": "Errors",
+                "type": "SECTION",
+                "children": [_frame("22:1", "Payment declined", "21:2")],
+            },
         ],
     }
 

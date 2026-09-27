@@ -1,65 +1,61 @@
-# Terminal demo: mirror a Figma fixture into git markdown and grep it.
+# Terminal demo: mirror a Figma page into git as markdown, then grep it.
 #
-# Regenerate from the repo root (writes docs/demo.gif):
+# Offline: docs/demo_fixture.py serves a bundled Checkout page to figmaclaw's
+# real pull code (pull_file) in place of the Figma REST API, so no token or
+# network is needed. With a real file, `figmaclaw track <file-key>` does this step.
+#
+# Regenerate docs/demo.gif from the repo root on Linux or macOS:
 #   uv sync
 #   vhs docs/demo.tape
 #
-# Requires VHS (https://github.com/charmbracelet/vhs) plus ttyd, ffmpeg,
-# and ripgrep. `uv sync` provides the `figmaclaw` console script the tape
-# uses. The fixture client in docs/demo_fixture.py needs no Figma token.
+# Needs VHS (https://github.com/charmbracelet/vhs) with ttyd and ffmpeg,
+# plus ripgrep (`rg`) and the DejaVu Sans Mono font.
 
 Output docs/demo.gif
 
 Set Shell "bash"
-Set FontFamily "Inter"
-Set FontSize 16
-Set Width 1400
-Set Height 980
-Set Padding 20
-Set TypingSpeed 30ms
+Set FontFamily "DejaVu Sans Mono"
+Set FontSize 15
+Set Width 1200
+Set Height 900
+Set Padding 24
+Set TypingSpeed 35ms
 Env PS1 "$ "
 
 Hide
-Type@1ms `export PATH="$PATH:$HOME/.local/bin:/exec-daemon"`
+Type@1ms `ROOT=$(pwd) && source "$ROOT/.venv/bin/activate" && export PS1='$ '`
 Enter
-Type@1ms `ROOT=$(pwd)`
-Enter
-Type@1ms `source "$ROOT/.venv/bin/activate"`
-Enter
-Type@1ms `export PS1='$ '`
-Enter
-Type@1ms `rm -rf /tmp/demo && mkdir -p /tmp/demo && cd /tmp/demo && git init -q && git config user.email demo@example.com && git config user.name demo`
+Type@1ms `rm -rf /tmp/figmaclaw-demo && mkdir -p /tmp/figmaclaw-demo && cd /tmp/figmaclaw-demo && git init -q`
 Enter
 Type@1ms "clear"
 Enter
 Show
 
-Type "figmaclaw --version"
-Enter
-Wait+Screen /figmaclaw [0-9]/
-Sleep 800ms
-
-Type "figmaclaw init"
+Type "figmaclaw init   # scaffold the GitHub Actions that keep figma/ in sync"
 Enter
 Wait+Screen /Next steps/
-Sleep 1200ms
-
-Type `python $ROOT/docs/demo_fixture.py`
-Enter
-Wait+Screen /Wrote/
-Sleep 1200ms
-
-Type "rg -n Checkout figma"
-Enter
-Wait+Screen /no description yet/
 Sleep 1500ms
 
-Type "figmaclaw inspect figma/shop-demo01/pages/checkout-12-40.md"
+Type "python $ROOT/docs/demo_fixture.py   # offline stand-in for: figmaclaw track <file-key>"
 Enter
-Wait+Screen /21:3/
-Sleep 1500ms
-
-Type "git add figma .figma-sync && git status --short"
-Enter
-Wait+Screen /checkout-12-40.md/
+Wait+Screen /checkout-12-40\.md/
 Sleep 2s
+
+Type "clear"
+Enter
+Type "cat figma/shop-demo01/pages/checkout-12-40.md"
+Enter
+Wait+Screen /Payment declined"\]\s*--> n21_2/
+Sleep 4s
+
+Type "clear"
+Enter
+Type "rg -n 'Payment declined' figma   # agents read design context from files"
+Enter
+Wait+Screen /n22_1/
+Sleep 2s
+
+Type "git add figma .figma-sync .github && git status --short"
+Enter
+Wait+Screen /figmaclaw-webhook\.yaml/
+Sleep 3s
