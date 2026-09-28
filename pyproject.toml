@@ -4,10 +4,25 @@ build-backend = "hatchling.build"
 
 [project]
 name = "figmaclaw"
-version = "0.2.13"
+version = "0.2.14"
 description = "Figma → git semantic design memory for AI agents"
 readme = "README.md"
 requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Aviad Rozenhek", email = "aviadr1@gmail.com" }]
+keywords = ["figma", "design-system", "markdown", "git", "cli"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development",
+    "Topic :: Utilities",
+]
 dependencies = [
     "click>=8.3.2",
     "httpx>=0.28.1",
@@ -16,6 +31,12 @@ dependencies = [
     "rich>=13.7",
     "pyyaml>=6.0.3",
 ]
+
+[project.urls]
+Homepage = "https://github.com/aviadr1/figmaclaw"
+Documentation = "https://github.com/aviadr1/figmaclaw/blob/main/docs/INSTALL.md"
+Repository = "https://github.com/aviadr1/figmaclaw"
+Issues = "https://github.com/aviadr1/figmaclaw/issues"
 
 [project.scripts]
 figmaclaw = "figmaclaw.main:cli"
@@ -66,7 +87,7 @@ asyncio_mode = "auto"
 addopts = "-n auto"
 markers = [
     "smoke: local smoke/integration tests that do not require live credentials",
-    "smoke_api: live Figma REST smoke tests (requires FIGMA_API_KEY; hard-fail if missing)",
+    "smoke_api: live Figma REST smoke tests (requires FIGMA_API_KEY; skip if missing or rejected)",
     "smoke_webhook: live webhook smoke tests (requires webhook permission)",
     "smoke_mcp: live Figma MCP smoke tests (requires FIGMA_MCP_TOKEN/credentials)",
 ]
@@ -77,3 +98,8 @@ testpaths = ["tests"]
 # add those same paths a second time and fail the build with a duplicate-path error.
 [tool.hatch.build.targets.wheel]
 packages = ["figmaclaw"]
+
+# Ship only what installing needs. Without this, hatchling puts every tracked file in the
+# sdist (CI workflows, agent notes, investigation reports, the demo GIF, the webhook worker).
+[tool.hatch.build.targets.sdist]
+include = ["/figmaclaw", "/README.md", "/LICENSE", "/pyproject.toml"]

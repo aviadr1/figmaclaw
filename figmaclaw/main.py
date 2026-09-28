@@ -98,6 +98,11 @@ def _installed_source_info(fallback: BuildInfo) -> BuildInfo:
     if isinstance(vcs_commit, str) and vcs_commit:
         return BuildInfo(fallback.version, vcs_commit, "", None)
 
+    # PEP 610: only ``dir_info`` points at a directory checkout. ``archive_info``
+    # is a wheel/sdist file whose baked ``_build_info`` is already authoritative.
+    if "dir_info" not in direct_url:
+        return fallback
+
     url = direct_url.get("url")
     if not isinstance(url, str) or not url.startswith("file:"):
         return fallback

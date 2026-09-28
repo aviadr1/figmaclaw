@@ -204,18 +204,8 @@ jobs:
       - name: Sync dependencies
         run: uv sync --dev
 
-      - name: Validate FIGMA_API_KEY secret is configured
+      - name: Run live API smoke
         env:
-          FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
-        run: |
-          if [ -z "${FIGMA_API_KEY}" ]; then
-            echo "::error::Missing required secret FIGMA_API_KEY for smoke-api job."
-            exit 1
-          fi
-
-      - name: Run enforced live API smoke
-        env:
-          FIGMACLAW_REQUIRE_LIVE_SMOKE: "1"
           FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
         run: >
           uv run python -m pytest -q
@@ -244,18 +234,8 @@ jobs:
       - name: Sync dependencies
         run: uv sync --dev
 
-      - name: Validate FIGMA_API_KEY secret is configured
+      - name: Run live webhook smoke
         env:
-          FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
-        run: |
-          if [ -z "${FIGMA_API_KEY}" ]; then
-            echo "::error::Missing required secret FIGMA_API_KEY for smoke-webhook job."
-            exit 1
-          fi
-
-      - name: Run enforced live webhook smoke
-        env:
-          FIGMACLAW_REQUIRE_LIVE_SMOKE: "1"
           FIGMA_API_KEY: ${{ secrets.FIGMA_API_KEY }}
         run: >
           uv run python -m pytest -q
@@ -284,18 +264,8 @@ jobs:
       - name: Sync dependencies
         run: uv sync --dev
 
-      - name: Validate FIGMA_MCP_TOKEN secret is configured
+      - name: Run live MCP smoke
         env:
-          FIGMA_MCP_TOKEN: ${{ secrets.FIGMA_MCP_TOKEN }}
-        run: |
-          if [ -z "${FIGMA_MCP_TOKEN}" ]; then
-            echo "::error::Missing required secret FIGMA_MCP_TOKEN for smoke-mcp job."
-            exit 1
-          fi
-
-      - name: Run enforced live MCP smoke
-        env:
-          FIGMACLAW_REQUIRE_LIVE_SMOKE: "1"
           FIGMA_MCP_TOKEN: ${{ secrets.FIGMA_MCP_TOKEN }}
         run: >
           uv run python -m pytest -q

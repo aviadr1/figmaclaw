@@ -40,7 +40,15 @@ _CLIENT_VERSION = "1.0"
 
 
 class FigmaMcpError(Exception):
-    """Raised when the Figma MCP server returns an error or token is missing."""
+    """Raised when the Figma MCP server returns an error or token is missing.
+
+    ``http_status`` is set when the server answered with an HTTP error, so
+    callers can tell an expired or revoked token (401/403) from other failures.
+    """
+
+    def __init__(self, message: str, *, http_status: int | None = None) -> None:
+        super().__init__(message)
+        self.http_status = http_status
 
 
 class FigmaMcpSession:
@@ -455,7 +463,10 @@ class FigmaMcpClient:
 def _check_http(resp: httpx.Response, step: str) -> None:
     """Raise FigmaMcpError on non-2xx HTTP responses."""
     if resp.status_code >= 400:
-        raise FigmaMcpError(f"MCP {step!r} failed: HTTP {resp.status_code}\n{resp.text[:500]}")
+        raise FigmaMcpError(
+            f"MCP {step!r} failed: HTTP {resp.status_code}\n{resp.text[:500]}",
+            http_status=resp.status_code,
+        )
 
 
 def _parse_body(resp: httpx.Response, step: str) -> dict[str, Any]:
