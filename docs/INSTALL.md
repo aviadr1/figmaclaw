@@ -8,16 +8,16 @@
 ## Install the CLI
 
 ```bash
-uv tool install git+https://github.com/aviadr1/figmaclaw
+uv tool install figmaclaw     # or: pipx install figmaclaw
 ```
 
 Requires Python 3.12+ on Linux or macOS. On Windows, install and run it inside WSL (the CLI uses POSIX file locks).
 
-figmaclaw is not on PyPI yet. Once the first release is published, `uv tool install figmaclaw` and `pipx install figmaclaw` will also work.
+To run the latest `main` instead: `uv tool install git+https://github.com/aviadr1/figmaclaw`.
 
 Verify: `figmaclaw --version`
 
-Upgrade from git: `uv tool install --force --reinstall --upgrade git+https://github.com/aviadr1/figmaclaw@main`
+Upgrade a PyPI install with `uv tool upgrade figmaclaw`. Upgrade a git install with `uv tool install --force --reinstall --upgrade git+https://github.com/aviadr1/figmaclaw@main`.
 
 ## Environment variables
 
@@ -172,6 +172,6 @@ bash tests/test_install_e2e.sh
 FIGMA_API_KEY=figd_... bash tests/test_install_e2e.sh --full
 ```
 
-## Not on PyPI (yet)
+## How consumer repos install figmaclaw
 
-figmaclaw is installed from GitHub. Consumer repos don't add it to `pyproject.toml` — CI installs it fresh each run via `uv tool install git+https://github.com/aviadr1/figmaclaw`.
+The workflows `figmaclaw init` generates install figmaclaw from GitHub. Consumer repos don't add it to `pyproject.toml` — CI installs it fresh each run via `uv tool install git+https://github.com/aviadr1/figmaclaw`.

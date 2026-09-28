@@ -3,6 +3,8 @@
 [![CI (main)](https://github.com/aviadr1/figmaclaw/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/aviadr1/figmaclaw/actions/workflows/ci.yml?query=branch%3Amain)
 [![CodeQL (main)](https://github.com/aviadr1/figmaclaw/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/aviadr1/figmaclaw/actions/workflows/codeql.yml?query=branch%3Amain)
 [![Coverage (main)](https://codecov.io/gh/aviadr1/figmaclaw/branch/main/graph/badge.svg)](https://app.codecov.io/gh/aviadr1/figmaclaw/tree/main)
+[![PyPI](https://img.shields.io/pypi/v/figmaclaw.svg)](https://pypi.org/project/figmaclaw/)
+[![License: MIT](https://img.shields.io/github/license/aviadr1/figmaclaw)](https://github.com/aviadr1/figmaclaw/blob/main/LICENSE)
 [![Ruff](https://img.shields.io/badge/lint-ruff-46a2f1?logo=ruff&logoColor=white)](https://docs.astral.sh/ruff/)
 [![Basedpyright](https://img.shields.io/badge/types-basedpyright-5a45ff)](https://github.com/DetachHead/basedpyright)
 [![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit&logoColor=white)](https://pre-commit.com/)
@@ -18,13 +20,13 @@
 ## Install
 
 ```bash
-uv tool install git+https://github.com/aviadr1/figmaclaw
+uv tool install figmaclaw     # or: pipx install figmaclaw
 figmaclaw --version
 ```
 
 Needs Python 3.12+ on Linux or macOS (CI runs on Linux). On Windows, run it inside WSL: the CLI uses POSIX file locks and does not start natively.
 
-figmaclaw is not on PyPI yet. Once the first release is published, `uv tool install figmaclaw` and `pipx install figmaclaw` will also work.
+To run the latest `main` instead: `uv tool install git+https://github.com/aviadr1/figmaclaw`.
 
 ## Quick Start
 
@@ -162,11 +164,9 @@ Run `figmaclaw --help` for the full list. Global options such as `--repo-dir PAT
 
 ## Upgrade
 
-```bash
-figmaclaw self update
-```
+Upgrade a PyPI install with `uv tool upgrade figmaclaw` (or `pipx upgrade figmaclaw`).
 
-This runs `uv tool install --force --reinstall --upgrade git+https://github.com/aviadr1/figmaclaw@main`.
+`figmaclaw self update` reinstalls from GitHub `main` (`uv tool install --force --reinstall --upgrade git+https://github.com/aviadr1/figmaclaw@main`), so use it only on a git install.
 
 ## Documentation
 
@@ -210,3 +210,7 @@ vhs docs/demo.tape    # writes docs/demo.gif
 - `Claude credentials file not found` or `Could not find a Figma OAuth access token`: the MCP-based commands need `FIGMA_MCP_TOKEN`, or Figma authenticated inside Claude Code (`~/.claude/.credentials.json`).
 - MCP servers without an `Mcp-Session-Id`: supported. `FigmaMcpClient` handles both sessionful and stateless MCP responses.
 - `pre-commit` missing locally: run `uv run --with pre-commit python -m pre_commit install`.
+
+## License
+
+[MIT](https://github.com/aviadr1/figmaclaw/blob/main/LICENSE)
