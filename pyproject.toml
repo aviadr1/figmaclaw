@@ -87,7 +87,7 @@ asyncio_mode = "auto"
 addopts = "-n auto"
 markers = [
     "smoke: local smoke/integration tests that do not require live credentials",
-    "smoke_api: live Figma REST smoke tests (requires FIGMA_API_KEY; hard-fail if missing)",
+    "smoke_api: live Figma REST smoke tests (requires FIGMA_API_KEY; skip if missing or rejected)",
     "smoke_webhook: live webhook smoke tests (requires webhook permission)",
     "smoke_mcp: live Figma MCP smoke tests (requires FIGMA_MCP_TOKEN/credentials)",
 ]

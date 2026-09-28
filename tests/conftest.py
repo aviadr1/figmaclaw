@@ -232,3 +232,15 @@ def pull_env(tmp_path: Path) -> PullEnv:
     client.get_nodes = AsyncMock(return_value={})
 
     return PullEnv(state=state, client=client, tmp_path=tmp_path)
+
+
+def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
+    """Surface skipped live smoke tests as GitHub warnings, not silent greens."""
+    import os
+
+    from tests.smoke.live_gate import skipped_live_reasons
+
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    for reason in skipped_live_reasons():
+        terminalreporter.write_line(f"::warning title=Live Figma smoke skipped::{reason}")

@@ -7,7 +7,6 @@ Requires FIGMA_API_KEY env var (loaded from repo .env when available). Run with:
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -23,7 +22,7 @@ from figmaclaw.figma_render import scaffold_page
 from figmaclaw.figma_schema import UNGROUPED_COMPONENTS_SECTION, is_component, is_visible
 from figmaclaw.figma_sync_state import FigmaSyncState, PageEntry
 from figmaclaw.pull_logic import PullResult, pull_file
-from tests.smoke.live_gate import require_live_credential
+from tests.smoke.live_gate import require_valid_figma_pat
 
 # The Web App file used in linear-git
 TEST_FILE_KEY = "hOV4QMBnDIG5s5OYkSrX9E"
@@ -78,9 +77,7 @@ def _expected_rendered_section_count(page_node: dict) -> int:
 
 @pytest.fixture
 def api_key() -> str:
-    return require_live_credential(
-        os.environ.get("FIGMA_API_KEY", ""),
-        name="FIGMA_API_KEY",
+    return require_valid_figma_pat(
         hint="Export FIGMA_API_KEY to run real Figma API smoke tests.",
     )
 

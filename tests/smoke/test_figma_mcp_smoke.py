@@ -11,7 +11,7 @@ import pytest
 
 from figmaclaw.figma_mcp import FigmaMcpClient, FigmaMcpError
 from figmaclaw.figma_variables_mcp import get_local_variables_via_mcp
-from tests.smoke.live_gate import require_live_credential
+from tests.smoke.live_gate import require_accepted_mcp_token, require_live_credential
 
 # Web App file used in linear-git
 TEST_FILE_KEY = "hOV4QMBnDIG5s5OYkSrX9E"
@@ -28,12 +28,11 @@ def mcp_client() -> FigmaMcpClient:
     in Claude Code get the smoke tests running automatically — no need to
     copy a token into ``.env``.
 
-    If neither source has a token, route through the live-credential gate
-    so CI's dedicated smoke job (``FIGMACLAW_REQUIRE_LIVE_SMOKE=1``) fails
-    loudly while local runs skip.
+    With no token, or one Figma's MCP server rejects as expired or revoked,
+    the test skips (see ``tests/smoke/live_gate.py``).
     """
     try:
-        return FigmaMcpClient.auto()
+        client = FigmaMcpClient.auto()
     except FigmaMcpError as exc:
         require_live_credential(
             "",
@@ -45,6 +44,8 @@ def mcp_client() -> FigmaMcpClient:
             ),
         )
         raise  # unreachable: require_live_credential always raises
+    require_accepted_mcp_token()
+    return client
 
 
 @pytest.mark.smoke_mcp
