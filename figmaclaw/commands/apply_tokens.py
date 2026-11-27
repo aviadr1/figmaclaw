@@ -100,13 +100,13 @@ from figmaclaw.use_figma_exec import execute_use_figma_calls
 @click.option(
     "--signature-abort-threshold",
     type=click.IntRange(min=1),
-    default=None,
-    show_default="5",
+    default=DEFAULT_SIGNATURE_ABORT_THRESHOLD,
+    show_default=True,
     help=(
         "F48: abort the phase after this many rows hit the same root-cause "
         "signature (e.g. unloadable_font:Boldonse Bold). Surfaces ONE F36 "
         "operator-actionable block instead of N identical lines in the "
-        "report. Default 5; pass a larger value to tolerate more identical "
+        "report. Pass a larger value to tolerate more identical "
         "failures before aborting."
     ),
 )
@@ -130,7 +130,7 @@ def apply_tokens_cmd(
     allow_non_authoritative: bool,
     allow_variable_id_fallback: bool,
     legacy_bindings_for_figma: bool,
-    signature_abort_threshold: int | None,
+    signature_abort_threshold: int,
     json_output: bool,
 ) -> None:
     """Apply authoritative, pre-filtered token fixes back into Figma.
@@ -227,11 +227,6 @@ def apply_tokens_cmd(
     if resume_from < 1:
         raise click.UsageError("--resume-from must be >= 1")
 
-    threshold = (
-        signature_abort_threshold
-        if signature_abort_threshold is not None
-        else DEFAULT_SIGNATURE_ABORT_THRESHOLD
-    )
     try:
         batch_result = write_apply_batches(
             prepared,
@@ -241,7 +236,7 @@ def apply_tokens_cmd(
             node_map=node_map,  # type: ignore[arg-type]
             catalog=catalog,
             library_hashes=library_hashes,
-            signature_abort_threshold=threshold,
+            signature_abort_threshold=signature_abort_threshold,
         )
     except ValueError as exc:
         # Catalog or scope-related ValueErrors should surface as a clean
